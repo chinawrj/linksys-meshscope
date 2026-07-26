@@ -1,0 +1,17 @@
+.venv/
+.esphome-venv/
+.esphome/
+esp32_serial_collector/
+__pycache__/
+*.pyc
+*.log
+.meshscope.pid
+.DS_Store
+secrets.yaml
+router_credentials.json
+router_credentials.local.json
+router_topology.json
+router_upgrade.json
+router_topology_upgrade_plan.json
+router_upgrade_plan.json
+router_upgrade_plan.local.json

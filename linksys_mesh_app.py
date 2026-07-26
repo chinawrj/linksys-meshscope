@@ -1,0 +1,805 @@
+#!/usr/bin/env python3
+"""Local Linksys Velop mesh dashboard.
+
+The server keeps the router password in memory, binds to localhost by default,
+and keeps observation actions read-only. Restart is a separately gated action.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import concurrent.futures
+import ipaddress
+import json
+import mimetypes
+import os
+import socket
+import ssl
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+
+APP_ROOT = Path(__file__).resolve().parent
+WEB_ROOT = APP_ROOT / "mesh_web"
+DEFAULT_ROUTER = "10.37.1.1"
+JNAP_PREFIX = "http://linksys.com/jnap/"
+READ_ONLY_ACTIONS = {
+    "core/CheckAdminPassword": {},
+    "core/GetDeviceInfo": {},
+    "devicelist/GetDevices3": {},
+    "networkconnections/GetNetworkConnections2": {},
+    "nodes/diagnostics/GetBackhaulInfo": {},
+    "nodes/networkconnections/GetNodesWirelessNetworkConnections": {},
+    "nodes/smartmode/GetDeviceMode": {},
+    "nodes/topologyoptimization/GetTopologyOptimizationSettings2": {},
+    "router/GetWANStatus3": {},
+    "router/GetLANSettings": {},
+    "wirelessap/GetRadioInfo3": {},
+}
+MUTATING_ACTIONS = {
+    "core/Reboot": {},
+}
+
+
+class RouterError(RuntimeError):
+    """A user-safe router communication failure."""
+
+
+@dataclass
+class RouterSession:
+    host: str = DEFAULT_ROUTER
+    password: str | None = None
+    connected_at: str | None = None
+
+    @property
+    def connected(self) -> bool:
+        return bool(self.password)
+
+    @property
+    def base_url(self) -> str:
+        return f"https://{self.host}"
+
+    def clear(self) -> None:
+        self.password = None
+        self.connected_at = None
+
+
+class MeshState:
+    def __init__(self) -> None:
+        self.session = RouterSession()
+        self.cache: dict[str, Any] | None = None
+        self.cache_at = 0.0
+        self.node_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self.lock = threading.RLock()
+
+    def status(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "connected": self.session.connected,
+                "router": self.session.host,
+                "connectedAt": self.session.connected_at,
+                "cachedAt": self.cache.get("meta", {}).get("updatedAt") if self.cache else None,
+            }
+
+    def connect(self, host: str, password: str) -> dict[str, Any]:
+        clean_host = validate_router_host(host)
+        if not password:
+            raise RouterError("请输入本地路由器密码。")
+        candidate = RouterSession(host=clean_host, password=password)
+        response = jnap_call(candidate, "core/CheckAdminPassword")
+        if response.get("result") != "OK":
+            if response.get("result") == "_ErrorUnauthorized":
+                raise RouterError("密码不正确，请重新输入。")
+            raise RouterError(f"路由器拒绝认证：{response.get('result', '未知错误')}")
+        with self.lock:
+            self.session = candidate
+            self.session.connected_at = now_iso()
+            self.cache = None
+            self.cache_at = 0.0
+            self.node_probe_cache.clear()
+        return self.refresh(force=True)
+
+    def disconnect(self) -> None:
+        with self.lock:
+            self.session.clear()
+            self.cache = None
+            self.cache_at = 0.0
+            self.node_probe_cache.clear()
+
+    def refresh(self, force: bool = False) -> dict[str, Any]:
+        with self.lock:
+            if not self.session.connected:
+                raise RouterError("尚未连接路由器。")
+            if not force and self.cache and time.monotonic() - self.cache_at < 4:
+                return self.cache
+            session = RouterSession(
+                host=self.session.host,
+                password=self.session.password,
+                connected_at=self.session.connected_at,
+            )
+
+        action_names = [name for name in READ_ONLY_ACTIONS if name != "core/CheckAdminPassword"]
+        raw: dict[str, dict[str, Any]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(action_names)) as pool:
+            futures = {pool.submit(jnap_call, session, name): name for name in action_names}
+            for future in concurrent.futures.as_completed(futures):
+                name = futures[future]
+                try:
+                    response = future.result()
+                except Exception as exc:
+                    raw[name] = {"result": "_LocalError", "error": str(exc)}
+                else:
+                    raw[name] = response
+
+        device_response = raw.get("devicelist/GetDevices3", {})
+        if device_response.get("result") == "_ErrorUnauthorized":
+            with self.lock:
+                self.session.clear()
+            raise RouterError("路由器登录已失效，请重新连接。")
+        if device_response.get("result") != "OK":
+            raise RouterError(
+                "无法读取设备列表："
+                + str(device_response.get("error") or device_response.get("result") or "未知错误")
+            )
+
+        normalized = normalize_topology(session.host, raw)
+        with self.lock:
+            self.cache = normalized
+            self.cache_at = time.monotonic()
+        return normalized
+
+    def probe_node(self, node_id: str) -> dict[str, Any]:
+        """Probe one known node through safe, read-only local JNAP actions."""
+        clean_id = (node_id or "").strip()
+        if not clean_id:
+            raise RouterError("缺少 Node ID。")
+
+        with self.lock:
+            if not self.session.connected:
+                raise RouterError("尚未连接路由器。")
+            cached_probe = self.node_probe_cache.get(clean_id)
+            if cached_probe and time.monotonic() - cached_probe[0] < 30:
+                return cached_probe[1]
+            topology = self.cache
+            password = self.session.password
+
+        if not topology:
+            topology = self.refresh()
+        node = next((item for item in topology.get("nodes", []) if item.get("id") == clean_id), None)
+        if not node:
+            raise RouterError("未找到指定 Node。")
+        if not node.get("online"):
+            raise RouterError("该 Node 当前离线，无法只读探测。")
+        node_host = validate_router_host(str(node.get("ipAddress") or ""))
+        session = RouterSession(host=node_host, password=password)
+        actions = (
+            "core/CheckAdminPassword",
+            "core/GetDeviceInfo",
+            "nodes/smartmode/GetDeviceMode",
+            "nodes/topologyoptimization/GetTopologyOptimizationSettings2",
+        )
+        raw: dict[str, dict[str, Any]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(actions)) as pool:
+            futures = {pool.submit(jnap_call, session, action): action for action in actions}
+            for future in concurrent.futures.as_completed(futures):
+                action = futures[future]
+                try:
+                    raw[action] = future.result()
+                except Exception as exc:
+                    raw[action] = {"result": "_LocalError", "error": str(exc)}
+
+        password_check = raw["core/CheckAdminPassword"]
+        if password_check.get("result") == "_ErrorUnauthorized":
+            raise RouterError("该 Node 没有接受主路由器的同步凭证。")
+        identity = output_of(raw, "core/GetDeviceInfo")
+        mode = output_of(raw, "nodes/smartmode/GetDeviceMode")
+        optimization = output_of(
+            raw, "nodes/topologyoptimization/GetTopologyOptimizationSettings2"
+        )
+        services = [str(item) for item in identity.get("services") or []]
+        report = {
+            "nodeId": clean_id,
+            "name": node.get("name"),
+            "ipAddress": node_host,
+            "managementUrl": f"https://{node_host}/ca",
+            "managementEntry": "ca-support",
+            "credentialsSynchronized": password_check.get("result") == "OK",
+            "deviceMode": mode.get("mode"),
+            "identity": {
+                "model": identity.get("modelNumber"),
+                "hardwareVersion": identity.get("hardwareVersion"),
+                "firmwareVersion": identity.get("firmwareVersion"),
+                "serialNumber": identity.get("serialNumber"),
+            },
+            "services": {
+                "coreReboot": any(value.startswith(JNAP_PREFIX + "core/Core") for value in services),
+                "nodesSetup3": JNAP_PREFIX + "nodes/setup/Setup3" in services,
+                "topologyOptimization2": (
+                    JNAP_PREFIX + "nodes/topologyoptimization/TopologyOptimization2" in services
+                ),
+            },
+            "topologyOptimization": {
+                "clientSteeringEnabled": optimization.get("isClientSteeringEnabled"),
+                "nodeSteeringEnabled": optimization.get("isNodeSteeringEnabled"),
+            },
+            "individualRestart": {
+                "visibleInCaSupportUi": JNAP_PREFIX + "nodes/setup/Setup3" in services,
+                "action": "core/Reboot",
+                "hasTargetDeviceId": False,
+                "scope": "unverified",
+                "executed": False,
+            },
+            "manualParentSelection": {
+                "available": False,
+                "reason": "Topology Optimization only exposes global automatic steering settings.",
+            },
+            "observedAt": now_iso(),
+        }
+        with self.lock:
+            self.node_probe_cache[clean_id] = (time.monotonic(), report)
+        return report
+
+    def restart_mesh_from_node(self, node_id: str, confirmation: str) -> dict[str, Any]:
+        """Invoke the selected Node's official CA Restart Mesh WiFi action."""
+        clean_id = (node_id or "").strip()
+        if not clean_id:
+            raise RouterError("缺少 Node ID。")
+        with self.lock:
+            if not self.session.connected:
+                raise RouterError("尚未连接路由器。")
+            topology = self.cache
+            password = self.session.password
+        if not topology:
+            topology = self.refresh()
+        node = next((item for item in topology.get("nodes", []) if item.get("id") == clean_id), None)
+        if not node:
+            raise RouterError("未找到指定 Node。")
+        if not node.get("online"):
+            raise RouterError("该 Node 当前离线，无法发起重启。")
+        expected = f"RESTART {node.get('name')}"
+        if confirmation != expected:
+            raise RouterError(f"确认短语不匹配；请输入 {expected}。")
+        node_host = validate_router_host(str(node.get("ipAddress") or ""))
+        response = jnap_mutating_call(
+            RouterSession(host=node_host, password=password),
+            "core/Reboot",
+        )
+        if response.get("result") != "OK":
+            raise RouterError(
+                "Node 未接受重启请求："
+                + str(response.get("error") or response.get("result") or "未知错误")
+            )
+        with self.lock:
+            self.node_probe_cache.clear()
+        return {
+            "accepted": True,
+            "requestedThroughNode": {
+                "id": clean_id,
+                "name": node.get("name"),
+                "ipAddress": node_host,
+            },
+            "action": "core/Reboot",
+            "scope": "mesh-wifi-system",
+            "warning": "固件未提供 target deviceID；所有 Node 与 Client 都可能暂时离线。",
+            "requestedAt": now_iso(),
+        }
+
+
+STATE = MeshState()
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def validate_router_host(value: str) -> str:
+    value = (value or "").strip()
+    if "://" in value:
+        value = urlparse(value).hostname or ""
+    value = value.strip("[]").rstrip(".")
+    if not value:
+        raise RouterError("请输入路由器地址。")
+    if value.lower().endswith(".local"):
+        return value
+    try:
+        addresses = socket.getaddrinfo(value, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise RouterError("无法解析路由器地址。") from exc
+    for address in {item[4][0] for item in addresses}:
+        ip = ipaddress.ip_address(address)
+        if not (ip.is_private or ip.is_link_local or ip.is_loopback):
+            raise RouterError("为安全起见，只允许连接局域网地址。")
+    return value
+
+
+def jnap_call(session: RouterSession, action: str) -> dict[str, Any]:
+    if action not in READ_ONLY_ACTIONS:
+        raise RouterError("已阻止非只读路由器动作。")
+    return _jnap_request(session, action, READ_ONLY_ACTIONS[action])
+
+
+def jnap_mutating_call(session: RouterSession, action: str) -> dict[str, Any]:
+    if action not in MUTATING_ACTIONS:
+        raise RouterError("已阻止未经批准的路由器动作。")
+    return _jnap_request(session, action, MUTATING_ACTIONS[action])
+
+
+def _jnap_request(
+    session: RouterSession, action: str, data: dict[str, Any]
+) -> dict[str, Any]:
+    if not session.password:
+        raise RouterError("没有可用的路由器密码。")
+    auth = base64.b64encode(f"admin:{session.password}".encode()).decode()
+    body = json.dumps(data, separators=(",", ":")).encode()
+    request = urllib.request.Request(
+        f"{session.base_url}/JNAP/",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-JNAP-Action": JNAP_PREFIX + action,
+            "X-JNAP-Authorization": "Basic " + auth,
+            "Cache-Control": "no-cache",
+        },
+    )
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(request, timeout=12, context=context) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise RouterError(f"路由器返回 HTTP {exc.code}。") from exc
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        raise RouterError(f"无法连接 {session.host}：{exc}") from exc
+
+
+def output_of(raw: dict[str, dict[str, Any]], action: str) -> dict[str, Any]:
+    response = raw.get(action) or {}
+    output = response.get("output")
+    return output if response.get("result") == "OK" and isinstance(output, dict) else {}
+
+
+def property_map(device: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for prop in device.get("properties") or []:
+        if isinstance(prop, dict) and prop.get("name") and prop.get("value") not in (None, ""):
+            result[str(prop["name"])] = str(prop["value"])
+    return result
+
+
+def all_macs(device: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for value in device.get("knownMACAddresses") or []:
+        if value:
+            values.append(str(value).upper())
+    for interface in device.get("knownInterfaces") or []:
+        if isinstance(interface, dict) and interface.get("macAddress"):
+            values.append(str(interface["macAddress"]).upper())
+    for connection in device.get("connections") or []:
+        if isinstance(connection, dict) and connection.get("macAddress"):
+            values.append(str(connection["macAddress"]).upper())
+    return list(dict.fromkeys(values))
+
+
+def friendly_name(device: dict[str, Any]) -> str:
+    props = property_map(device)
+    model = device.get("model") or {}
+    return str(
+        props.get("userDeviceName")
+        or device.get("friendlyName")
+        or model.get("modelNumber")
+        or "未命名设备"
+    )
+
+
+def signal_quality(rssi: int | float | None) -> dict[str, Any]:
+    if rssi is None:
+        return {"label": "未知", "score": None, "tone": "muted"}
+    value = float(rssi)
+    score = max(0, min(100, round(2 * (value + 100))))
+    if value >= -55:
+        return {"label": "极佳", "score": score, "tone": "good"}
+    if value >= -67:
+        return {"label": "良好", "score": score, "tone": "good"}
+    if value >= -75:
+        return {"label": "一般", "score": score, "tone": "warn"}
+    return {"label": "较弱", "score": score, "tone": "bad"}
+
+
+def device_type(device: dict[str, Any]) -> str:
+    model = device.get("model") or {}
+    haystack = " ".join(
+        str(value or "")
+        for value in (
+            model.get("deviceType"),
+            model.get("modelNumber"),
+            model.get("manufacturer"),
+            device.get("friendlyName"),
+            (device.get("unit") or {}).get("operatingSystem"),
+        )
+    ).lower()
+    if any(word in haystack for word in ("iphone", "phone", "android", "mobile")):
+        return "phone"
+    if any(word in haystack for word in ("ipad", "tablet")):
+        return "tablet"
+    if any(word in haystack for word in ("macbook", "laptop", "computer", "desktop", "windows")):
+        return "computer"
+    if any(word in haystack for word in ("camera", "cam")):
+        return "camera"
+    if any(word in haystack for word in ("tv", "player", "chromecast")):
+        return "media"
+    if any(word in haystack for word in ("watch",)):
+        return "wearable"
+    if any(word in haystack for word in ("iot", "midea", "cooker", "lwip", "esp")):
+        return "iot"
+    return "device"
+
+
+def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    device_info = output_of(raw, "core/GetDeviceInfo")
+    device_output = output_of(raw, "devicelist/GetDevices3")
+    devices = [item for item in device_output.get("devices") or [] if isinstance(item, dict)]
+    backhaul = [
+        item
+        for item in output_of(raw, "nodes/diagnostics/GetBackhaulInfo").get("backhaulDevices") or []
+        if isinstance(item, dict)
+    ]
+    main_connections = [
+        item
+        for item in output_of(raw, "networkconnections/GetNetworkConnections2").get("connections") or []
+        if isinstance(item, dict)
+    ]
+    node_wireless = [
+        item
+        for item in output_of(
+            raw, "nodes/networkconnections/GetNodesWirelessNetworkConnections"
+        ).get("nodeWirelessConnections")
+        or []
+        if isinstance(item, dict)
+    ]
+    wan = output_of(raw, "router/GetWANStatus3")
+    lan = output_of(raw, "router/GetLANSettings")
+    radio_info = output_of(raw, "wirelessap/GetRadioInfo3")
+    topology_optimization = output_of(
+        raw, "nodes/topologyoptimization/GetTopologyOptimizationSettings2"
+    )
+
+    backhaul_by_id = {item.get("deviceUUID"): item for item in backhaul}
+    node_ids = {
+        item.get("deviceID")
+        for item in devices
+        if item.get("nodeType") or item.get("isAuthority") or item.get("deviceID") in backhaul_by_id
+    }
+    node_ids.discard(None)
+    master_device = next((item for item in devices if item.get("isAuthority")), None)
+    master_id = master_device.get("deviceID") if master_device else None
+
+    live_by_mac: dict[str, dict[str, Any]] = {}
+    for connection in main_connections:
+        mac = str(connection.get("macAddress") or "").upper()
+        if mac:
+            live_by_mac[mac] = {**connection, "parentDeviceID": master_id}
+    for node_group in node_wireless:
+        parent_id = node_group.get("deviceID")
+        for connection in node_group.get("connections") or []:
+            if not isinstance(connection, dict):
+                continue
+            mac = str(connection.get("macAddress") or "").upper()
+            if mac:
+                live_by_mac[mac] = {**connection, "parentDeviceID": parent_id}
+
+    devices_by_id = {item.get("deviceID"): item for item in devices}
+    ip_to_node: dict[str, str] = {}
+    for device_id in node_ids:
+        device = devices_by_id.get(device_id) or {}
+        for connection in device.get("connections") or []:
+            if connection.get("ipAddress"):
+                ip_to_node[str(connection["ipAddress"])] = str(device_id)
+    for item in backhaul:
+        if item.get("ipAddress") and item.get("deviceUUID"):
+            ip_to_node[str(item["ipAddress"])] = str(item["deviceUUID"])
+
+    nodes: list[dict[str, Any]] = []
+    for device_id in node_ids:
+        device = devices_by_id.get(device_id) or {}
+        props = property_map(device)
+        model = device.get("model") or {}
+        unit = device.get("unit") or {}
+        device_connections = device.get("connections") or []
+        backhaul_item = backhaul_by_id.get(device_id) or {}
+        ip_address = next(
+            (str(item.get("ipAddress")) for item in device_connections if item.get("ipAddress")),
+            str(backhaul_item.get("ipAddress") or ""),
+        )
+        parent_ip = backhaul_item.get("parentIPAddress")
+        parent_id = ip_to_node.get(str(parent_ip)) if parent_ip else None
+        wireless = backhaul_item.get("wirelessConnectionInfo") or {}
+        rssi = wireless.get("stationRSSI")
+        if rssi in (None, 0):
+            rssi = wireless.get("apRSSI")
+        online = bool(device.get("isAuthority") or backhaul_item)
+        nodes.append(
+            {
+                "id": device_id,
+                "name": friendly_name(device),
+                "location": props.get("userDeviceLocation") or friendly_name(device),
+                "role": "主节点" if device.get("isAuthority") else "子节点",
+                "isAuthority": bool(device.get("isAuthority")),
+                "online": online,
+                "model": model.get("modelNumber") or "Linksys Velop",
+                "description": model.get("description") or "",
+                "hardwareVersion": model.get("hardwareVersion"),
+                "firmwareVersion": unit.get("firmwareVersion"),
+                "firmwareDate": unit.get("firmwareDate"),
+                "serialNumber": unit.get("serialNumber"),
+                "macAddress": next(
+                    (item.get("macAddress") for item in device_connections if item.get("macAddress")),
+                    None,
+                ),
+                "ipAddress": ip_address or None,
+                "parentId": parent_id,
+                "parentIpAddress": parent_ip,
+                "connectionType": backhaul_item.get("connectionType") or (
+                    "Gateway" if device.get("isAuthority") else None
+                ),
+                "band": wireless.get("radioID"),
+                "channel": wireless.get("channel"),
+                "rssi": rssi,
+                "quality": signal_quality(rssi),
+                "speedMbps": float(backhaul_item["speedMbps"])
+                if backhaul_item.get("speedMbps")
+                else None,
+                "timestamp": backhaul_item.get("timestamp"),
+                "clientCount": 0,
+                "managementUrl": f"https://{ip_address}/ca" if ip_address else None,
+                "managementEntry": "ca-support" if ip_address else None,
+            }
+        )
+
+    clients: list[dict[str, Any]] = []
+    for device in devices:
+        if device.get("deviceID") in node_ids:
+            continue
+        device_connections = [item for item in device.get("connections") or [] if isinstance(item, dict)]
+        device_macs = all_macs(device)
+        live = next((live_by_mac[mac] for mac in device_macs if mac in live_by_mac), {})
+        primary = dict(device_connections[0]) if device_connections else {}
+        primary.update(live)
+        mac_address = primary.get("macAddress") or (device_macs[0] if device_macs else None)
+        wireless = primary.get("wireless") or {}
+        rssi = wireless.get("signalDecibels")
+        parent_id = primary.get("parentDeviceID") or master_id
+        props = property_map(device)
+        model = device.get("model") or {}
+        unit = device.get("unit") or {}
+        online = bool(device_connections or live)
+        clients.append(
+            {
+                "id": device.get("deviceID"),
+                "name": friendly_name(device),
+                "online": online,
+                "type": device_type(device),
+                "model": model.get("modelNumber"),
+                "manufacturer": model.get("manufacturer"),
+                "operatingSystem": unit.get("operatingSystem"),
+                "macAddress": mac_address,
+                "ipAddress": primary.get("ipAddress"),
+                "parentId": parent_id,
+                "nodeId": parent_id,
+                "band": wireless.get("band"),
+                "radioId": wireless.get("radioID"),
+                "rssi": rssi,
+                "quality": signal_quality(rssi),
+                "speedMbps": primary.get("negotiatedMbps"),
+                "isGuest": bool(wireless.get("isGuest")),
+                "lastSeen": primary.get("timestamp"),
+                "userLabel": props.get("userDeviceName"),
+            }
+        )
+
+    online_counts: dict[str, int] = {}
+    for client in clients:
+        if client["online"] and client.get("nodeId"):
+            node_id = str(client["nodeId"])
+            online_counts[node_id] = online_counts.get(node_id, 0) + 1
+    for node in nodes:
+        node["clientCount"] = online_counts.get(str(node["id"]), 0)
+
+    nodes.sort(key=lambda item: (not item["isAuthority"], not item["online"], item["name"].lower()))
+    clients.sort(key=lambda item: (not item["online"], item["name"].lower()))
+    node_name_by_id = {item["id"]: item["name"] for item in nodes}
+    for node in nodes:
+        node["parentName"] = node_name_by_id.get(node.get("parentId"))
+    for client in clients:
+        client["nodeName"] = node_name_by_id.get(client.get("nodeId"), "Main")
+
+    online_nodes = [item for item in nodes if item["online"]]
+    online_clients = [item for item in clients if item["online"]]
+    weak_nodes = [
+        item
+        for item in online_nodes
+        if not item["isAuthority"] and item.get("quality", {}).get("tone") in ("warn", "bad")
+    ]
+    return {
+        "meta": {
+            "source": "Linksys JNAP · 本地只读",
+            "router": host,
+            "updatedAt": now_iso(),
+            "revision": device_output.get("revision"),
+        },
+        "network": {
+            "manufacturer": device_info.get("manufacturer", "Linksys"),
+            "model": device_info.get("modelNumber"),
+            "description": device_info.get("description"),
+            "firmwareVersion": device_info.get("firmwareVersion"),
+            "firmwareDate": device_info.get("firmwareDate"),
+            "serialNumber": device_info.get("serialNumber"),
+            "wanStatus": wan.get("wanStatus"),
+            "wanType": (wan.get("wanConnection") or {}).get("wanType"),
+            "wanIpAddress": (wan.get("wanConnection") or {}).get("ipAddress"),
+            "lanIpAddress": lan.get("ipAddress") or host,
+            "hostName": lan.get("hostName"),
+            "radioCount": len(radio_info.get("radios") or []),
+            "clientSteeringEnabled": topology_optimization.get("isClientSteeringEnabled"),
+            "nodeSteeringEnabled": topology_optimization.get("isNodeSteeringEnabled"),
+            "nodeSteeringMode": "automatic",
+            "manualParentSelectionAvailable": False,
+            "documentedRestartScope": "whole-network",
+            "individualNodeRestartAvailable": False,
+            "individualNodeRestartProbe": "not-executed",
+        },
+        "summary": {
+            "nodesOnline": len(online_nodes),
+            "nodesTotal": len(nodes),
+            "clientsOnline": len(online_clients),
+            "clientsKnown": len(clients),
+            "weakNodes": len(weak_nodes),
+            "backhaulMbps": round(
+                sum(float(item.get("speedMbps") or 0) for item in online_nodes if not item["isAuthority"]),
+                1,
+            ),
+        },
+        "nodes": nodes,
+        "clients": clients,
+    }
+
+
+class MeshRequestHandler(BaseHTTPRequestHandler):
+    server_version = "MeshScope/1.0"
+
+    def log_message(self, message: str, *args: Any) -> None:
+        print(f"[mesh] {self.address_string()} {message % args}")
+
+    def send_json(self, payload: Any, status: int = 200) -> None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def read_json(self) -> dict[str, Any]:
+        try:
+            length = min(int(self.headers.get("Content-Length", "0")), 16_384)
+            value = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise RouterError("请求格式无效。") from exc
+        return value if isinstance(value, dict) else {}
+
+    def do_GET(self) -> None:
+        route = urlparse(self.path).path
+        if route == "/api/status":
+            self.send_json(STATE.status())
+            return
+        if route == "/api/topology":
+            try:
+                self.send_json(STATE.refresh(force=self.path.endswith("refresh=1")))
+            except RouterError as exc:
+                self.send_json({"error": str(exc), **STATE.status()}, HTTPStatus.UNAUTHORIZED)
+            return
+        if route == "/api/node-capabilities":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                self.send_json(STATE.probe_node(str((query.get("nodeId") or [""])[0])))
+            except RouterError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
+        self.serve_static(route)
+
+    def do_POST(self) -> None:
+        route = urlparse(self.path).path
+        try:
+            if route == "/api/connect":
+                body = self.read_json()
+                topology = STATE.connect(str(body.get("host") or DEFAULT_ROUTER), str(body.get("password") or ""))
+                self.send_json(topology)
+                return
+            if route == "/api/disconnect":
+                STATE.disconnect()
+                self.send_json({"connected": False})
+                return
+            if route == "/api/refresh":
+                self.send_json(STATE.refresh(force=True))
+                return
+            if route == "/api/restart-node":
+                body = self.read_json()
+                self.send_json(
+                    STATE.restart_mesh_from_node(
+                        str(body.get("nodeId") or ""),
+                        str(body.get("confirmation") or ""),
+                    )
+                )
+                return
+            self.send_json({"error": "未找到接口。"}, HTTPStatus.NOT_FOUND)
+        except RouterError as exc:
+            self.send_json({"error": str(exc), **STATE.status()}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"error": f"本地服务发生错误：{exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def serve_static(self, route: str) -> None:
+        if route in ("", "/"):
+            route = "/index.html"
+        candidate = (WEB_ROOT / route.lstrip("/")).resolve()
+        if WEB_ROOT not in candidate.parents or not candidate.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        content = candidate.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mimetypes.guess_type(candidate.name)[0] or "application/octet-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the local Linksys Mesh Topology dashboard.")
+    parser.add_argument("--host", default="127.0.0.1", help="Local bind address. Default: 127.0.0.1")
+    parser.add_argument("--port", default=8765, type=int, help="Local web port. Default: 8765")
+    parser.add_argument("--router", default=DEFAULT_ROUTER, help=f"Router address. Default: {DEFAULT_ROUTER}")
+    parser.add_argument(
+        "--password-env",
+        default="LINKSYS_PASSWORD",
+        help="Optional environment variable used to connect at startup.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    STATE.session.host = validate_router_host(args.router)
+    startup_password = os.environ.get(args.password_env)
+    if startup_password:
+        try:
+            STATE.connect(args.router, startup_password)
+            print(f"Connected to Linksys router at {args.router}.")
+        except RouterError as exc:
+            print(f"Startup connection failed: {exc}")
+    server = ThreadingHTTPServer((args.host, args.port), MeshRequestHandler)
+    print(f"MeshScope is running at http://{args.host}:{args.port}")
+    print("Press Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        STATE.disconnect()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
