@@ -71,8 +71,8 @@
       individualRestart: individualRestartAvailable
         ? {
             status: "available",
-            label: "固件报告支持",
-            detail: "执行前仍需确认影响范围",
+            label: "当前 Node · 可用",
+            detail: "请求直接发送到所选 Node 的本地端点",
           }
         : {
             status: "unverified",

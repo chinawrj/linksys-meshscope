@@ -142,9 +142,9 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertTrue(result["network"]["nodeSteeringEnabled"])
         self.assertEqual(result["network"]["nodeSteeringMode"], "automatic")
         self.assertFalse(result["network"]["manualParentSelectionAvailable"])
-        self.assertEqual(result["network"]["documentedRestartScope"], "whole-network")
-        self.assertFalse(result["network"]["individualNodeRestartAvailable"])
-        self.assertEqual(result["network"]["individualNodeRestartProbe"], "not-executed")
+        self.assertEqual(result["network"]["documentedRestartScope"], "single-node")
+        self.assertTrue(result["network"]["individualNodeRestartAvailable"])
+        self.assertEqual(result["network"]["individualNodeRestartProbe"], "owner-confirmed")
         self.assertEqual(child["managementUrl"], "https://10.0.0.2/ca")
 
     def test_probe_node_uses_synchronized_credentials_and_read_only_actions(self):
@@ -200,7 +200,7 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertFalse(report["individualRestart"]["executed"])
         self.assertFalse(report["individualRestart"]["hasTargetDeviceId"])
 
-    def test_restart_requires_exact_phrase_and_targets_selected_node(self):
+    def test_restart_targets_selected_online_node_without_confirmation_payload(self):
         state = linksys_mesh_app.MeshState()
         state.session = linksys_mesh_app.RouterSession(
             host="10.0.0.1",
@@ -219,11 +219,6 @@ class LinksysMeshAppTest(unittest.TestCase):
             ],
         }
 
-        with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
-            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "确认短语"):
-                state.restart_mesh_from_node("big", "RESTART")
-            reboot.assert_not_called()
-
         def fake_reboot(session, action):
             self.assertEqual(session.host, "10.0.0.2")
             self.assertEqual(session.password, "test-only")
@@ -231,11 +226,17 @@ class LinksysMeshAppTest(unittest.TestCase):
             return {"result": "OK"}
 
         with patch("linksys_mesh_app.jnap_mutating_call", side_effect=fake_reboot):
-            result = state.restart_mesh_from_node("big", "RESTART BigTree")
+            result = state.restart_node("big")
 
         self.assertTrue(result["accepted"])
-        self.assertEqual(result["scope"], "mesh-wifi-system")
+        self.assertEqual(result["scope"], "single-node")
         self.assertEqual(result["requestedThroughNode"]["name"], "BigTree")
+
+        state.cache["nodes"][0]["online"] = False
+        with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
+            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "离线"):
+                state.restart_node("big")
+            reboot.assert_not_called()
 
 
 if __name__ == "__main__":

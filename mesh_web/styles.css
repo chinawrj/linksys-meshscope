@@ -552,6 +552,39 @@ button {
   border-color: #d5a05c;
 }
 
+.mesh-node.restarting {
+  border-color: #b9772b;
+  box-shadow: 0 0 0 3px rgba(185, 119, 43, 0.12), 0 12px 30px rgba(39, 48, 44, 0.12);
+}
+
+.node-operation {
+  position: absolute;
+  top: -12px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid #d5a05c;
+  border-radius: 999px;
+  background: #fff8ec;
+  color: #98601e;
+  font-size: 7px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.node-operation i {
+  font-style: normal;
+  animation: node-operation-spin 1.1s linear infinite;
+}
+
+@keyframes node-operation-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .node-title {
   display: flex;
   align-items: flex-start;

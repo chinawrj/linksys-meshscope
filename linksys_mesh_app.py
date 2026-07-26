@@ -2,7 +2,8 @@
 """Local Linksys Velop mesh dashboard.
 
 The server keeps the router password in memory, binds to localhost by default,
-and keeps observation actions read-only. Restart is a separately gated action.
+and keeps observation actions read-only. Restart is restricted to a known
+online Node selected from the live topology.
 """
 
 from __future__ import annotations
@@ -236,7 +237,7 @@ class MeshState:
                 "visibleInCaSupportUi": JNAP_PREFIX + "nodes/setup/Setup3" in services,
                 "action": "core/Reboot",
                 "hasTargetDeviceId": False,
-                "scope": "unverified",
+                "scope": "single-node",
                 "executed": False,
             },
             "manualParentSelection": {
@@ -249,8 +250,8 @@ class MeshState:
             self.node_probe_cache[clean_id] = (time.monotonic(), report)
         return report
 
-    def restart_mesh_from_node(self, node_id: str, confirmation: str) -> dict[str, Any]:
-        """Invoke the selected Node's official CA Restart Mesh WiFi action."""
+    def restart_node(self, node_id: str) -> dict[str, Any]:
+        """Restart one selected online Node through its local CA JNAP endpoint."""
         clean_id = (node_id or "").strip()
         if not clean_id:
             raise RouterError("缺少 Node ID。")
@@ -266,9 +267,6 @@ class MeshState:
             raise RouterError("未找到指定 Node。")
         if not node.get("online"):
             raise RouterError("该 Node 当前离线，无法发起重启。")
-        expected = f"RESTART {node.get('name')}"
-        if confirmation != expected:
-            raise RouterError(f"确认短语不匹配；请输入 {expected}。")
         node_host = validate_router_host(str(node.get("ipAddress") or ""))
         response = jnap_mutating_call(
             RouterSession(host=node_host, password=password),
@@ -289,8 +287,8 @@ class MeshState:
                 "ipAddress": node_host,
             },
             "action": "core/Reboot",
-            "scope": "mesh-wifi-system",
-            "warning": "固件未提供 target deviceID；所有 Node 与 Client 都可能暂时离线。",
+            "scope": "single-node",
+            "message": "重启请求只发送到所选 Node 的本地端点。",
             "requestedAt": now_iso(),
         }
 
@@ -655,9 +653,9 @@ def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, A
             "nodeSteeringEnabled": topology_optimization.get("isNodeSteeringEnabled"),
             "nodeSteeringMode": "automatic",
             "manualParentSelectionAvailable": False,
-            "documentedRestartScope": "whole-network",
-            "individualNodeRestartAvailable": False,
-            "individualNodeRestartProbe": "not-executed",
+            "documentedRestartScope": "single-node",
+            "individualNodeRestartAvailable": True,
+            "individualNodeRestartProbe": "owner-confirmed",
         },
         "summary": {
             "nodesOnline": len(online_nodes),
@@ -736,12 +734,7 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
                 return
             if route == "/api/restart-node":
                 body = self.read_json()
-                self.send_json(
-                    STATE.restart_mesh_from_node(
-                        str(body.get("nodeId") or ""),
-                        str(body.get("confirmation") or ""),
-                    )
-                )
+                self.send_json(STATE.restart_node(str(body.get("nodeId") or "")))
                 return
             self.send_json({"error": "未找到接口。"}, HTTPStatus.NOT_FOUND)
         except RouterError as exc:

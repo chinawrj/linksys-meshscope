@@ -2,11 +2,11 @@
 
 MeshScope is a local Linksys Velop dashboard. Its observation path is read-only
 and presents the live Mesh topology, backhaul quality, Node relationships, and
-Client/STA associations in one browser page. The only mutating capability is an
-explicitly confirmed Mesh restart matching Linksys' CA support page.
+Client/STA associations in one browser page. The only mutating capability is a
+single-Node restart sent directly to the selected Node's CA JNAP endpoint.
 
 ![MeshScope](https://img.shields.io/badge/Linksys-Local%20JNAP-16769b)
-![Safety](https://img.shields.io/badge/restart-typed%20confirmation-b9772b)
+![Safety](https://img.shields.io/badge/restart-known%20online%20Node-b9772b)
 
 ## Highlights
 
@@ -19,7 +19,7 @@ explicitly confirmed Mesh restart matching Linksys' CA support page.
 - Live automatic Client Steering and Node Steering status
 - Read-only per-Node capability probe using credentials synchronized from Main
 - Hidden Linksys child-Node support entry: `https://<node-ip>/ca`
-- Gated `Restart Mesh WiFi system` action through the selected Node
+- One-click restart for the selected online Node
 
 The UI and backend are dependency-free at runtime: Python's standard library
 serves the app and communicates with the router; the frontend is plain
@@ -83,10 +83,10 @@ was found, so MeshScope does not claim or expose manual Parent pinning.
 
 The CA Troubleshooting applet exposes Restart on a Node that advertises
 `nodes/setup/Setup3`, but sends `core/Reboot` without a target `deviceID`.
-MeshScope therefore labels the action as potentially whole-Mesh and only sends
-it after the user types `RESTART <Node name>`. The request is sent directly to
-the selected Node, matching its CA page; every Node and Client may temporarily
-go offline.
+On this network, that action restarts only the Node serving the CA page.
+MeshScope sends the request directly to the selected Node and then keeps its
+topology card marked until the Node is observed offline and back online. There
+is no second confirmation prompt.
 
 Detailed evidence:
 
@@ -97,8 +97,8 @@ Detailed evidence:
 
 Router calls are guarded by two backend allowlists. Observation operations must
 start with `Get` or `Check`. The mutation allowlist contains only
-`core/Reboot`, and the backend additionally requires an online known Node plus
-the exact `RESTART <Node name>` confirmation. Reset, steering changes, firmware
+`core/Reboot`, and the backend requires the target to be a known online Node
+whose address came from the live topology. Reset, steering changes, firmware
 updates, and every other mutation are rejected before a router request is
 created.
 
@@ -116,6 +116,6 @@ node --test \
 ```
 
 The Python suite verifies topology normalization, Node probes, the read-only
-allowlist, and the restart confirmation guard without contacting a router. The
-JavaScript suite covers refresh state, parent-subtree layout, Client/STA
+allowlist, and selected/online restart targeting without contacting a router.
+The JavaScript suite covers refresh state, parent-subtree layout, Client/STA
 association, and Node capability reporting.

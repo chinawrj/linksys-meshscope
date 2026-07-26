@@ -68,12 +68,11 @@ the entire system, not an individual online child-node restart:
 <https://support.linksys.com/kb/article/99-en/>
 <https://support.linksys.com/kb/article/255-en/>
 
-A direct `core/Reboot` call to BigTree's IP remains a destructive operation
-whose blast radius cannot be narrowed from the available schema. The presence
-of a local endpoint is not enough to claim that the action remains local.
+The owner has confirmed from the live system that a direct `core/Reboot` call
+to a child Node's IP restarts only that Node.
 
-At the owner's request, MeshScope exposes the same **Restart mesh WiFi system**
-action as the Node CA page. It sends `core/Reboot` directly to the selected
-online Node only after the user types `RESTART <Node name>`. The UI deliberately
-describes it as a potentially whole-Mesh restart. Tests mock this action and
-never reboot the live network.
+MeshScope therefore exposes a one-click **Restart current Node** action. It
+sends `core/Reboot` directly to the selected known online Node, shows an
+in-progress badge on the topology card, and clears it when the Node is observed
+offline and back online. There is no typed confirmation page. Tests mock this
+action and never reboot the live network.

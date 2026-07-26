@@ -46,8 +46,8 @@ test("reports a node already proven as an automatic parent without claiming manu
   const mesh = {
     network: {
       manualParentSelectionAvailable: false,
-      individualNodeRestartAvailable: false,
-      documentedRestartScope: "whole-network",
+      individualNodeRestartAvailable: true,
+      documentedRestartScope: "single-node",
     },
     nodes: [
       { id: "main", name: "Main", online: true, isAuthority: true },
@@ -66,7 +66,7 @@ test("reports a node already proven as an automatic parent without claiming manu
   assert.equal(report.parentRole.status, "confirmed");
   assert.deepEqual(report.children.map((node) => node.name), ["RoadSouth"]);
   assert.equal(report.manualTarget.status, "unsupported");
-  assert.equal(report.individualRestart.status, "unverified");
+  assert.equal(report.individualRestart.status, "available");
   assert.equal(report.localManagement.status, "available");
   assert.equal(report.localManagement.url, "https://10.37.1.208/ca");
 });
