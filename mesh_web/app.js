@@ -289,7 +289,7 @@ function renderTopology(data) {
           <div><span>${node.isAuthority ? "状态" : "回程"}</span><strong>${node.isAuthority ? "在线" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
           <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
-        ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(restart.sawOffline ? "正在恢复上线" : "重启请求已发送")}</span></div>` : ""}
+        ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
       </button>`;
   }
   if (offline.length) {
@@ -500,13 +500,9 @@ function openDetail(item, kind) {
     ? MeshDetailData.nodeCapabilityReport(state.topology, item)
     : null;
   const parentNode = isNode ? null : MeshDetailData.nodeForClient(state.topology, item);
+  const nodeRows = isNode ? MeshDetailData.nodeDetailRows(item, compactNumber) : null;
   const metrics = isNode
-    ? [
-        ["当前状态", item.online ? "在线" : "离线"],
-        ["接入客户端", `${item.clientCount} 台`],
-        ["回程速率", item.speedMbps ? `${compactNumber(item.speedMbps)} Mbps` : item.isAuthority ? "网关" : "—"],
-        ["回程信号", item.rssi !== null && item.rssi !== undefined ? `${item.rssi} dBm · ${item.quality.label}` : "—"],
-      ]
+    ? nodeRows.metrics
     : [
         ["当前状态", item.online ? "在线" : "历史设备"],
         ["接入节点", item.nodeName || "—"],
@@ -514,17 +510,7 @@ function openDetail(item, kind) {
         ["信号质量", item.rssi !== null && item.rssi !== undefined ? `${item.rssi} dBm · ${item.quality.label}` : "—"],
       ];
   const details = isNode
-    ? [
-        ["型号", item.model],
-        ["IP 地址", item.ipAddress],
-        ["MAC 地址", item.macAddress],
-        ["父节点", item.parentName || (item.isAuthority ? "Internet / WAN" : "—")],
-        ["回程频段", item.band],
-        ["信道", item.channel],
-        ["固件版本", item.firmwareVersion],
-        ["硬件版本", item.hardwareVersion],
-        ["序列号", item.serialNumber],
-      ]
+    ? nodeRows.details
     : [
         ["设备类型", item.type],
         ["型号", item.model],
@@ -638,12 +624,20 @@ async function loadNodeProbe(node, detailToken) {
       : `${report.deviceMode || "本地"} · 凭证状态未知`;
     probeDetail.textContent = `${report.identity.model || node.model || "Linksys Node"} 直连身份已确认 · 未执行控制`;
     if (report.individualRestart.visibleInCaSupportUi) {
-      restartLabel.textContent = "当前 Node · 可用";
-      restartDetail.textContent = `点击后直接向 ${node.ipAddress} 发送 core/Reboot`;
       const restartButton = $("#restartMeshButton");
+      const activeRestart = state.nodeRestarts.get(node.id);
+      restartLabel.textContent = activeRestart ? "当前 Node · 重启进行中" : "当前 Node · 可用";
+      restartDetail.textContent = activeRestart
+        ? `${MeshNodeRestartState.label(activeRestart)}；页面正在继续观测`
+        : `点击后直接向 ${node.ipAddress} 发送 core/Reboot`;
       if (restartButton) {
         restartButton.hidden = false;
-        restartButton.addEventListener("click", () => restartNode(node, restartButton));
+        if (activeRestart) {
+          restartButton.disabled = true;
+          restartButton.textContent = `${MeshNodeRestartState.label(activeRestart)}…`;
+        } else {
+          restartButton.addEventListener("click", () => restartNode(node, restartButton));
+        }
       }
     }
   } catch (error) {
@@ -657,23 +651,20 @@ async function loadNodeProbe(node, detailToken) {
 }
 
 async function restartNode(node, button) {
+  if (state.nodeRestarts.has(node.id)) return;
   button.disabled = true;
   button.textContent = `正在重启 ${node.name}…`;
   try {
     const result = await api("/api/restart-node", {
       method: "POST",
-      body: JSON.stringify({ nodeId: node.id }),
+      body: JSON.stringify(MeshNodeRestartState.requestBody(node)),
     });
-    state.nodeRestarts.set(node.id, {
-      name: node.name,
-      requestedAt: Date.now(),
-      sawOffline: false,
-    });
+    MeshNodeRestartState.begin(state.nodeRestarts, node);
     closeDetail();
     state.refreshError = null;
     renderTopology(state.topology);
     toast(`${result.requestedThroughNode.name} 正在重启`);
-    [8000, 20000, 45000, 90000].forEach((delay) => {
+    MeshNodeRestartState.POLL_DELAYS_MS.forEach((delay) => {
       window.setTimeout(() => refresh(true), delay);
     });
   } catch (error) {
@@ -684,21 +675,11 @@ async function restartNode(node, button) {
 }
 
 function reconcileNodeRestarts(data) {
-  const now = Date.now();
-  for (const [nodeId, restart] of state.nodeRestarts) {
-    const node = data.nodes.find((candidate) => candidate.id === nodeId);
-    if (!node) continue;
-    if (!node.online) {
-      restart.sawOffline = true;
-      continue;
-    }
-    if (restart.sawOffline) {
-      state.nodeRestarts.delete(nodeId);
-      toast(`${restart.name} 已恢复在线`);
-    } else if (now - restart.requestedAt > 90000) {
-      state.nodeRestarts.delete(nodeId);
-      toast(`${restart.name} 当前在线`);
-    }
+  const events = MeshNodeRestartState.reconcile(state.nodeRestarts, data.nodes);
+  for (const event of events) {
+    if (event.type === "recovered") toast(`${event.name} 已恢复在线`);
+    else if (event.type === "online-timeout") toast(`${event.name} 当前在线`);
+    else toast(`${event.name} 状态观测已结束，可手动刷新`);
   }
 }
 

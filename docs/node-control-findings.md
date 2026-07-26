@@ -74,5 +74,8 @@ to a child Node's IP restarts only that Node.
 MeshScope therefore exposes a one-click **Restart current Node** action. It
 sends `core/Reboot` directly to the selected known online Node, shows an
 in-progress badge on the topology card, and clears it when the Node is observed
-offline and back online. There is no typed confirmation page. Tests mock this
-action and never reboot the live network.
+offline and back online. There is no typed confirmation page. Duplicate
+requests are blocked for 90 seconds, and bounded follow-up polls run alongside
+the normal auto-refresh schedule. Unit tests mock the router action; browser
+regression uses an in-memory fake endpoint rather than rebooting the live
+network.

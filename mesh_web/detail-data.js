@@ -25,6 +25,40 @@
     return topology?.nodes?.find((node) => node.id === nodeId) || null;
   }
 
+  function nodeDetailRows(node, formatNumber = (value) => String(value ?? "—")) {
+    return {
+      metrics: [
+        ["当前状态", node.online ? "在线" : "离线"],
+        ["接入客户端", `${node.clientCount} 台`],
+        [
+          "回程速率",
+          node.speedMbps
+            ? `${formatNumber(node.speedMbps)} Mbps`
+            : node.isAuthority
+              ? "网关"
+              : "—",
+        ],
+        [
+          "回程信号",
+          node.rssi !== null && node.rssi !== undefined
+            ? `${node.rssi} dBm · ${node.quality?.label || "未知"}`
+            : "—",
+        ],
+      ],
+      details: [
+        ["型号", node.model],
+        ["IP 地址", node.ipAddress],
+        ["MAC 地址", node.macAddress],
+        ["父节点", node.parentName || (node.isAuthority ? "Internet / WAN" : "—")],
+        ["回程频段", node.band],
+        ["信道", node.channel],
+        ["固件版本", node.firmwareVersion],
+        ["硬件版本", node.hardwareVersion],
+        ["序列号", node.serialNumber],
+      ],
+    };
+  }
+
   function nodeCapabilityReport(topology, node) {
     const children = (topology?.nodes || [])
       .filter((candidate) => candidate.online && candidate.parentId === node?.id)
@@ -98,6 +132,7 @@
   return {
     clientNodeId,
     clientsForNode,
+    nodeDetailRows,
     nodeForClient,
     nodeCapabilityReport,
   };

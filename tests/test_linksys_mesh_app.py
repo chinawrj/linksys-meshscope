@@ -232,6 +232,12 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertEqual(result["scope"], "single-node")
         self.assertEqual(result["requestedThroughNode"]["name"], "BigTree")
 
+        with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
+            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "正在重启"):
+                state.restart_node("big")
+            reboot.assert_not_called()
+
+        state.node_restart_cooldowns.clear()
         state.cache["nodes"][0]["online"] = False
         with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
             with self.assertRaisesRegex(linksys_mesh_app.RouterError, "离线"):

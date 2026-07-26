@@ -4,6 +4,7 @@ const {
   clientNodeId,
   clientsForNode,
   nodeCapabilityReport,
+  nodeDetailRows,
   nodeForClient,
 } = require("../mesh_web/detail-data.js");
 
@@ -40,6 +41,39 @@ test("does not mix historical clients into the live STA list", () => {
 test("finds the parent node when opening a client detail", () => {
   assert.equal(nodeForClient(topology, topology.clients[0]).name, "DoorCorner");
   assert.equal(nodeForClient(topology, { nodeId: "missing" }), null);
+});
+
+test("preserves every existing node metric and identity field", () => {
+  const rows = nodeDetailRows(
+    {
+      online: true,
+      clientCount: 3,
+      speedMbps: 199.4,
+      rssi: -66,
+      quality: { label: "良好" },
+      model: "WHW03",
+      ipAddress: "10.37.1.208",
+      macAddress: "AA:BB:CC:DD:EE:FF",
+      parentName: "YardEast-Wi-Fi6",
+      band: "5GL",
+      channel: 48,
+      firmwareVersion: "2.1.20.216892",
+      hardwareVersion: "2",
+      serialNumber: "test-serial",
+    },
+    (value) => Number(value).toFixed(0),
+  );
+
+  assert.deepEqual(
+    rows.metrics.map(([label]) => label),
+    ["当前状态", "接入客户端", "回程速率", "回程信号"],
+  );
+  assert.deepEqual(
+    rows.details.map(([label]) => label),
+    ["型号", "IP 地址", "MAC 地址", "父节点", "回程频段", "信道", "固件版本", "硬件版本", "序列号"],
+  );
+  assert.equal(rows.metrics[2][1], "199 Mbps");
+  assert.equal(rows.details[3][1], "YardEast-Wi-Fi6");
 });
 
 test("reports a node already proven as an automatic parent without claiming manual control", () => {

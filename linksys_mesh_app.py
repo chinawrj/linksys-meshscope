@@ -34,6 +34,7 @@ APP_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = APP_ROOT / "mesh_web"
 DEFAULT_ROUTER = "10.37.1.1"
 JNAP_PREFIX = "http://linksys.com/jnap/"
+NODE_RESTART_COOLDOWN_SECONDS = 90
 READ_ONLY_ACTIONS = {
     "core/CheckAdminPassword": {},
     "core/GetDeviceInfo": {},
@@ -81,6 +82,7 @@ class MeshState:
         self.cache: dict[str, Any] | None = None
         self.cache_at = 0.0
         self.node_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self.node_restart_cooldowns: dict[str, float] = {}
         self.lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
@@ -108,6 +110,7 @@ class MeshState:
             self.cache = None
             self.cache_at = 0.0
             self.node_probe_cache.clear()
+            self.node_restart_cooldowns.clear()
         return self.refresh(force=True)
 
     def disconnect(self) -> None:
@@ -116,6 +119,7 @@ class MeshState:
             self.cache = None
             self.cache_at = 0.0
             self.node_probe_cache.clear()
+            self.node_restart_cooldowns.clear()
 
     def refresh(self, force: bool = False) -> dict[str, Any]:
         with self.lock:
@@ -268,11 +272,27 @@ class MeshState:
         if not node.get("online"):
             raise RouterError("该 Node 当前离线，无法发起重启。")
         node_host = validate_router_host(str(node.get("ipAddress") or ""))
-        response = jnap_mutating_call(
-            RouterSession(host=node_host, password=password),
-            "core/Reboot",
-        )
+        with self.lock:
+            now = time.monotonic()
+            last_restart = self.node_restart_cooldowns.get(clean_id)
+            if (
+                last_restart is not None
+                and now - last_restart < NODE_RESTART_COOLDOWN_SECONDS
+            ):
+                raise RouterError("该 Node 正在重启，请等待其恢复在线。")
+            self.node_restart_cooldowns[clean_id] = now
+        try:
+            response = jnap_mutating_call(
+                RouterSession(host=node_host, password=password),
+                "core/Reboot",
+            )
+        except Exception:
+            with self.lock:
+                self.node_restart_cooldowns.pop(clean_id, None)
+            raise
         if response.get("result") != "OK":
+            with self.lock:
+                self.node_restart_cooldowns.pop(clean_id, None)
             raise RouterError(
                 "Node 未接受重启请求："
                 + str(response.get("error") or response.get("result") or "未知错误")

@@ -20,6 +20,7 @@ single-Node restart sent directly to the selected Node's CA JNAP endpoint.
 - Read-only per-Node capability probe using credentials synchronized from Main
 - Hidden Linksys child-Node support entry: `https://<node-ip>/ca`
 - One-click restart for the selected online Node
+- Restart progress shown on the topology card until recovery is observed
 
 The UI and backend are dependency-free at runtime: Python's standard library
 serves the app and communicates with the router; the frontend is plain
@@ -98,9 +99,10 @@ Detailed evidence:
 Router calls are guarded by two backend allowlists. Observation operations must
 start with `Get` or `Check`. The mutation allowlist contains only
 `core/Reboot`, and the backend requires the target to be a known online Node
-whose address came from the live topology. Reset, steering changes, firmware
-updates, and every other mutation are rejected before a router request is
-created.
+whose address came from the live topology. A 90-second per-Node cooldown blocks
+duplicate restart requests while the frontend observes offline/recovery state.
+Reset, steering changes, firmware updates, and every other mutation are
+rejected before a router request is created.
 
 No password, authentication token, or browser session data is written to disk
 or returned by an API response.
@@ -112,10 +114,12 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 node --test \
   tests/test_refresh_state.js \
   tests/test_topology_layout.js \
-  tests/test_detail_data.js
+  tests/test_detail_data.js \
+  tests/test_node_restart_state.js
 ```
 
 The Python suite verifies topology normalization, Node probes, the read-only
 allowlist, and selected/online restart targeting without contacting a router.
 The JavaScript suite covers refresh state, parent-subtree layout, Client/STA
-association, and Node capability reporting.
+association, the full Node detail field inventory, capability reporting, and
+the requested/offline/recovered restart state machine.
