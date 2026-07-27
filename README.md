@@ -108,6 +108,7 @@ Detailed evidence:
 - [WHW03 firmware and SSH scaffold analysis](docs/whw03-firmware-analysis.md)
 - [MX4200 firmware, steering, reboot, and SSH analysis](docs/mx4200-firmware-analysis.md)
 - [MX4200 SSH bootstrap and exact-Parent control plan](docs/mx4200-ssh-parent-control.md)
+- [MX4200 MQTT control and custom-IMG feasibility](docs/mx4200-mqtt-and-custom-img.md)
 
 ## Safety model
 

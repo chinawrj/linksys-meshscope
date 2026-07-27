@@ -1,13 +1,14 @@
 # MX4200 1.0.13.210200 firmware analysis
 
-Analysis date: 2026-07-27
+Analysis dates: 2026-07-27 to 2026-07-28
 
 This is a static, offline and isolated user-mode analysis of
 `FW_MX4200_1.0.13.210200_prod.img`, followed by a filesystem comparison with
 the official `FW_MX4200_1.0.13.216903_prod.img`. macOS denied terminal access
 to the OneDrive file-provider directory, so the older inspected input was the
 same-named local copy in `~/Downloads`. The SHA-256 values are recorded below.
-No firmware image was modified.
+The initial pass did not modify an image; the 2026-07-28 follow-up produced an
+ignored, offline-only SSH proof image and validated it with the stock updater.
 
 Firmware binaries and extracted files are ignored by Git and must not be
 published with MeshScope. No request was sent to a router, and none of the
@@ -334,9 +335,10 @@ The detailed bootstrap, rollback, and Parent-control state machine is in
 
 `/etc/fwcaps.sig` is absent and `/etc/fwcaps.force` is present. The updater
 calls `fwcc verify_signature`; on this image the Linksys-footer validation path
-checks footer magic and the POSIX checksum described above. A modified image
-may therefore be accepted after a correct repack and footer update, but this
-does not make flashing safe.
+checks footer magic and the POSIX checksum described above. The follow-up
+rebuilt the SquashFS and UBI, updated that footer, and the actual stock
+`216903` `fwcc verify_signature` returned success. This establishes updater
+format acceptance, not safe hardware boot.
 
 The scripts inspect `fwup_boot_part`, select `kernel` or `alt_kernel`, erase
 the target, and use `nandwrite -p` for NAND. They also contain an eMMC path and
@@ -352,7 +354,10 @@ record:
 - the actual UBI volume size on the target hardware; and
 - a serial/UART recovery route.
 
-No modified or flashable image was produced during this analysis.
+An offline proof image was produced in ignored analysis storage. It is not
+published or designated ready to flash. Its exact build, hashes, validation,
+and remaining physical checks are documented in
+[MX4200 MQTT control and custom-IMG feasibility](mx4200-mqtt-and-custom-img.md).
 
 ## Cross-model matrix
 

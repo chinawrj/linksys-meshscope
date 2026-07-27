@@ -303,17 +303,22 @@ and unsuitable for bootstrap. Downgrading a production router or exposing the
 vulnerable service would create unnecessary risk. No exploit automation is
 included.
 
-### D. Repacked OEM image — highest avoidable risk
+### D. Repacked OEM image — offline format proven, physical risk remains
 
-The Linksys container has no FIT signature node and its footer checksum can
-be reproduced, but that only addresses format acceptance. It does not solve:
+The 2026-07-28 follow-up injected the verified Dropbear payload, rebuilt a
+kernel-compatible SquashFS and UBI, and produced a Linksys-footer image that
+the stock `216903` `fwcc verify_signature` accepted. That closes the offline
+format and capacity questions. It does not solve:
 
-- the nearly full SquashFS volume;
 - NAND bad-block and UBI geometry correctness;
 - A/B boot recovery; or
 - rollback if early userspace fails.
 
-Repacking is not justified when the persistent `syscfg` hook already exists.
+UART or a temporary initramfs remains preferable when available because it
+does not rewrite a firmware slot. The custom-image route is nevertheless a
+viable non-exploit bootstrap once recovery and live slot geometry are
+verified. See
+[MX4200 MQTT control and custom-IMG feasibility](mx4200-mqtt-and-custom-img.md).
 
 ## SSH rollback design
 
