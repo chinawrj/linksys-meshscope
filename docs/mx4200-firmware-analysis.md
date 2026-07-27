@@ -3,10 +3,11 @@
 Analysis date: 2026-07-27
 
 This is a static, offline and isolated user-mode analysis of
-`FW_MX4200_1.0.13.210200_prod.img`. macOS denied terminal access to the
-OneDrive file-provider directory, so the inspected input was the same-named
-local copy in `~/Downloads`. Its SHA-256 is recorded below so the OneDrive
-object can be compared later. Neither copy was modified.
+`FW_MX4200_1.0.13.210200_prod.img`, followed by a filesystem comparison with
+the official `FW_MX4200_1.0.13.216903_prod.img`. macOS denied terminal access
+to the OneDrive file-provider directory, so the older inspected input was the
+same-named local copy in `~/Downloads`. The SHA-256 values are recorded below.
+No firmware image was modified.
 
 Firmware binaries and extracted files are ignored by Git and must not be
 published with MeshScope. No request was sent to a router, and none of the
@@ -40,9 +41,11 @@ design more strongly than the UI label alone.
 
 No ordinary administrator JNAP action, hidden web page, stock test server, or
 anonymous MQTT route was found that exposes the exact Parent tuple. The
-firmware still contains the same incomplete SSH scaffold as WHW03, so a
-controlled Dropbear bootstrap remains the most plausible future command
-transport.
+firmware still contains the same incomplete SSH scaffold as WHW03. A Dropbear
+payload built with Linksys's exact published ARM/uClibc toolchain was
+successfully executed against both MX4200 root filesystems under QEMU. This
+changes the remaining problem from ABI feasibility to a safe, recoverable
+installation transport.
 
 ## Image identity
 
@@ -66,6 +69,23 @@ The final 256-byte Linksys footer contains:
 
 The POSIX `cksum` of every byte except the footer is decimal `884515047`,
 hexadecimal `34B8A0E7`, matching the checksum field.
+
+The official current comparison image is:
+
+| Field | Value |
+| --- | --- |
+| Firmware | `1.0.13.216903` |
+| File size | 38,404,096 bytes (`0x24A0000`) |
+| SHA-256 | `b0a954835c879822fd1a2da23f09a6ec37da69914aacf07d8038b06fa02fad25` |
+| SquashFS timestamp | 2026-05-14 15:17:35 UTC |
+| SquashFS exact size | 30,727,506 bytes |
+| Embedded volume capacity | 30,728,192 bytes |
+| Embedded margin | 686 bytes |
+
+Linksys's release notes describe `216903` as removing cloud services and
+supporting local login only. Its complete root filesystem still contains no
+SSH daemon. The SSH scaffold and exact-Parent control files listed in the
+companion implementation plan are byte-identical to `210200`.
 
 ## Container layout
 
@@ -250,7 +270,8 @@ correct local support entry on this build as well.
 
 ## SSH scaffold
 
-The image contains the same intended-but-incomplete SSH plumbing as WHW03:
+Complete, case-sensitive extractions of both `210200` and `216903` contain the
+same intended-but-incomplete SSH plumbing:
 
 - Dropbear RSA and DSS private host-key files;
 - `/etc/registration.d/15_ssh_server`, which names
@@ -260,17 +281,54 @@ The image contains the same intended-but-incomplete SSH plumbing as WHW03:
 - `service_init.sh`, which synchronizes the encrypted local HTTP administrator
   password hash to both `root` and `admin`.
 
-It contains no `dropbear`, `dropbearmulti`, `sshd`, `ssh`, `scp`, or
-`sftp-server` executable, and no `service_sshd.sh`.
+Both contain no `dropbear`, `dropbearmulti`, `sshd`, `ssh`, `scp`, or
+`sftp-server` executable, and no `service_sshd.sh`. No SSH protocol banner or
+implementation is embedded in another multi-call binary. The official
+`210200` GPL archive likewise contains no Dropbear/OpenSSH source or service
+script. There is no daemon for a hidden Boolean setting to enable.
+
+Disassembly of `/etc/registration.d/15_ssh_server` confirms that it is only a
+service-manager registrar. It registers the name `sshd`, the absent handler
+`/etc/init.d/service_sshd.sh`, and LAN/WAN status events; it is not an SSH
+server.
+
+`/etc/registration.d/01_init` creates:
+
+```text
+root:x:0:0::/:/bin/sh
+admin:x:1000:1000:Admin User:/tmp/home/admin:/bin/sh
+sshd:x:22:22::/var/empty:/sbin/nologin
+```
+
+`service_init.sh` applies the encrypted `http_admin_password` value to the
+`root` and `admin` shadow entries. The serial console is also active through
+`getty -L ttyMSM0 115200`.
 
 The embedded factory host keys are public because they ship in the firmware
 image and must never be reused. A future bootstrap should generate a unique
 key per Node, store it in persistent `/var/config`, use public-key-only access
 initially, and bind only to the LAN/mesh management side.
 
-Because MX4200 and WHW03 both use ARM EABI5/uClibc, one carefully built
-Dropbear payload may be ABI-compatible with both families. Library versions
-and symbols still have to be checked before sharing a dynamic build.
+### Verified daemon build
+
+Dropbear `2026.93` was cross-compiled with Linksys's published
+GCC 5.2.0/uClibc 1.0.14 toolchain. The stripped 247,784-byte
+`dropbearmulti` has SHA-256
+`e670aec336b9c7944ed51e03469d360623ea37efacde2950832ded8486fc8e61`.
+
+Its complete dynamic dependency set is present in `216903`. Under isolated
+ARM user-mode QEMU it executes against both MX4200 root filesystems, generates
+an Ed25519 host key, binds a test port, presents
+`SSH-2.0-dropbear_2026.93`, and completes a host-key scan. The binary is kept
+in ignored analysis storage rather than committed.
+
+This verifies ABI compatibility. It does not itself place the payload on a
+router. The preferred persistence point is `/var/config/run_scripts`, backed
+by the writable `syscfg` UBIFS partition rather than either read-only
+SquashFS boot slot.
+
+The detailed bootstrap, rollback, and Parent-control state machine is in
+[MX4200 SSH bootstrap and exact-Parent control plan](mx4200-ssh-parent-control.md).
 
 ## Firmware acceptance and A/B behavior
 
