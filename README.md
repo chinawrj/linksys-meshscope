@@ -42,6 +42,14 @@ http://127.0.0.1:8765
 
 On macOS, `Start MeshScope.command` starts the local service and opens the page.
 
+When the router is offline, the complete topology and detail interaction can be
+reviewed with synthetic data. Demo mode never authenticates a router and
+rejects every restart request:
+
+```bash
+python3 linksys_mesh_app.py --demo
+```
+
 For an automatic startup connection, pass the password through an environment
 variable:
 
@@ -78,9 +86,12 @@ router.
 
 ## Steering and restart findings
 
-The inspected firmware exposes automatic global Client Steering and Node
-Steering settings. No supported action with both a child ID and target Parent ID
-was found, so MeshScope does not claim or expose manual Parent pinning.
+The public UI/JNAP surface exposes only automatic global Client Steering and
+Node Steering settings. Offline WHW03 and MX4200 firmware analysis found the
+same undocumented shell-level data path that requests a specific Parent radio
+for one child Node. It is runtime steering rather than a proven persistent
+pin, lacks important safety validation, and still has no ordinary admin-web
+transport. MeshScope therefore does not expose it yet.
 
 The CA Troubleshooting applet exposes Restart on a Node that advertises
 `nodes/setup/Setup3`, but sends `core/Reboot` without a target `deviceID`.
@@ -93,6 +104,9 @@ Detailed evidence:
 
 - [BigTree Node control feasibility](docs/node-control-findings.md)
 - [Node Steering findings](docs/node-steering-findings.md)
+- [Hidden firmware interfaces and Parent steering](docs/hidden-firmware-interfaces.md)
+- [WHW03 firmware and SSH scaffold analysis](docs/whw03-firmware-analysis.md)
+- [MX4200 firmware, steering, reboot, and SSH analysis](docs/mx4200-firmware-analysis.md)
 
 ## Safety model
 

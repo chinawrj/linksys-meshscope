@@ -1,0 +1,47 @@
+name: Test MeshScope
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check Python syntax
+        run: python -m py_compile linksys_mesh_app.py
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check mesh_web/app.js
+          node --check mesh_web/detail-data.js
+          node --check mesh_web/node-restart-state.js
+          node --check mesh_web/refresh-state.js
+          node --check mesh_web/topology-layout.js
+
+      - name: Run JavaScript tests
+        run: |
+          node --test \
+            tests/test_refresh_state.js \
+            tests/test_topology_layout.js \
+            tests/test_detail_data.js \
+            tests/test_node_restart_state.js

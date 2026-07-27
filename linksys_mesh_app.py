@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import base64
 import concurrent.futures
+import copy
 import ipaddress
 import json
 import mimetypes
@@ -79,6 +80,7 @@ class RouterSession:
 class MeshState:
     def __init__(self) -> None:
         self.session = RouterSession()
+        self.demo = False
         self.cache: dict[str, Any] | None = None
         self.cache_at = 0.0
         self.node_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
@@ -88,13 +90,27 @@ class MeshState:
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {
-                "connected": self.session.connected,
+                "connected": self.demo or self.session.connected,
+                "demo": self.demo,
                 "router": self.session.host,
                 "connectedAt": self.session.connected_at,
                 "cachedAt": self.cache.get("meta", {}).get("updatedAt") if self.cache else None,
             }
 
+    def enable_demo(self, host: str = DEFAULT_ROUTER) -> dict[str, Any]:
+        """Enable a synthetic, mutation-free topology for offline UI review."""
+        with self.lock:
+            self.demo = True
+            self.session = RouterSession(host=host, connected_at=now_iso())
+            self.cache = build_demo_topology(host)
+            self.cache_at = time.monotonic()
+            self.node_probe_cache.clear()
+            self.node_restart_cooldowns.clear()
+            return copy.deepcopy(self.cache)
+
     def connect(self, host: str, password: str) -> dict[str, Any]:
+        if self.demo:
+            raise RouterError("演示模式不会连接或认证真实路由器。")
         clean_host = validate_router_host(host)
         if not password:
             raise RouterError("请输入本地路由器密码。")
@@ -115,6 +131,8 @@ class MeshState:
 
     def disconnect(self) -> None:
         with self.lock:
+            if self.demo:
+                return
             self.session.clear()
             self.cache = None
             self.cache_at = 0.0
@@ -123,6 +141,12 @@ class MeshState:
 
     def refresh(self, force: bool = False) -> dict[str, Any]:
         with self.lock:
+            if self.demo:
+                topology = copy.deepcopy(self.cache or build_demo_topology(self.session.host))
+                topology["meta"]["updatedAt"] = now_iso()
+                self.cache = topology
+                self.cache_at = time.monotonic()
+                return copy.deepcopy(topology)
             if not self.session.connected:
                 raise RouterError("尚未连接路由器。")
             if not force and self.cache and time.monotonic() - self.cache_at < 4:
@@ -170,6 +194,15 @@ class MeshState:
             raise RouterError("缺少 Node ID。")
 
         with self.lock:
+            if self.demo:
+                topology = self.cache or build_demo_topology(self.session.host)
+                node = next(
+                    (item for item in topology.get("nodes", []) if item.get("id") == clean_id),
+                    None,
+                )
+                if not node:
+                    raise RouterError("未找到指定 Node。")
+                return demo_node_probe(node)
             if not self.session.connected:
                 raise RouterError("尚未连接路由器。")
             cached_probe = self.node_probe_cache.get(clean_id)
@@ -246,7 +279,12 @@ class MeshState:
             },
             "manualParentSelection": {
                 "available": False,
-                "reason": "Topology Optimization only exposes global automatic steering settings.",
+                "transport": "not-available",
+                "firmwareInternalPathDiscovered": True,
+                "reason": (
+                    "MX4200 and WHW03 firmware contain the exact internal Parent "
+                    "steering data path, but ordinary admin JNAP exposes no safe transport."
+                ),
             },
             "observedAt": now_iso(),
         }
@@ -260,6 +298,8 @@ class MeshState:
         if not clean_id:
             raise RouterError("缺少 Node ID。")
         with self.lock:
+            if self.demo:
+                raise RouterError("演示模式不会向任何 Node 发送重启请求。")
             if not self.session.connected:
                 raise RouterError("尚未连接路由器。")
             topology = self.cache
@@ -433,6 +473,290 @@ def signal_quality(rssi: int | float | None) -> dict[str, Any]:
     if value >= -75:
         return {"label": "一般", "score": score, "tone": "warn"}
     return {"label": "较弱", "score": score, "tone": "bad"}
+
+
+def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
+    """Return a full synthetic topology used only by the explicit --demo mode."""
+    node_specs = [
+        {
+            "id": "demo-main",
+            "name": "Main",
+            "ipAddress": host,
+            "model": "MX42",
+            "isAuthority": True,
+            "parentId": None,
+            "band": None,
+            "channel": None,
+            "rssi": None,
+            "speedMbps": None,
+            "clientCount": 6,
+        },
+        {
+            "id": "demo-big-tree",
+            "name": "BigTree",
+            "ipAddress": "10.37.1.208",
+            "model": "WHW03",
+            "isAuthority": False,
+            "parentId": "demo-main",
+            "band": "5GH",
+            "channel": 149,
+            "rssi": -62,
+            "speedMbps": 119,
+            "clientCount": 0,
+        },
+        {
+            "id": "demo-door-corner",
+            "name": "DoorCorner",
+            "ipAddress": "10.37.1.132",
+            "model": "MX5300",
+            "isAuthority": False,
+            "parentId": "demo-main",
+            "band": "5GL",
+            "channel": 44,
+            "rssi": -57,
+            "speedMbps": 444,
+            "clientCount": 10,
+        },
+        {
+            "id": "demo-yard-east",
+            "name": "YardEast-Wi-Fi6",
+            "ipAddress": "10.37.1.104",
+            "model": "MX42",
+            "isAuthority": False,
+            "parentId": "demo-main",
+            "band": "5GH",
+            "channel": 149,
+            "rssi": -65,
+            "speedMbps": 241,
+            "clientCount": 3,
+        },
+        {
+            "id": "demo-parent-room",
+            "name": "ParentRoom",
+            "ipAddress": "10.37.1.122",
+            "model": "MX5300",
+            "isAuthority": False,
+            "parentId": "demo-door-corner",
+            "band": "5GH",
+            "channel": 149,
+            "rssi": -54,
+            "speedMbps": 308,
+            "clientCount": 2,
+        },
+        {
+            "id": "demo-road-south",
+            "name": "RoadSouth",
+            "ipAddress": "10.37.1.44",
+            "model": "WHW03",
+            "isAuthority": False,
+            "parentId": "demo-big-tree",
+            "band": "5GL",
+            "channel": 44,
+            "rssi": -69,
+            "speedMbps": 122,
+            "clientCount": 1,
+        },
+    ]
+    node_names = {item["id"]: item["name"] for item in node_specs}
+    nodes: list[dict[str, Any]] = []
+    for index, spec in enumerate(node_specs, start=1):
+        quality = signal_quality(spec["rssi"])
+        nodes.append(
+            {
+                **spec,
+                "location": spec["name"],
+                "role": "主节点" if spec["isAuthority"] else "子节点",
+                "online": True,
+                "description": "Linksys Velop Mesh Node",
+                "hardwareVersion": "2" if spec["model"] == "WHW03" else "1",
+                "firmwareVersion": (
+                    "2.1.20.216892" if spec["model"] == "WHW03" else "1.0.13.216903"
+                ),
+                "firmwareDate": "2026-07-01",
+                "serialNumber": f"DEMO-NODE-{index:02d}",
+                "macAddress": f"02:00:00:00:10:{index:02X}",
+                "parentIpAddress": next(
+                    (
+                        parent["ipAddress"]
+                        for parent in node_specs
+                        if parent["id"] == spec["parentId"]
+                    ),
+                    None,
+                ),
+                "parentName": node_names.get(spec["parentId"]),
+                "connectionType": "Gateway" if spec["isAuthority"] else "Wireless",
+                "quality": quality,
+                "timestamp": now_iso(),
+                "managementUrl": (
+                    f"https://{spec['ipAddress']}/ca" if spec["ipAddress"] else None
+                ),
+                "managementEntry": "ca-support",
+            }
+        )
+
+    client_names = {
+        "demo-main": [
+            "Work-MacBook",
+            "LivingRoom-TV",
+            "Phone-01",
+            "HomePod",
+            "Gate-Camera",
+            "ESP-Sensor",
+        ],
+        "demo-door-corner": [
+            "Office-PC",
+            "Tablet-01",
+            "Kitchen-Speaker",
+            "Doorbell",
+            "Printer",
+            "Phone-02",
+            "Watch",
+            "Camera-East",
+            "Air-Purifier",
+            "ESP-Meter",
+        ],
+        "demo-yard-east": ["Garden-Camera", "Irrigation", "Weather-Station"],
+        "demo-parent-room": ["Parent-iPad", "Bedroom-TV"],
+        "demo-road-south": ["Road-Camera"],
+    }
+    def demo_client_type(name: str) -> str:
+        normalized = name.lower()
+        if any(token in normalized for token in ("macbook", "pc", "printer")):
+            return "computer"
+        if any(token in normalized for token in ("ipad", "tablet")):
+            return "tablet"
+        if any(token in normalized for token in ("phone",)):
+            return "phone"
+        if any(token in normalized for token in ("watch",)):
+            return "wearable"
+        if any(token in normalized for token in ("tv", "homepod", "speaker")):
+            return "media"
+        if any(token in normalized for token in ("camera", "doorbell")):
+            return "camera"
+        return "iot"
+
+    clients: list[dict[str, Any]] = []
+    client_index = 0
+    for node_id, names in client_names.items():
+        for local_index, name in enumerate(names):
+            client_index += 1
+            rssi = -47 - (client_index * 3 % 28)
+            band = "5GHz" if client_index % 3 else "2.4GHz"
+            clients.append(
+                {
+                    "id": f"demo-client-{client_index:02d}",
+                    "name": name,
+                    "online": True,
+                    "type": demo_client_type(name),
+                    "model": "Synthetic Client",
+                    "manufacturer": "Demo Fixture",
+                    "operatingSystem": "Demo OS",
+                    "macAddress": f"02:00:00:20:{client_index // 256:02X}:{client_index % 256:02X}",
+                    "ipAddress": f"10.37.1.{150 + client_index}",
+                    "parentId": node_id,
+                    "nodeId": node_id,
+                    "nodeName": node_names[node_id],
+                    "band": band,
+                    "radioId": "RADIO_5GHz" if band == "5GHz" else "RADIO_2.4GHz",
+                    "rssi": rssi,
+                    "quality": signal_quality(rssi),
+                    "speedMbps": 72 + (client_index * 37 % 540),
+                    "isGuest": False,
+                    "lastSeen": now_iso(),
+                    "userLabel": name,
+                }
+            )
+
+    online_backhaul = [node for node in nodes if not node["isAuthority"]]
+    return {
+        "meta": {
+            "source": "MeshScope 演示数据 · 不连接路由器",
+            "router": host,
+            "updatedAt": now_iso(),
+            "revision": "demo",
+            "demo": True,
+        },
+        "network": {
+            "manufacturer": "Linksys",
+            "model": "MX42",
+            "description": "Synthetic offline MeshScope topology",
+            "firmwareVersion": "1.0.13.216903",
+            "firmwareDate": "2026-07-01",
+            "serialNumber": "DEMO-AUTHORITY",
+            "wanStatus": "Connected",
+            "wanType": "DHCP",
+            "wanIpAddress": "203.0.113.10",
+            "lanIpAddress": host,
+            "hostName": "MeshScope-Demo",
+            "radioCount": 3,
+            "clientSteeringEnabled": True,
+            "nodeSteeringEnabled": True,
+            "nodeSteeringMode": "automatic",
+            "manualParentSelectionAvailable": False,
+            "manualParentSelectionEvidence": "firmware-internal-confirmed",
+            "manualParentSelectionTransport": "not-available",
+            "documentedRestartScope": "single-node",
+            "individualNodeRestartAvailable": True,
+            "individualNodeRestartProbe": "firmware-confirmed",
+            "individualNodeRestartEvidence": "reset_slave_nodes-direct-jnap",
+        },
+        "summary": {
+            "nodesOnline": len(nodes),
+            "nodesTotal": len(nodes),
+            "clientsOnline": len(clients),
+            "clientsKnown": len(clients),
+            "weakNodes": sum(
+                1 for node in online_backhaul if node["quality"]["tone"] in ("warn", "bad")
+            ),
+            "backhaulMbps": sum(node["speedMbps"] for node in online_backhaul),
+        },
+        "nodes": nodes,
+        "clients": clients,
+    }
+
+
+def demo_node_probe(node: dict[str, Any]) -> dict[str, Any]:
+    """Return an explicit non-live capability report for one demo Node."""
+    return {
+        "demo": True,
+        "nodeId": node.get("id"),
+        "name": node.get("name"),
+        "ipAddress": node.get("ipAddress"),
+        "managementUrl": node.get("managementUrl"),
+        "managementEntry": "ca-support",
+        "credentialsSynchronized": False,
+        "deviceMode": "Demo",
+        "identity": {
+            "model": node.get("model"),
+            "hardwareVersion": node.get("hardwareVersion"),
+            "firmwareVersion": node.get("firmwareVersion"),
+            "serialNumber": node.get("serialNumber"),
+        },
+        "services": {
+            "coreReboot": True,
+            "nodesSetup3": True,
+            "topologyOptimization2": True,
+        },
+        "topologyOptimization": {
+            "clientSteeringEnabled": True,
+            "nodeSteeringEnabled": True,
+        },
+        "individualRestart": {
+            "visibleInCaSupportUi": False,
+            "action": "core/Reboot",
+            "hasTargetDeviceId": False,
+            "scope": "single-node",
+            "executed": False,
+            "disabledInDemo": True,
+        },
+        "manualParentSelection": {
+            "available": False,
+            "transport": "not-available",
+            "firmwareInternalPathDiscovered": True,
+            "reason": "演示模式只展示能力证据，不连接或控制路由器。",
+        },
+        "observedAt": now_iso(),
+    }
 
 
 def device_type(device: dict[str, Any]) -> str:
@@ -673,9 +997,12 @@ def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, A
             "nodeSteeringEnabled": topology_optimization.get("isNodeSteeringEnabled"),
             "nodeSteeringMode": "automatic",
             "manualParentSelectionAvailable": False,
+            "manualParentSelectionEvidence": "firmware-internal-confirmed",
+            "manualParentSelectionTransport": "not-available",
             "documentedRestartScope": "single-node",
             "individualNodeRestartAvailable": True,
-            "individualNodeRestartProbe": "owner-confirmed",
+            "individualNodeRestartProbe": "firmware-confirmed",
+            "individualNodeRestartEvidence": "reset_slave_nodes-direct-jnap",
         },
         "summary": {
             "nodesOnline": len(online_nodes),
@@ -789,19 +1116,28 @@ def parse_args() -> argparse.Namespace:
         default="LINKSYS_PASSWORD",
         help="Optional environment variable used to connect at startup.",
     )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Serve a synthetic read-only topology without connecting to a router.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     STATE.session.host = validate_router_host(args.router)
-    startup_password = os.environ.get(args.password_env)
-    if startup_password:
-        try:
-            STATE.connect(args.router, startup_password)
-            print(f"Connected to Linksys router at {args.router}.")
-        except RouterError as exc:
-            print(f"Startup connection failed: {exc}")
+    if args.demo:
+        STATE.enable_demo(args.router)
+        print("MeshScope demo mode enabled; no router calls or mutations are allowed.")
+    else:
+        startup_password = os.environ.get(args.password_env)
+        if startup_password:
+            try:
+                STATE.connect(args.router, startup_password)
+                print(f"Connected to Linksys router at {args.router}.")
+            except RouterError as exc:
+                print(f"Startup connection failed: {exc}")
     server = ThreadingHTTPServer((args.host, args.port), MeshRequestHandler)
     print(f"MeshScope is running at http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop.")

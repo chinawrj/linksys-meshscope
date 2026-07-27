@@ -221,6 +221,12 @@ button {
   animation: none;
 }
 
+.live-chip.demo .status-dot {
+  background: var(--amber);
+  box-shadow: 0 0 0 5px rgba(199, 129, 43, 0.12);
+  animation: none;
+}
+
 .icon-button {
   width: 40px;
   height: 40px;
@@ -1552,6 +1558,11 @@ footer {
 .node-capability.unverified > i {
   background: var(--amber-soft);
   color: #9b6825;
+}
+
+.node-capability.internal > i {
+  background: linear-gradient(135deg, var(--blue-soft), var(--mint-soft));
+  color: var(--blue);
 }
 
 .node-capability span,

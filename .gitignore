@@ -15,3 +15,5 @@ router_upgrade.json
 router_topology_upgrade_plan.json
 router_upgrade_plan.json
 router_upgrade_plan.local.json
+firmware-analysis/input/
+firmware-analysis/work/

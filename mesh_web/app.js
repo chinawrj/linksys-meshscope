@@ -14,6 +14,7 @@ const state = {
   refreshing: false,
   topologyAnimationFrame: null,
   detailToken: 0,
+  detailSelection: null,
   nodeRestarts: new Map(),
 };
 
@@ -122,7 +123,10 @@ function updateRefreshLabel() {
   for (const mode of ["refreshing", "paused", "stale", "error"]) {
     chip.classList.toggle(mode, status.mode === mode);
   }
-  $("#liveText").textContent = status.text;
+  chip.classList.toggle("demo", state.topology?.meta?.demo === true);
+  $("#liveText").textContent = state.topology?.meta?.demo
+    ? `演示 · ${status.text}`
+    : status.text;
 }
 
 function scheduleAutoRefresh() {
@@ -172,12 +176,19 @@ function healthScore(data) {
 function renderSummary(data) {
   const { summary, network, meta } = data;
   $("#routerLabel").textContent = meta.router;
-  $("#networkStatus").textContent = network.wanStatus === "Connected" ? "运行正常" : network.wanStatus || "状态未知";
-  $("#lastUpdated").textContent = `更新于 ${formatTime(meta.updatedAt)}`;
+  $("#heroCopy").textContent = meta.demo
+    ? "用完整离线演示数据检查节点层级、回程质量与 Client / STA 交互；不会连接或修改路由器。"
+    : "实时查看每个 Velop 节点、回程质量与当前接入设备。所有数据仅在本机与路由器之间流动。";
+  $("#networkStatus").textContent = meta.demo
+    ? "离线演示数据"
+    : network.wanStatus === "Connected"
+      ? "运行正常"
+      : network.wanStatus || "状态未知";
+  $("#lastUpdated").textContent = `${meta.demo ? "未连接路由器 · " : ""}更新于 ${formatTime(meta.updatedAt)}`;
   $("#statNodes").textContent = `${summary.nodesOnline}/${summary.nodesTotal}`;
   $("#statNodesSub").textContent = `${summary.nodesTotal - summary.nodesOnline} 个离线节点`;
   $("#statClients").textContent = compactNumber(summary.clientsOnline);
-  $("#statClientsSub").textContent = `${summary.clientsKnown} 个历史设备记录`;
+  $("#statClientsSub").textContent = `${summary.clientsKnown} 个已知设备记录`;
   $("#statBackhaul").textContent = summary.backhaulMbps ? `${compactNumber(summary.backhaulMbps)}M` : "—";
   $("#statBackhaulSub").textContent = "在线节点协商速率合计";
   $("#statAttention").textContent = compactNumber(summary.weakNodes + (summary.nodesTotal - summary.nodesOnline));
@@ -192,13 +203,23 @@ function renderSummary(data) {
       : network.nodeSteeringEnabled === false
         ? "自动 · 已关闭"
         : "固件未报告";
-  $("#manualSteering").textContent = network.manualParentSelectionAvailable ? "支持" : "未发现接口";
+  $("#manualSteering").textContent = network.manualParentSelectionAvailable
+    ? "支持"
+    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
+      ? "内部已确认 · 未开放"
+      : "未发现接口";
   $("#steeringTitle").textContent =
     network.nodeSteeringEnabled === true ? "自动 Node Steering 已开启" : "自动 Node Steering 未开启";
   $("#steeringDescription").textContent = network.manualParentSelectionAvailable
     ? "固件报告了手动 Parent 选择能力。"
-    : "固件会自动选择最强信号并自愈；未发现可把子节点锁定到指定 Parent 的受支持接口。";
-  $("#steeringMode").textContent = network.manualParentSelectionAvailable ? "MANUAL AVAILABLE" : "AUTO ONLY";
+    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
+      ? "MX4200/WHW03 固件内部已确认指定 Parent 数据路径；当前 Web/JNAP 没有安全传输入口，因此保持只读。"
+      : "固件会自动选择最强信号并自愈；未发现可把子节点锁定到指定 Parent 的受支持接口。";
+  $("#steeringMode").textContent = network.manualParentSelectionAvailable
+    ? "MANUAL AVAILABLE"
+    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
+      ? "INTERNAL · NO TRANSPORT"
+      : "AUTO ONLY";
 
   const score = healthScore(data);
   $("#healthRing").style.setProperty("--score", score);
@@ -491,6 +512,7 @@ function nodeClientHtml(client) {
 }
 
 function openDetail(item, kind) {
+  state.detailSelection = { id: item.id, kind };
   const detailToken = ++state.detailToken;
   const isNode = kind === "node";
   const attachedClients = isNode
@@ -619,10 +641,14 @@ async function loadNodeProbe(node, detailToken) {
     if (!probe || !probeLabel || !probeDetail || !restartLabel || !restartDetail) return;
     probe.classList.remove("unavailable");
     probe.classList.add(report.credentialsSynchronized ? "confirmed" : "unverified");
-    probeLabel.textContent = report.credentialsSynchronized
-      ? `${report.deviceMode || "本地"} · 同步凭证已验证`
-      : `${report.deviceMode || "本地"} · 凭证状态未知`;
-    probeDetail.textContent = `${report.identity.model || node.model || "Linksys Node"} 直连身份已确认 · 未执行控制`;
+    probeLabel.textContent = report.demo
+      ? "演示模式 · 未连接真实 Node"
+      : report.credentialsSynchronized
+        ? `${report.deviceMode || "本地"} · 同步凭证已验证`
+        : `${report.deviceMode || "本地"} · 凭证状态未知`;
+    probeDetail.textContent = report.demo
+      ? `${report.identity.model || node.model || "Linksys Node"} 合成身份 · 不执行网络请求`
+      : `${report.identity.model || node.model || "Linksys Node"} 直连身份已确认 · 未执行控制`;
     if (report.individualRestart.visibleInCaSupportUi) {
       const restartButton = $("#restartMeshButton");
       const activeRestart = state.nodeRestarts.get(node.id);
@@ -685,18 +711,31 @@ function reconcileNodeRestarts(data) {
 
 function closeDetail() {
   state.detailToken += 1;
+  state.detailSelection = null;
   $("#detailBackdrop").classList.remove("open");
   $("#detailDrawer").classList.remove("open");
   $("#detailDrawer").setAttribute("aria-hidden", "true");
 }
 
 function render(data) {
+  const detailSelection = state.detailSelection;
+  const detailScrollTop = $("#detailDrawer").scrollTop;
   reconcileNodeRestarts(data);
   state.topology = data;
   setConnectionStatus(true);
   renderSummary(data);
   renderTopology(data);
   renderClients();
+  if (detailSelection && $("#detailDrawer").classList.contains("open")) {
+    const collection = detailSelection.kind === "node" ? data.nodes : data.clients;
+    const refreshedItem = collection.find((item) => item.id === detailSelection.id);
+    if (refreshedItem) {
+      openDetail(refreshedItem, detailSelection.kind);
+      $("#detailDrawer").scrollTop = detailScrollTop;
+    } else {
+      closeDetail();
+    }
+  }
   $("#connectModal").classList.add("hidden");
   scheduleAutoRefresh();
 }

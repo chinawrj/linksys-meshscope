@@ -76,10 +76,11 @@ test("preserves every existing node metric and identity field", () => {
   assert.equal(rows.details[3][1], "YardEast-Wi-Fi6");
 });
 
-test("reports a node already proven as an automatic parent without claiming manual control", () => {
+test("reports automatic parent status and internal steering evidence without claiming web control", () => {
   const mesh = {
     network: {
       manualParentSelectionAvailable: false,
+      manualParentSelectionEvidence: "firmware-internal-confirmed",
       individualNodeRestartAvailable: true,
       documentedRestartScope: "single-node",
     },
@@ -99,8 +100,34 @@ test("reports a node already proven as an automatic parent without claiming manu
   const report = nodeCapabilityReport(mesh, mesh.nodes[1]);
   assert.equal(report.parentRole.status, "confirmed");
   assert.deepEqual(report.children.map((node) => node.name), ["RoadSouth"]);
-  assert.equal(report.manualTarget.status, "unsupported");
+  assert.equal(report.manualTarget.status, "internal");
+  assert.match(report.manualTarget.label, /内部已确认/);
   assert.equal(report.individualRestart.status, "available");
   assert.equal(report.localManagement.status, "available");
   assert.equal(report.localManagement.url, "https://10.37.1.208/ca");
+});
+
+test("demo mode keeps capability information but disables live node actions", () => {
+  const mesh = {
+    meta: { demo: true },
+    network: {
+      manualParentSelectionAvailable: false,
+      manualParentSelectionEvidence: "firmware-internal-confirmed",
+      individualNodeRestartAvailable: true,
+    },
+    nodes: [
+      {
+        id: "big",
+        name: "BigTree",
+        online: true,
+        ipAddress: "10.37.1.208",
+        managementUrl: "https://10.37.1.208/ca",
+      },
+    ],
+  };
+  const report = nodeCapabilityReport(mesh, mesh.nodes[0]);
+  assert.equal(report.manualTarget.status, "internal");
+  assert.equal(report.individualRestart.status, "unverified");
+  assert.equal(report.localManagement.status, "unverified");
+  assert.equal(report.localManagement.url, null);
 });

@@ -15,23 +15,34 @@ executed.
 - Current child: `RoadSouth` over `5GL`
 
 The current topology proves that BigTree can act as an automatic upstream
-parent. It does not prove that the firmware can pin another child to BigTree.
+Parent. A later offline WHW03 firmware analysis also found an internal
+backhaul command that can request an exact Parent BSSID/channel. It has not
+been executed against BigTree.
 
 ## Manual Parent selection
 
 The authority firmware advertises `TopologyOptimization` and
 `TopologyOptimization2`. Its UI uses these services only for the global Client
-Steering and Node Steering Boolean settings. No child ID plus target parent ID
-operation was found.
+Steering and Node Steering Boolean settings, and no public child-plus-Parent
+JNAP action was found.
 
-BigTree is therefore a valid **automatic** Parent, but it is not an available
-manual Parent target in the inspected firmware.
+The extracted WHW03 2.1.19 filesystem contains
+`topomgmt`/`pub_bh_config`, which accepts a child UUID and a target radio's
+band, channel, and BSSID. MX4200 1.0.13.210200 independently contains the same
+underlying function and byte-identical publisher, although it omits the
+`topomgmt` wrapper. BigTree is therefore a plausible manual **Steer now**
+target once its live radio tuple and exact installed build are verified. This
+is not evidence of a persistent Parent pin.
 
 Linksys documents a power-on sequence as a way to influence the automatically
 selected upstream chain. This is operational guidance, not a persistent manual
 pin:
 
 <https://support.linksys.com/kb/article/636-en/>
+
+The complete offline command-chain and guardrail analysis is documented in
+[Linksys hidden interfaces and Node Parent steering](hidden-firmware-interfaces.md)
+and [MX4200 firmware analysis](mx4200-firmware-analysis.md).
 
 ## Individual restart
 
@@ -50,7 +61,7 @@ A direct read-only probe authenticated successfully and reported device mode
 context with master-mode or unsupported-mode errors. MeshScope now exposes the
 `/ca` link and performs only `Check`/`Get` calls when a Node detail is opened.
 
-However, the bundled firmware Troubleshooting UI:
+The bundled firmware Troubleshooting UI:
 
 1. labels its action **Restart mesh WiFi system**;
 2. warns that all nodes will restart;
@@ -58,9 +69,10 @@ However, the bundled firmware Troubleshooting UI:
 4. provides no `deviceID` or target-node selector.
 
 The same Troubleshooting applet is deliberately made visible on a Node when
-`nodes/setup/Setup3` is advertised. This is strong evidence that the CA support
-page is the intended service path, but it still does not establish whether the
-untargeted reboot stays local or is coordinated across the mesh.
+`nodes/setup/Setup3` is advertised. More decisively, the MX4200 firmware's
+`/usr/sbin/reset_slave_nodes` implements its single-IP reboot by sending the
+same empty `core/Reboot` request directly to the chosen Node IP. The HTTP
+destination selects the Node, and the reboot stays local to the serving Node.
 
 Linksys' current support documentation likewise exposes **Restart Network** for
 the entire system, not an individual online child-node restart:
