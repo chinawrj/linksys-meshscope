@@ -51,7 +51,7 @@ done
 for path in \
     "$SCRIPT_DIR/linksys_mx_repack.py" \
     "$SCRIPT_DIR/compare_filesystem_trees.py" \
-    "$OVERLAY_DIR/plan-a-strict-bh-config.patch" \
+    "$OVERLAY_DIR/plan-a-strict-steering-io.patch" \
     "$OVERLAY_DIR/plan-b-open-acl.patch" \
     "$OVERLAY_DIR/ubi/mx5300.ini" \
     "$OVERLAY_DIR/ubi/mx4200.ini"; do
@@ -149,7 +149,7 @@ apply_plan() {
     sudo cp -a "$baseline" "$candidate"
     case "$plan" in
         plan-a)
-            patch_file="$OVERLAY_DIR/plan-a-strict-bh-config.patch"
+            patch_file="$OVERLAY_DIR/plan-a-strict-steering-io.patch"
             changed_path=etc/mosquitto/strict.acl
             ;;
         plan-b)
@@ -238,8 +238,14 @@ verify_final_image() {
     printf 'PASS\n' > "$OUTPUT_DIR/verification/$model-$plan-fwcc.txt"
 
     if [[ "$plan" == "plan-a" ]]; then
-        sudo grep -Fxq 'topic write network/+/BH/config' \
-            "$final_rootfs/etc/mosquitto/strict.acl"
+        for permission in \
+            'topic write network/+/BH/config' \
+            'topic read network/+/DEVINFO' \
+            'topic read network/+/BH/status' \
+            'topic write network/BH/status_resend_all'; do
+            sudo grep -Fxq "$permission" \
+                "$final_rootfs/etc/mosquitto/strict.acl"
+        done
         sudo cmp \
             "$baseline/etc/mosquitto/conf.d/default.conf" \
             "$final_rootfs/etc/mosquitto/conf.d/default.conf"
@@ -313,7 +319,7 @@ sudo test -x "$MX4200_BASELINE/usr/sbin/fwcc"
 build_variant \
     mx5300 plan-a "$MX5300_BASELINE" "$MX5300_IMAGE" MX5300 \
     "$MX5300_EXPECTED_SHA256" \
-    FW_MX5300_1.1.12.210066_MQTT_PLAN_A_STRICT_BH_CONFIG.img \
+    FW_MX5300_1.1.12.210066_MQTT_PLAN_A_STRICT_STEERING_IO.img \
     etc/mosquitto/strict.acl
 build_variant \
     mx5300 plan-b "$MX5300_BASELINE" "$MX5300_IMAGE" MX5300 \
@@ -323,7 +329,7 @@ build_variant \
 build_variant \
     mx4200 plan-a "$MX4200_BASELINE" "$MX4200_IMAGE" MX4200 \
     "$MX4200_EXPECTED_SHA256" \
-    FW_MX4200_1.0.13.216903_MQTT_PLAN_A_STRICT_BH_CONFIG.img \
+    FW_MX4200_1.0.13.216903_MQTT_PLAN_A_STRICT_STEERING_IO.img \
     etc/mosquitto/strict.acl
 build_variant \
     mx4200 plan-b "$MX4200_BASELINE" "$MX4200_IMAGE" MX4200 \
@@ -341,7 +347,7 @@ jq -n \
     --arg mx4200_source "$MX4200_EXPECTED_SHA256" \
     '{
       plans: {
-        plan_a: "strict ACL plus network/+/BH/config write permission",
+        plan_a: "strict ACL plus BH/config write, DEVINFO/BH status read, and status resend permissions",
         plan_b: "LAN listener switched from strict.acl to stock open.acl"
       },
       source_sha256: {

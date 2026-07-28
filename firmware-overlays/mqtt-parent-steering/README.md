@@ -4,16 +4,32 @@ These overlays are intentionally small and model-independent. The analyzed
 MX4200 `1.0.13.216903` and MX5300 `1.1.12.210066` firmware images contain
 byte-identical Mosquitto configuration and ACL files.
 
-## Plan A: narrow `BH/config` permission
+## Plan A: narrow steering I/O permissions
 
-`plan-a-strict-bh-config.patch` keeps the stock LAN listener on port 1883 and
-adds only:
+`plan-a-strict-steering-io.patch` keeps the stock LAN listener on port 1883
+and adds only:
 
 ```text
 topic write network/+/BH/config
+topic read network/+/DEVINFO
+topic read network/+/BH/status
+topic write network/BH/status_resend_all
 ```
 
-All other stock `strict.acl` restrictions remain in place.
+An external client first subscribes to the two read Topics, then publishes to
+`network/BH/status_resend_all`. The stock Slave handler republishes DEVINFO,
+WLAN status, and backhaul status, allowing the client to resolve each Parent's
+current `5GL`/`5GH` BSSID and channel before publishing `BH/config`. All other
+stock `strict.acl` restrictions remain in place.
+
+## Offline broker verification
+
+The Plan A rules were loaded into the stock MX5300 ARM Mosquitto 1.6.2 binary
+under QEMU, with separate simulated LAN and localhost listeners. The test
+confirmed delivery for both read Topics and both write Topics. It also
+confirmed that unrelated `network/+/AC/config` writes and
+`network/+/AC/status` reads are not delivered. The reproducible ACL and broker
+configuration are in `tests/fixtures/`.
 
 ## Plan B: stock open ACL
 
