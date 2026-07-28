@@ -15,6 +15,40 @@ SPEC.loader.exec_module(ble_jnap)
 
 
 class LinksysBLEJNAPTests(unittest.TestCase):
+    def test_decodes_configured_linksys_advertisement_rejected_by_app(self):
+        decoded = ble_jnap.decode_manufacturer_data(
+            ble_jnap.parse_hex_bytes("ee:0b:01:01")
+        ).as_dict()
+
+        self.assertEqual("Linksys", decoded["company"])
+        self.assertEqual(1, decoded["connectivity_status"])
+        self.assertEqual("configured", decoded["setup_mode_name"])
+        self.assertTrue(decoded["configured"])
+        self.assertFalse(decoded["official_app_3_6_1_accepts"])
+
+    def test_decodes_all_official_app_setup_modes(self):
+        for mode, name in (
+            (0, "unconfigured-no-limitation"),
+            (4, "unconfigured-slave-only"),
+            (8, "unconfigured-master-only"),
+        ):
+            with self.subTest(mode=mode):
+                decoded = ble_jnap.decode_manufacturer_data(
+                    bytes((0x5C, 0x00, 0x00, mode))
+                ).as_dict()
+                self.assertEqual("Belkin", decoded["company"])
+                self.assertEqual(name, decoded["setup_mode_name"])
+                self.assertFalse(decoded["configured"])
+                self.assertTrue(decoded["official_app_3_6_1_accepts"])
+
+    def test_rejects_bad_manufacturer_data(self):
+        with self.assertRaisesRegex(ValueError, "four bytes"):
+            ble_jnap.decode_manufacturer_data(b"\xee\x0b\x01")
+        with self.assertRaisesRegex(ValueError, "prefix"):
+            ble_jnap.decode_manufacturer_data(b"\x00\x00\x01\x01")
+        with self.assertRaisesRegex(ValueError, "hexadecimal"):
+            ble_jnap.parse_hex_bytes("ee:0b:zz:01")
+
     def test_app_reference_request_and_big_endian_length_frame(self):
         request = ble_jnap.build_request(
             "/nodes/setup/GetVersionInfo",

@@ -111,6 +111,7 @@ Detailed evidence:
 - [MX4200 MQTT control and custom-IMG feasibility](docs/mx4200-mqtt-and-custom-img.md)
 - [MX5300 MQTT, exact-Parent control, and custom-IMG feasibility](docs/mx5300-mqtt-and-custom-img.md)
 - [MX4200/MX5300 BLE and exact-Parent steering](docs/linksys-ble-parent-steering.md)
+- [Offline BLE exact-Parent proof overlay](firmware-overlays/ble-parent-steering/README.md)
 
 ## Safety model
 
@@ -137,8 +138,9 @@ node --test \
 ```
 
 The Python suite verifies topology normalization, Node probes, the read-only
-allowlist, selected/online restart targeting, and offline BLE-JNAP framing
-without contacting a router.
+allowlist, selected/online restart targeting, offline BLE-JNAP framing, and
+Linksys configured/setup advertisement decoding without contacting a router
+or Bluetooth adapter.
 The JavaScript suite covers refresh state, parent-subtree layout, Client/STA
 association, the full Node detail field inventory, capability reporting, and
 the requested/offline/recovered restart state machine.

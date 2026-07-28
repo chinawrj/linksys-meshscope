@@ -9,9 +9,10 @@ or access-control bypass assessment.
 
 The central result is:
 
-1. **BLE is a real local JNAP transport on both models.** A configured Slave
-   remains a BLE Peripheral and runs `btsetup`; the Master becomes the BLE
-   Central.
+1. **BLE is a real local JNAP transport on both models.** Static firmware
+   control flow keeps a configured Slave in the Peripheral role and runs
+   `btsetup`; the Master becomes the BLE Central. A live configured-Slave scan
+   is still required to confirm this on the analyzed hardware.
 2. **The transport is generic enough to carry an arbitrary registered JNAP
    Action.** It is not limited by the phone application's list of setup calls.
 3. **Stock firmware has no registered JNAP Action for an exact Parent.** It can
@@ -34,7 +35,9 @@ steering consumer; a small authenticated bridge is missing between them.”
 
 | Artifact | SHA-256 |
 | --- | --- |
-| Official Linksys Android `3.6.1` APK | `15e5974ba5d2044dfa768614ab8f65751823745f9a6be0da1ca1ec2f824b5425` |
+| Google Play APK pulled from the connected Pixel 8a | `04ebacce487417db0581302ec4a77ec7019ebeb3e3b08e2409450c4371a52e7f` |
+| Independently obtained Linksys Android `3.6.1` APK | `15e5974ba5d2044dfa768614ab8f65751823745f9a6be0da1ca1ec2f824b5425` |
+| `assets/www/app.js`, identical in both APKs | `95dde91064f90f151e56615d39eb8017eba1991c5d06c1af566809d9ebeeaf43` |
 | MX5300 `btsetup` | `79df8dc81fe7340031d488019666eb04a6ebba017dff31fb74cc838dcfe455ff` |
 | MX5300 `btsetup_central` | `5cbb1557e46fb3dae0f6281e551d2ceca6d7f852df541ae2e06dafa87b13baf3` |
 | MX5300 `iotd_ctl` | `769ef0793ae1b83e2a3bfff84d6df59f4d84ddc3a0cc4c530163c4ffcc4b47dc` |
@@ -42,10 +45,12 @@ steering consumer; a small authenticated bridge is missing between them.”
 | MX4200 `btsetup_central` | `921b6a914c817d307187ddca02329911bb2185c68afd6a078c6535c5478db419` |
 | Shared `/etc/btjnap.conf` | `6be2712a7ffd0962577d3e5e604889b4a742add3212a4ffd08c15c3486fb5cea` |
 
-The APK identifies itself as package `com.cisco.connect.cloud`, version
-`3.6.1`, and is signed by `O=Cisco Consumer Products LLC`; the certificate
-SHA-256 is
+Both APKs identify as package `com.cisco.connect.cloud`, version `3.6.1`, and
+are signed by `O=Cisco Consumer Products LLC`; the certificate SHA-256 is
 `11555e56c7d2a21bb97d3a268c97476e2e1711c92ab43d1eb48afc7851b1e761`.
+The complete APK hashes differ, but the BLE-bearing application bundle is
+byte-identical. The Pixel copy is the authoritative installed artifact rather
+than a third-party package copy.
 Google Play describes the Linksys application as using Bluetooth during Velop
 setup. The package name and purpose can be checked on the
 [official Google Play listing](https://play.google.com/store/apps/details?hl=en_US&id=com.cisco.connect.cloud)
@@ -53,6 +58,34 @@ and Linksys's [official installation page](https://support.linksys.com/kb/articl
 
 No APK, extracted vendor binary, router credential, or firmware image is
 committed to this repository.
+
+## Connected Pixel 8a: what offline inspection proves
+
+The USB-connected phone is a Pixel 8a running Android 17. Read-only package and
+system inspection established:
+
+| Property | Evidence |
+| --- | --- |
+| Installer | `com.android.vending` (Google Play) |
+| Version | `3.6.1`, version code `2208632` |
+| SDK range | minimum 28, target 35 |
+| Bluetooth state | enabled |
+| Runtime grants | `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`, fine location, and local-network access granted |
+| App data | not debuggable; private data unavailable through `run-as` |
+| BLE plugin | Cordova `cordova-plugin-bluetoothle` `6.7.4` |
+| Historical capture | HCI snoop setting unset and no saved Linksys session available |
+
+The application is logged in and can show the remote mesh dashboard. That
+proves the account state is useful for later in-range testing, but it cannot
+create a BLE session while the routers are physically absent. AppOps records
+historical scan/connect access, but it does not preserve peer addresses, GATT
+traffic, or Actions and therefore is not a packet capture.
+
+The system bonded-device list contains no Linksys Node. That is consistent with
+the application source: its Linksys setup path calls `connectGatt` directly,
+then discovers, subscribes, and writes. The bundled generic Cordova plugin does
+implement an optional `bond` operation, but exhaustive search of the Linksys
+JavaScript bundle found no invocation of it.
 
 ## Hardware and service lifecycle
 
@@ -79,8 +112,9 @@ the same.
 | `2` | Master | Central | Stopped |
 
 This is the architectural reason to address the **child directly over BLE**.
-A configured child is already connectable as a Peripheral. The Main Node is
-normally not.
+The firmware is designed to leave a configured child advertising and
+connectable as a Peripheral. The Main Node is normally not. This is strong
+static evidence, not a substitute for one future in-range scan.
 
 `backhaul::status` also causes the BLE advertisement to be refreshed. The
 advertisement includes:
@@ -93,6 +127,43 @@ advertisement includes:
 
 The configured raw advertising interval is `0x0800` BLE units, or approximately
 1.28 seconds.
+
+### Why the official application does not show configured Nodes
+
+The four manufacturer bytes accepted by the application have two observed
+prefixes:
+
+| Bytes 0–1 | Vendor label |
+| --- | --- |
+| `5c 00` | Belkin |
+| `ee 0b` | Linksys |
+
+Byte 2 is WAN/backhaul status. The application calls byte 3
+`modeLimitation`, but its own constants and comments establish these meanings:
+
+| Byte 3 | Meaning | Official setup scan |
+| --- | --- | --- |
+| `00` | unconfigured, no limitation | accepted |
+| `04` | unconfigured, Slave-only | accepted |
+| `08` | unconfigured, Master-only | accepted |
+| `01` | configured | rejected |
+
+Both the Android and iOS analyzers accept only `00`, `04`, or `08`. The older
+scanner embedded in the APK is stricter still and compares the complete
+unconfigured records. The configured record is intentionally discarded in
+application JavaScript after the platform BLE scanner reports it. This is an
+application setup-policy filter; it is not evidence that the configured Slave
+stops advertising.
+
+The offline decoder makes the distinction explicit:
+
+```sh
+python3 tools/linksys_ble_jnap.py --manufacturer-data-hex ee:0b:01:01
+```
+
+It reports `configured: true` and
+`official_app_3_6_1_accepts: false` without scanning or accessing a Bluetooth
+adapter.
 
 ## GATT and BLE-JNAP protocol
 
@@ -118,6 +189,29 @@ The textual request contains `Host`, `X-JNAP-Action`,
 feeds. The application-side sender accepts an Action string as a function
 argument; the protocol itself is not hard-coded to a finite Action enum.
 
+The same sender nevertheless hard-codes this header for every phone-originated
+BLE request:
+
+```text
+X-JNAP-Authorization: Basic <base64(admin:admin)>
+```
+
+Some call sites pass `auth: "admin"`. That does not replace the header:
+`jnap.getAuth("admin")` returns a JavaScript header-mutator function, the sender
+places that function in `payload.auth`, and `JSON.stringify` omits function
+properties. The transmitted request therefore remains the default setup
+credential. This is another independent indication that the official phone
+path is setup-only.
+
+Configured-node authorization is supported by the firmware protocol. On the
+Master, `bluetooth.btGetSlaveSetupStatus()` explicitly selects the synchronized
+raw administrator password for an online Slave, base64-encodes
+`username:password`, and passes it to `btsetup_central`. It uses the default
+password only before a new Slave has first come online and synchronized. A
+custom diagnostic client can therefore construct the same header with the
+known synchronized local credential; the official application simply does not
+offer that configured-node path.
+
 [`tools/linksys_ble_jnap.py`](../tools/linksys_ble_jnap.py) reproduces this
 framing offline and never scans, connects, or writes to a Bluetooth adapter.
 For example:
@@ -137,7 +231,8 @@ frame contains reusable authorization material.
 The Android sender does not explicitly call a bond or pair API before the GATT
 write. MX5300's controller binary imports pairability, authentication, and
 security-reestablishment APIs, but imports alone do not prove the characteristic
-permissions used at runtime.
+permissions used at runtime. The phone had HCI snooping disabled, so no
+historical exchange is available to settle this offline.
 
 Therefore the offline evidence does **not** establish whether every request is
 encrypted at the BLE link layer. No implementation should transmit the
@@ -213,6 +308,11 @@ Actions:
 - `nodes/smartconnect/StartSmartConnectClient`; and
 - `nodes/bluetooth/BTSelfDisconnect`.
 
+It also filters configured advertisements before any connection attempt and
+always emits the default `admin:admin` authorization header. Merely invoking a
+hidden screen in this APK would not turn it into a configured-Node management
+client; both the scan policy and credential construction would need to change.
+
 The application's internal `selectParent` state does not steer an existing
 mesh Node. During initial setup it chooses which unconfigured physical unit,
 usually the one with WAN, will become the initial Parent/Main.
@@ -221,7 +321,26 @@ Searches of the application bundle and all registered firmware Actions found no
 `change_node_parent`, `pub_bh_config`, `BH/config`, preferred-BSSID setter, or
 equivalent exact-Parent BLE call.
 
-## Bluetooth Auto Onboarding is not Parent steering
+## SmartConnect and Bluetooth Auto Onboarding are not Parent steering
+
+Four superficially promising routes were traced through both MX4200 and MX5300:
+
+| Route | Accepted input | Mode gate | Actual purpose |
+| --- | --- | --- | --- |
+| App `selectParent` state | WAN/cable status of scanned units | setup flow | choose which unconfigured physical unit becomes Main |
+| `StartSmartConnectClient` | `setupAP`, `wiredEnabled` | Slave implementation requires `smart_mode == 0` | start initial onboarding |
+| `SmartConnectConfigure` | SSID, passphrase, SRP login/password | requires `smart_mode == 0`, then changes it to Slave | provision an unconfigured Node |
+| `xconnect/RequestOnboardSmartConnectClient` | one `bssid` | Node must be Master | onboard a non-Node SmartConnect client discovered by the Master |
+
+The last route's `bssid` is easy to misread as a target Parent. It is passed to
+`set_smartconnect_connect_client()` on the Master and identifies the client
+being onboarded. It never reaches a configured Slave's
+`backhaul::preferred_bssid`, `mqttsub::bh_bssid`, or `backhaul::set_intf`.
+
+The corresponding JNAP libraries independently confirm the schemas:
+`libjnap_smartconnect.so` contains `setupAP`, `configApSsid`,
+`configApPassphrase`, `srpLogin`, and `srpPassword`; only
+`libjnap_xconnect.so` contains `bssid`.
 
 The firmware contains a hidden but intentional auto-onboarding mode:
 
@@ -234,7 +353,17 @@ The firmware contains a hidden but intentional auto-onboarding mode:
    `SmartConnectConfigure`.
 
 This can bring a new Node into the mesh. It does not send a target Parent
-BSSID or reparent an already configured child.
+BSSID or reparent an already configured child. The actual shared
+`bt_auto_onboard_start.sh` command is equivalent to:
+
+```text
+btsetup_central -f -A <SSID> -P <passphrase> -L <SRP login> -R <SRP password>
+```
+
+There is no band, channel, or Parent BSSID option. MX4200 and MX5300 carry the
+same `xconnect.lua`, SmartConnect server module, and auto-onboarding script
+byte-for-byte; the mode checks and absence of an exact-Parent input are not
+model-specific accidents.
 
 ## The production exact-Parent path
 
@@ -349,6 +478,43 @@ should be treated as a proof-of-concept route, not the final preferred design.
 Changing `/etc/btjnap.conf` alone is insufficient: its CGI entries still pass
 through the normal registered JNAP dispatcher.
 
+### Fastest one-time feasibility experiment
+
+For a disposable proof rather than a long-lived feature, the routes rank as
+follows:
+
+1. **Child shell/UART control experiment:** set
+   `mqttsub::bh_channel`, `mqttsub::bh_bssid`, then
+   `backhaul::set_intf`. This proves the child-local radio transition with no
+   BLE variable.
+2. **Master shell control experiment:** run stock `pub_bh_config` with child
+   UUID plus the Parent tuple. This proves the complete production
+   Master-to-Slave path.
+3. **BLE proof:** add one custom Action interception to the existing
+   `/usr/bin/btjnap` shell wrapper. Validate `band`, `channel`, and `bssid`,
+   verify the supplied Basic header by dispatching the stock
+   `/core/CheckAdminPassword` Action, set the same three sysevents, and return
+   an accepted response before the backhaul transition.
+
+Route 3 is the smallest exact-Parent BLE change because `btjnap` is already a
+shell script on both models. It avoids compiling a vendor-ABI JNAP library and
+does not need to alter `btsetup`, the GATT service, MQTT, or the official
+application. An unknown custom Action can be intercepted before the normal
+JNAP dispatcher would reject it.
+
+The reviewed, offline-only reference helper and its single stock-wrapper hook
+are in
+[`firmware-overlays/ble-parent-steering`](../firmware-overlays/ble-parent-steering/README.md).
+Unit tests replace JNAP, `jsonparse`, and `sysevent` with local mocks; they
+verify that bad authorization or malformed tuples produce no event and that a
+valid tuple writes exactly the three expected events in order.
+
+For an extremely short owner-controlled test, authorization could technically
+be omitted in the custom interception. That would not answer any additional
+BLE feasibility question and would make the image needlessly reusable by any
+nearby peer, so the stock `CheckAdminPassword` round-trip is the preferable
+minimal proof even when long-term hardening is out of scope.
+
 ### Required safety properties
 
 Before the custom action is enabled, its handler and MeshScope must:
@@ -385,7 +551,9 @@ the same amount of diagnostic data when IP reachability is lost.
 
 ## Concrete next experiment when routers are online
 
-No mutating BLE test should be the first live experiment. Use one recoverable
+The routers were not physically present during the Pixel inspection, so no
+advertisement, GATT properties, encryption state, or real BLE-JNAP response
+could be captured. The next in-range session should use one recoverable
 non-gateway Node:
 
 1. capture its advertisement in normal and backhaul-down states;
@@ -399,15 +567,18 @@ non-gateway Node:
 7. test steering to the Node's current Parent as a no-op;
 8. finally test one alternate Parent with a saved rollback tuple.
 
-Until steps 1–5 are complete, this document establishes firmware feasibility,
-not a live-tested BLE steering feature.
+Until steps 1–5 are complete, this document establishes firmware and
+application-level feasibility, not a live-tested BLE steering feature. The
+absence of a capture is an environmental boundary, not evidence for or against
+configured-Slave connectivity.
 
 ## Final assessment
 
-BLE is useful specifically because every configured Slave already exposes the
-Peripheral service and can remain reachable when its IP backhaul is down. It is
-therefore a stronger recovery/control transport than trying to expose the
-infrastructure MQTT broker to the LAN.
+BLE is useful specifically because the firmware is designed to keep every
+configured Slave in the Peripheral role even when its IP backhaul is down. If
+the next in-range scan confirms the static path on the analyzed hardware, it is
+a stronger recovery/control transport than exposing the infrastructure MQTT
+broker to the LAN.
 
 The missing piece is not a hidden radio command. It is one authenticated,
 strictly bounded call from the BLE-JNAP dispatcher to the existing
