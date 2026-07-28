@@ -1,0 +1,9 @@
+--- a/etc/mosquitto/strict.acl
++++ b/etc/mosquitto/strict.acl
+@@ -21,3 +21,6 @@
+ topic read BH/+/status.parent_ip
+ topic read network/+/speed
+ topic write network/+/BH/perf
++
++# MeshScope isolated-lab exact Parent steering
++topic write network/+/BH/config

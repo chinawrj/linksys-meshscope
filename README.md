@@ -112,6 +112,7 @@ Detailed evidence:
 - [MX5300 MQTT, exact-Parent control, and custom-IMG feasibility](docs/mx5300-mqtt-and-custom-img.md)
 - [MX4200/MX5300 BLE and exact-Parent steering](docs/linksys-ble-parent-steering.md)
 - [Offline BLE-JNAP advanced-Action proof overlay](firmware-overlays/ble-parent-steering/README.md)
+- [One-command MX4200/MX5300 MQTT experiment-image builder](firmware-overlays/mqtt-parent-steering/README.md)
 
 ## Safety model
 
@@ -126,10 +127,11 @@ rejected before a router request is created.
 No password, authentication token, or browser session data is written to disk
 or returned by an API response.
 
-The separately documented firmware overlay is not installed by, connected to,
-or callable from this web backend. It is an offline root-filesystem proof for a
-future owner-controlled firmware experiment and therefore does not broaden the
-running application's mutation allowlist.
+The separately documented firmware overlays are not installed by, connected
+to, or callable from this web backend. They are offline root-filesystem proofs
+for future owner-controlled firmware experiments and therefore do not broaden
+the running application's mutation allowlist. Generated IMG files and official
+firmware inputs remain ignored and are not published in this repository.
 
 ## Tests
 
