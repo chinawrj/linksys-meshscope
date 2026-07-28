@@ -111,7 +111,7 @@ Detailed evidence:
 - [MX4200 MQTT control and custom-IMG feasibility](docs/mx4200-mqtt-and-custom-img.md)
 - [MX5300 MQTT, exact-Parent control, and custom-IMG feasibility](docs/mx5300-mqtt-and-custom-img.md)
 - [MX4200/MX5300 BLE and exact-Parent steering](docs/linksys-ble-parent-steering.md)
-- [Offline BLE exact-Parent proof overlay](firmware-overlays/ble-parent-steering/README.md)
+- [Offline BLE-JNAP advanced-Action proof overlay](firmware-overlays/ble-parent-steering/README.md)
 
 ## Safety model
 
@@ -125,6 +125,11 @@ rejected before a router request is created.
 
 No password, authentication token, or browser session data is written to disk
 or returned by an API response.
+
+The separately documented firmware overlay is not installed by, connected to,
+or callable from this web backend. It is an offline root-filesystem proof for a
+future owner-controlled firmware experiment and therefore does not broaden the
+running application's mutation allowlist.
 
 ## Tests
 
@@ -140,7 +145,9 @@ node --test \
 The Python suite verifies topology normalization, Node probes, the read-only
 allowlist, selected/online restart targeting, offline BLE-JNAP framing, and
 Linksys configured/setup advertisement decoding without contacting a router
-or Bluetooth adapter.
+or Bluetooth adapter. It also verifies official-App Cordova recording
+decoding, authorization redaction, the bounded firmware-side advanced Action
+dispatcher, exact stock sysevent ordering, and one-shot rollback behavior.
 The JavaScript suite covers refresh state, parent-subtree layout, Client/STA
 association, the full Node detail field inventory, capability reporting, and
 the requested/offline/recovered restart state machine.

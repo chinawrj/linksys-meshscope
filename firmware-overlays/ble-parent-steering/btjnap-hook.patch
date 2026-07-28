@@ -1,9 +1,16 @@
 --- usr/bin/btjnap
 +++ usr/bin/btjnap
-@@ -25,2 +25,6 @@
+@@ -25,5 +25,12 @@
  ACTION=`echo $ACTION | sed -e "s/X-JNAP-Action[ ]*:[ ]*//"`
  AUTH=`echo $AUTH | sed -e "s/X-JNAP-Authorization[ ]*:[ ]*//"`
+-
 +
-+if [ "$ACTION" = "http://linksys.com/jnap/nodes/meshscope/SteerToParent" ]; then
-+    exec /usr/bin/meshscope_parent_steer -u "$AUTH" -j "$JSON"
-+fi
++MESHSCOPE_BLE_DISPATCH_BIN=${MESHSCOPE_BLE_DISPATCH_BIN:-/usr/bin/meshscope_ble_dispatch}
++case "$ACTION" in
++    http://linksys.com/jnap/nodes/meshscope/GetCapabilities|http://linksys.com/jnap/nodes/meshscope/GetBackhaulStatus|http://linksys.com/jnap/nodes/meshscope/SteerToParent|http://linksys.com/jnap/nodes/meshscope/RollbackParent)
++        exec "$MESHSCOPE_BLE_DISPATCH_BIN" -a "$ACTION" -u "$AUTH" -j "$JSON"
++        ;;
++esac
++
+ ###############
+ ##  Set env

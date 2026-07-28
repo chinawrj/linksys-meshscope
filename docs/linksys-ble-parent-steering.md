@@ -87,6 +87,38 @@ then discovers, subscribes, and writes. The bundled generic Cordova plugin does
 implement an optional `bond` operation, but exhaustive search of the Linksys
 JavaScript bundle found no invocation of it.
 
+### Built-in BLE recorder: present but not active
+
+The application bundle contains a useful `MockData.writeResponses` recorder.
+When `window.shouldWriteResponses` is true, it appends Cordova callback objects
+to JSON files in `cordova.file.externalDataDirectory`. Coverage includes:
+
+- `startScan`, `initialize`, `connect`, `discover`, and `isConnected`;
+- every `subscribe`, `write`, `unsubscribe`, and `read` callback; and
+- the final parsed response named after the JNAP Action.
+
+This is a development recorder, not evidence of a historical session. On
+production Android, `MockData.verifyOS()` does not set the flag true, so it is
+undefined/false. The APK has no packaged `mocks/` response set (only an
+unrelated widget test page), and the Pixel's application external-data
+directory contains no recording files.
+
+Cordova's native engine would expose a WebView DevTools socket only if the APK
+were debuggable or `InspectableWebview=true`. This release is not debuggable
+and its decoded `config.xml` contains no such preference. The only
+`@chrome_devtools_remote` socket observed on the phone belonged to Android
+Chrome: its targets were the local MeshScope BLE Lab and an unrelated web
+page, not Linksys. The temporary host-side forward used to identify that
+socket was removed immediately. There is no Linksys WebView target through
+which the recorder can be enabled on this installed build.
+
+A separately signed diagnostic build or emulator build could set
+`InspectableWebview=true` and toggle the recorder, but it cannot update the
+Google Play APK in place because the signing key differs. It would also not
+inherit the official APK's private logged-in data. This is therefore a
+preparation route for a future in-range test, not a way to manufacture a BLE
+capture while the routers are absent.
+
 ## Hardware and service lifecycle
 
 ### MX5300
@@ -148,12 +180,15 @@ Byte 2 is WAN/backhaul status. The application calls byte 3
 | `08` | unconfigured, Master-only | accepted |
 | `01` | configured | rejected |
 
-Both the Android and iOS analyzers accept only `00`, `04`, or `08`. The older
-scanner embedded in the APK is stricter still and compares the complete
-unconfigured records. The configured record is intentionally discarded in
-application JavaScript after the platform BLE scanner reports it. This is an
-application setup-policy filter; it is not evidence that the configured Slave
-stops advertising.
+Both the Android and iOS analyzers accept only `00`, `04`, or `08`. iOS also
+validates either expected manufacturer prefix. The current Android branch has
+an `A != 0x5c || A != 0xee` logic error, so a four-byte record with an accepted
+mode can bypass its intended first-byte check; that bug does not make
+configured mode `01` pass. The older scanner embedded in the APK is stricter
+and compares the complete unconfigured records. The configured record is
+intentionally discarded in application JavaScript after the platform BLE
+scanner reports it. This is an application setup-policy filter; it is not
+evidence that the configured Slave stops advertising.
 
 The offline decoder makes the distinction explicit:
 
@@ -164,6 +199,14 @@ python3 tools/linksys_ble_jnap.py --manufacturer-data-hex ee:0b:01:01
 It reports `configured: true` and
 `official_app_3_6_1_accepts: false` without scanning or accessing a Bluetooth
 adapter.
+
+The same tool can decode the raw Base64 Android scan record that the Cordova
+plugin stores:
+
+```sh
+python3 tools/linksys_ble_jnap.py \
+  --android-advertisement-base64 '<captured advertisement>'
+```
 
 ## GATT and BLE-JNAP protocol
 
@@ -222,6 +265,23 @@ python3 tools/linksys_ble_jnap.py \
   --payload-json '{"probe":true}' \
   --redact-request
 ```
+
+It also decodes the official application's recorder files without printing a
+captured Basic header:
+
+```sh
+python3 tools/linksys_ble_jnap.py --cordova-recording startScan.json
+python3 tools/linksys_ble_jnap.py --cordova-recording subscribe.json
+python3 tools/linksys_ble_jnap.py --cordova-recording read.json
+```
+
+The decoder recognizes Android advertising-data structures, the Linksys
+manufacturer tuple, all observed BLE-JNAP control frames, the big-endian
+request-length frame, textual JNAP requests, and JSON responses. It redacts the
+authorization header and credential-like JSON fields and omits the raw hex for
+textual payloads, retaining a SHA-256 only for correlation. This makes a future
+real capture immediately comparable with the static protocol model without
+turning decoded output into a credential dump.
 
 The redaction option omits the request frame because a real configured-node
 frame contains reusable authorization material.
@@ -464,12 +524,26 @@ building the matching `libjnap_*` component for the vendor ABI.
 
 #### Minimal `btjnap` extension
 
-Add one exact Action case to the existing `btjnap` wrapper and a dedicated
-helper. Before calling the helper, pass the supplied authorization through the
-existing privileged `core/CheckAdminPassword` JNAP Action and require an exact
-`OK` result. The helper must parse JSON with `jsonparse`, validate every field,
-and write only the three fixed sysevent names. It must never interpolate
-unvalidated values into a shell command.
+Add a fixed Action namespace to the existing `btjnap` wrapper and a dedicated
+dispatcher. Before handling an extension Action, pass the supplied
+authorization through the existing privileged `core/CheckAdminPassword` JNAP
+Action and require an exact `OK` result. The dispatcher must parse JSON with
+`jsonparse`, validate every field, and expose a bounded Action list. It must
+never interpolate unvalidated values into a shell command.
+
+The offline reference overlay now implements four Actions:
+
+| Action | Effect |
+| --- | --- |
+| `GetCapabilities` | Report extension version, semantics, and Action list |
+| `GetBackhaulStatus` | Read current/requested backhaul tuples, last request, and rollback state |
+| `SteerToParent` | Validate child identity and emit the stock three-sysevent exact-Parent sequence |
+| `RollbackParent` | Replay one saved previous 5 GHz tuple, then consume it |
+
+All original Actions fall through to the byte-for-byte stock JNAP path. This
+is the useful meaning of “BLE forwarding” here: preserve generic registered
+JNAP pass-through while adding a small whitelist of advanced mesh operations,
+not an anonymous arbitrary-shell endpoint.
 
 This variant changes less firmware and avoids compiling a new JNAP schema
 library, but it duplicates some authorization and schema responsibilities. It
@@ -490,24 +564,30 @@ follows:
 2. **Master shell control experiment:** run stock `pub_bh_config` with child
    UUID plus the Parent tuple. This proves the complete production
    Master-to-Slave path.
-3. **BLE proof:** add one custom Action interception to the existing
-   `/usr/bin/btjnap` shell wrapper. Validate `band`, `channel`, and `bssid`,
-   verify the supplied Basic header by dispatching the stock
-   `/core/CheckAdminPassword` Action, set the same three sysevents, and return
-   an accepted response before the backhaul transition.
+3. **BLE proof:** add the fixed MeshScope Action interception to the existing
+   `/usr/bin/btjnap` shell wrapper. Query capabilities/status first; then
+   validate `expectedDeviceID`, `parentDeviceID`, `band`, `channel`, and
+   `bssid`, verify the supplied Basic header with stock
+   `/core/CheckAdminPassword`, set the same three sysevents, and return an
+   accepted response before the backhaul transition. Preserve the previous
+   valid tuple for one rollback.
 
-Route 3 is the smallest exact-Parent BLE change because `btjnap` is already a
-shell script on both models. It avoids compiling a vendor-ABI JNAP library and
-does not need to alter `btsetup`, the GATT service, MQTT, or the official
-application. An unknown custom Action can be intercepted before the normal
-JNAP dispatcher would reject it.
+Route 3 is the smallest exact-Parent BLE change because `btjnap` is already the
+same shell script on both models. It avoids compiling a vendor-ABI JNAP library
+and does not need to alter `btsetup`, the GATT service, MQTT, or the official
+application. A custom Action can be intercepted before the normal JNAP
+dispatcher would reject it.
 
 The reviewed, offline-only reference helper and its single stock-wrapper hook
 are in
 [`firmware-overlays/ble-parent-steering`](../firmware-overlays/ble-parent-steering/README.md).
-Unit tests replace JNAP, `jsonparse`, and `sysevent` with local mocks; they
-verify that bad authorization or malformed tuples produce no event and that a
-valid tuple writes exactly the three expected events in order.
+Unit tests replace JNAP, `jsonparse`, `syscfg`, and `sysevent` with local
+mocks. They verify that bad authorization, a wrong child UUID, or malformed
+tuples produce no event; a valid tuple writes exactly the three expected
+events in order; a mutation lock rejects concurrent requests; status preserves
+both current and requested data; and rollback replays the previous tuple once.
+The patch dry-runs against extracted MX4200 and MX5300 wrappers, and each
+model's ARM BusyBox accepts the dispatcher syntax under user-mode QEMU.
 
 For an extremely short owner-controlled test, authorization could technically
 be omitted in the custom interception. That would not answer any additional
