@@ -109,6 +109,7 @@ Detailed evidence:
 - [MX4200 firmware, steering, reboot, and SSH analysis](docs/mx4200-firmware-analysis.md)
 - [MX4200 SSH bootstrap and exact-Parent control plan](docs/mx4200-ssh-parent-control.md)
 - [MX4200 MQTT control and custom-IMG feasibility](docs/mx4200-mqtt-and-custom-img.md)
+- [MX5300 MQTT, exact-Parent control, and custom-IMG feasibility](docs/mx5300-mqtt-and-custom-img.md)
 
 ## Safety model
 

@@ -340,10 +340,11 @@ The result contains two layout PEBs and 237 data PEBs. UBI Reader reports:
 MeshScope now includes an offline-only assembler:
 
 ```sh
-python3 tools/mx4200_repack.py \
+python3 tools/linksys_mx_repack.py \
   --original FW_MX4200_1.0.13.216903_prod.img \
   --ubi modified.ubi \
   --output FW_MX4200_1.0.13.216903_meshscope-ssh-poc.img \
+  --expected-sku MX4200 \
   --expected-original-sha256 \
     b0a954835c879822fd1a2da23f09a6ec37da69914aacf07d8038b06fa02fad25
 ```

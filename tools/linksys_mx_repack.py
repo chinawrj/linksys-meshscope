@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble an offline MX4200 OEM-style image around a replacement UBI.
+"""Assemble an offline Linksys MX OEM-style image around a replacement UBI.
 
 This tool does not create the SquashFS or UBI payload and never accesses an
 MTD device. It preserves the original FIT/kernel prefix and Linksys footer,
@@ -22,6 +22,7 @@ FOOTER_SIZE = 256
 LINKSYS_MAGIC = b".LINKSYS."
 CHECKSUM_SLICE = slice(32, 40)
 SKU_SLICE = slice(17, 23)
+SUPPORTED_SKUS = {"MX4200", "MX5300"}
 
 
 def _crc_table() -> tuple[int, ...]:
@@ -77,13 +78,14 @@ def assemble_image(
     original_path: Path,
     ubi_path: Path,
     output_path: Path,
+    expected_sku: str,
     expected_original_sha256: str | None = None,
 ) -> dict[str, object]:
     original = original_path.read_bytes()
     replacement_ubi = ubi_path.read_bytes()
 
     if len(original) < UBI_OFFSET + 2 * PEB_SIZE + FOOTER_SIZE:
-        raise ValueError("input is too small to be an MX4200 OEM image")
+        raise ValueError("input is too small to be a supported Linksys MX OEM image")
     original_sha256 = _sha256(original)
     if (
         expected_original_sha256
@@ -97,8 +99,13 @@ def assemble_image(
     footer = bytearray(original[-FOOTER_SIZE:])
     if footer[: len(LINKSYS_MAGIC)] != LINKSYS_MAGIC:
         raise ValueError("input has no Linksys footer at EOF")
-    if footer[SKU_SLICE] != b"MX4200":
-        raise ValueError(f"unexpected footer SKU: {footer[SKU_SLICE]!r}")
+    if expected_sku not in SUPPORTED_SKUS:
+        raise ValueError(f"unsupported expected SKU: {expected_sku}")
+    footer_sku = footer[SKU_SLICE].decode("ascii")
+    if footer_sku != expected_sku:
+        raise ValueError(
+            f"footer SKU mismatch: expected {expected_sku}, got {footer_sku}"
+        )
     if original[UBI_OFFSET : UBI_OFFSET + 4] != b"UBI#":
         raise ValueError("input has no UBI EC header at offset 0x600000")
 
@@ -142,6 +149,7 @@ def assemble_image(
         "output_sha256": _sha256(output),
         "output_size": len(output),
         "footer_checksum": footer[CHECKSUM_SLICE].decode("ascii"),
+        "sku": footer_sku,
         "ubi_offset": UBI_OFFSET,
     }
 
@@ -149,13 +157,17 @@ def assemble_image(
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Assemble an offline MX4200 OEM-style IMG with a replacement UBI; "
+            "Assemble an offline Linksys MX4200/MX5300 OEM-style IMG with a "
+            "replacement UBI; "
             "this tool never flashes a router."
         )
     )
     parser.add_argument("--original", required=True, type=Path)
     parser.add_argument("--ubi", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--expected-sku", required=True, choices=sorted(SUPPORTED_SKUS)
+    )
     parser.add_argument("--expected-original-sha256")
     args = parser.parse_args()
 
@@ -163,6 +175,7 @@ def main() -> int:
         args.original,
         args.ubi,
         args.output,
+        args.expected_sku,
         args.expected_original_sha256,
     )
     print(json.dumps(manifest, indent=2, sort_keys=True))
