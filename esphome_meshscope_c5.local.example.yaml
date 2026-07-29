@@ -1,0 +1,10 @@
+packages:
+  meshscope: !include esphome_meshscope_c5.yaml
+
+substitutions:
+  meshscope_wifi_ssid: "YOUR_WIFI_SSID"
+  meshscope_wifi_password: "YOUR_WIFI_PASSWORD"
+  meshscope_router_host: "10.37.1.1"
+  meshscope_router_password: "YOUR_LINKSYS_LOCAL_PASSWORD"
+  meshscope_api_key: "YOUR_32_BYTE_BASE64_ESPHOME_API_KEY"
+  meshscope_ota_password: "YOUR_UNIQUE_OTA_PASSWORD"

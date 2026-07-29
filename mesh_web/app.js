@@ -89,7 +89,7 @@ async function api(path, options = {}) {
   if (!response.ok) {
     throw new Error(payload.error || `请求失败 (${response.status})`);
   }
-  return payload;
+  return window.MeshLinksysNormalize?.normalizeEnvelope(payload) ?? payload;
 }
 
 function openConnectModal() {

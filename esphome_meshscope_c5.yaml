@@ -1,0 +1,148 @@
+substitutions:
+  meshscope_wifi_ssid: "SET_IN_LOCAL_CONFIG"
+  meshscope_wifi_password: "SET_IN_LOCAL_CONFIG"
+  meshscope_router_host: "10.37.1.1"
+  meshscope_router_password: "SET_IN_LOCAL_CONFIG"
+  meshscope_api_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  meshscope_ota_password: "SET_IN_LOCAL_CONFIG"
+
+esphome:
+  name: meshscope-c5
+  friendly_name: MeshScope C5
+  min_version: 2026.7.2
+  includes:
+    - esphome_includes/meshscope_web_assets.h
+    - esphome_includes/meshscope_edge.h
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          meshscope_edge_setup(
+              "${meshscope_router_host}",
+              "${meshscope_router_password}");
+
+esp32:
+  board: esp32-c5-devkitc-1
+  variant: esp32c5
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_XTAL_FREQ_48: "y"
+      CONFIG_HTTPD_MAX_REQ_HDR_LEN: "2048"
+      CONFIG_HTTPD_MAX_URI_LEN: "512"
+      CONFIG_LWIP_MAX_SOCKETS: "12"
+      CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC: "y"
+      CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
+      CONFIG_ESP_TLS_INSECURE: "y"
+      CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY: "y"
+      CONFIG_SPIRAM_USE_MALLOC: "y"
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "0"
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "65536"
+      CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: "y"
+
+psram:
+  mode: quad
+  speed: 80MHz
+  ignore_not_found: false
+
+logger:
+  baud_rate: 115200
+  hardware_uart: UART0
+  level: INFO
+
+wifi:
+  ssid: "${meshscope_wifi_ssid}"
+  password: "${meshscope_wifi_password}"
+  power_save_mode: NONE
+  post_connect_roaming: false
+  reboot_timeout: 0s
+
+api:
+  encryption:
+    key: "${meshscope_api_key}"
+
+ota:
+  - platform: esphome
+    password: "${meshscope_ota_password}"
+
+time:
+  - platform: sntp
+    id: meshscope_clock
+    timezone: Asia/Shanghai
+
+binary_sensor:
+  - platform: template
+    name: Router Connected
+    id: meshscope_router_connected
+    device_class: connectivity
+    lambda: return meshscope_edge_router_connected();
+
+sensor:
+  - platform: template
+    name: Online Mesh Nodes
+    id: meshscope_nodes_online
+    accuracy_decimals: 0
+    lambda: return meshscope_edge_nodes_online();
+    update_interval: 10s
+  - platform: template
+    name: Total Mesh Nodes
+    id: meshscope_nodes_total
+    accuracy_decimals: 0
+    lambda: return meshscope_edge_nodes_total();
+    update_interval: 10s
+  - platform: template
+    name: Online Clients
+    id: meshscope_clients_online
+    accuracy_decimals: 0
+    lambda: return meshscope_edge_clients_online();
+    update_interval: 10s
+  - platform: template
+    name: Weak Mesh Nodes
+    id: meshscope_weak_nodes
+    accuracy_decimals: 0
+    lambda: return meshscope_edge_weak_nodes();
+    update_interval: 10s
+  - platform: template
+    name: Backhaul Total
+    id: meshscope_backhaul_mbps
+    unit_of_measurement: Mbps
+    accuracy_decimals: 1
+    lambda: return meshscope_edge_backhaul_mbps();
+    update_interval: 10s
+  - platform: template
+    name: ESP32 Free Heap
+    id: meshscope_free_heap
+    unit_of_measurement: B
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    lambda: return meshscope_edge_free_heap();
+    update_interval: 30s
+
+text_sensor:
+  - platform: template
+    name: MeshScope URL
+    id: meshscope_url
+    icon: mdi:web
+    lambda: return meshscope_edge_url();
+    update_interval: 30s
+  - platform: template
+    name: Topology Summary
+    id: meshscope_topology_summary
+    icon: mdi:access-point-network
+    lambda: return meshscope_edge_summary();
+    update_interval: 10s
+  - platform: template
+    name: Last Topology Update
+    id: meshscope_last_update
+    icon: mdi:clock-outline
+    lambda: return meshscope_edge_last_update();
+    update_interval: 10s
+
+button:
+  - platform: template
+    name: Refresh Mesh Topology
+    id: meshscope_refresh
+    icon: mdi:refresh
+    on_press:
+      - lambda: meshscope_edge_force_refresh();

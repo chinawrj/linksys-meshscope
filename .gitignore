@@ -1,6 +1,7 @@
 .venv/
 .esphome-venv/
 .esphome/
+esphome_meshscope_c5.local.yaml
 esp32_serial_collector/
 __pycache__/
 *.pyc

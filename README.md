@@ -22,9 +22,10 @@ single-Node restart sent directly to the selected Node's CA JNAP endpoint.
 - One-click restart for the selected online Node
 - Restart progress shown on the topology card until recovery is observed
 
-The UI and backend are dependency-free at runtime: Python's standard library
-serves the app and communicates with the router; the frontend is plain
-HTML/CSS/JavaScript.
+The desktop backend is dependency-free at runtime: Python's standard library
+serves the app and communicates with the router. The same frontend can also run
+entirely on an ESP32-C5 through ESPHome, with Home Assistant discovery through
+the encrypted ESPHome native API.
 
 ## Start
 
@@ -60,6 +61,43 @@ LINKSYS_PASSWORD='your-local-router-password' python3 linksys_mesh_app.py
 The password is kept only in the local Python process memory and cleared when
 the service stops. MeshScope binds to `127.0.0.1` by default and only permits
 private, link-local, loopback, or `.local` router targets.
+
+## ESPHome on ESP32-C5
+
+The ESPHome target turns an ESP32-C5 with 8 MB flash and at least 4 MB PSRAM into an
+always-on MeshScope appliance. It joins the home Wi-Fi, polls Linksys JNAP every
+10 seconds in a background task, caches the complete raw topology in PSRAM, and
+serves the same full topology and Client/STA UI on port 80. The browser performs
+the final normalization, keeping the firmware cache compact without removing
+any displayed fields.
+
+Create a private local configuration:
+
+```bash
+cp esphome_meshscope_c5.local.example.yaml esphome_meshscope_c5.local.yaml
+```
+
+Fill in Wi-Fi, Linksys local-login, ESPHome API, and OTA values in that local
+file. It is ignored by Git. Then validate, build, and install:
+
+```bash
+python3 -m venv .esphome-venv
+.esphome-venv/bin/pip install esphome==2026.7.2
+python3 tools/generate_esp32_meshscope_assets.py
+.esphome-venv/bin/esphome config esphome_meshscope_c5.local.yaml
+.esphome-venv/bin/esphome run esphome_meshscope_c5.local.yaml
+```
+
+Open `http://meshscope-c5.local/` after installation. Home Assistant discovers
+`MeshScope C5` through ESPHome and exposes router connectivity, online/total
+Node counts, online Clients, weak Nodes, aggregate backhaul rate, last update,
+the dashboard URL, and a manual topology-refresh button. Firmware updates can
+subsequently use ESPHome OTA.
+
+The ESPHome edge preserves the desktop safety boundary: all topology calls are
+read-only, and its only mutating request is `core/Reboot` sent directly to a
+known online Node selected from the cached live topology. A 90-second cooldown
+prevents duplicate restarts.
 
 ## Node details and CA support mode
 
@@ -141,7 +179,8 @@ node --test \
   tests/test_refresh_state.js \
   tests/test_topology_layout.js \
   tests/test_detail_data.js \
-  tests/test_node_restart_state.js
+  tests/test_node_restart_state.js \
+  tests/test_linksys_normalize.js
 ```
 
 The Python suite verifies topology normalization, Node probes, the read-only
