@@ -36,6 +36,14 @@ def byte_lines(data: bytes) -> str:
     )
 
 
+def deterministic_gzip(source: bytes) -> bytes:
+    compressed = bytearray(gzip.compress(source, compresslevel=9, mtime=0))
+    # Python 3.11/3.12 may copy zlib's platform-specific OS byte, while 3.13+
+    # writes 255. The field does not affect decompression, so normalize it.
+    compressed[9] = 255
+    return bytes(compressed)
+
+
 def build_assets(sources: dict[str, bytes]) -> tuple[tuple[str, str, bytes], ...]:
     index = sources["index.html"].decode("utf-8")
     for name in SCRIPT_NAMES:
@@ -62,7 +70,7 @@ def render() -> str:
         source_hash.update(name.encode("utf-8") + b"\0" + source)
     assets = build_assets(sources)
     for name, content_type, source in assets:
-        compressed = gzip.compress(source, compresslevel=9, mtime=0)
+        compressed = deterministic_gzip(source)
         ident = symbol(name)
         blocks.append(
             f"inline constexpr uint8_t {ident}[] = {{\n"
