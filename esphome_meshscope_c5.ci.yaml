@@ -1,5 +1,5 @@
 packages:
-  meshscope: !include ../../esphome_meshscope_c5.yaml
+  meshscope: !include esphome_meshscope_c5.yaml
 
 substitutions:
   meshscope_wifi_ssid: "ci-check"
