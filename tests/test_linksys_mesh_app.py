@@ -58,7 +58,7 @@ class LinksysMeshAppTest(unittest.TestCase):
                         },
                         {
                             "deviceID": child_id,
-                            "friendlyName": "Garden",
+                            "friendlyName": "Patio",
                             "nodeType": "Slave",
                             "model": {"modelNumber": "WHW03"},
                             "unit": {"firmwareVersion": "2.1.20"},
@@ -136,7 +136,7 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertEqual(child["parentName"], "Main")
         self.assertEqual(child["clientCount"], 1)
         self.assertEqual(client["nodeId"], child_id)
-        self.assertEqual(client["nodeName"], "Garden")
+        self.assertEqual(client["nodeName"], "Patio")
         self.assertEqual(client["speedMbps"], 433)
         self.assertTrue(result["network"]["clientSteeringEnabled"])
         self.assertTrue(result["network"]["nodeSteeringEnabled"])
@@ -144,8 +144,49 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertFalse(result["network"]["manualParentSelectionAvailable"])
         self.assertEqual(result["network"]["documentedRestartScope"], "single-node")
         self.assertTrue(result["network"]["individualNodeRestartAvailable"])
-        self.assertEqual(result["network"]["individualNodeRestartProbe"], "owner-confirmed")
+        self.assertEqual(result["network"]["individualNodeRestartProbe"], "firmware-confirmed")
+        self.assertEqual(
+            result["network"]["individualNodeRestartEvidence"],
+            "reset_slave_nodes-direct-jnap",
+        )
+        self.assertEqual(
+            result["network"]["manualParentSelectionEvidence"],
+            "firmware-internal-confirmed",
+        )
         self.assertEqual(child["managementUrl"], "https://10.0.0.2/ca")
+
+    def test_demo_topology_preserves_full_hierarchy_and_client_counts(self):
+        topology = linksys_mesh_app.build_demo_topology()
+        nodes = {node["name"]: node for node in topology["nodes"]}
+
+        self.assertTrue(topology["meta"]["demo"])
+        self.assertEqual(topology["summary"]["nodesOnline"], 6)
+        self.assertEqual(topology["summary"]["clientsOnline"], 22)
+        self.assertEqual(nodes["Atrium"]["parentName"], "Main")
+        self.assertEqual(nodes["Garage"]["parentName"], "Atrium")
+        self.assertEqual(nodes["Bedroom"]["parentName"], "Office")
+        self.assertEqual(nodes["Atrium"]["clientCount"], 0)
+        self.assertEqual(nodes["Office"]["clientCount"], 10)
+        self.assertEqual(nodes["Bedroom"]["clientCount"], 2)
+        self.assertEqual(nodes["Garage"]["clientCount"], 1)
+        self.assertEqual(
+            sum(node["clientCount"] for node in topology["nodes"]),
+            topology["summary"]["clientsOnline"],
+        )
+
+    def test_demo_state_allows_read_only_review_and_rejects_restart(self):
+        state = linksys_mesh_app.MeshState()
+        topology = state.enable_demo()
+
+        self.assertTrue(state.status()["connected"])
+        self.assertTrue(state.status()["demo"])
+        self.assertEqual(state.refresh()["summary"], topology["summary"])
+        report = state.probe_node("demo-big-tree")
+        self.assertTrue(report["demo"])
+        self.assertTrue(report["manualParentSelection"]["firmwareInternalPathDiscovered"])
+        self.assertTrue(report["individualRestart"]["disabledInDemo"])
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "演示模式"):
+            state.restart_node("demo-big-tree")
 
     def test_probe_node_uses_synchronized_credentials_and_read_only_actions(self):
         state = linksys_mesh_app.MeshState()
@@ -159,7 +200,7 @@ class LinksysMeshAppTest(unittest.TestCase):
             "nodes": [
                 {
                     "id": "big",
-                    "name": "BigTree",
+                    "name": "Atrium",
                     "online": True,
                     "ipAddress": "10.0.0.2",
                 }
@@ -199,6 +240,11 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertTrue(report["individualRestart"]["visibleInCaSupportUi"])
         self.assertFalse(report["individualRestart"]["executed"])
         self.assertFalse(report["individualRestart"]["hasTargetDeviceId"])
+        self.assertFalse(report["manualParentSelection"]["available"])
+        self.assertEqual(report["manualParentSelection"]["transport"], "not-available")
+        self.assertTrue(
+            report["manualParentSelection"]["firmwareInternalPathDiscovered"]
+        )
 
     def test_restart_targets_selected_online_node_without_confirmation_payload(self):
         state = linksys_mesh_app.MeshState()
@@ -212,7 +258,7 @@ class LinksysMeshAppTest(unittest.TestCase):
             "nodes": [
                 {
                     "id": "big",
-                    "name": "BigTree",
+                    "name": "Atrium",
                     "online": True,
                     "ipAddress": "10.0.0.2",
                 }
@@ -230,7 +276,7 @@ class LinksysMeshAppTest(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(result["scope"], "single-node")
-        self.assertEqual(result["requestedThroughNode"]["name"], "BigTree")
+        self.assertEqual(result["requestedThroughNode"]["name"], "Atrium")
 
         with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
             with self.assertRaisesRegex(linksys_mesh_app.RouterError, "正在重启"):

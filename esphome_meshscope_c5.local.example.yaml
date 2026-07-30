@@ -1,0 +1,17 @@
+packages:
+  meshscope: !include esphome_meshscope_c5.yaml
+
+substitutions:
+  # Copy this file to esphome_meshscope_c5.local.yaml; never commit the copy.
+  meshscope_wifi_ssid: "YOUR_WIFI_SSID"
+  meshscope_wifi_password: "YOUR_WIFI_PASSWORD"
+  meshscope_router_host: "192.168.1.1"
+  # Generate with: python3 tools/encode_secret.py
+  meshscope_router_password_b64: "YOUR_BASE64_ENCODED_LINKSYS_LOCAL_PASSWORD"
+  meshscope_web_username: "meshscope"
+  # Use a unique letters-and-digits password, for example: openssl rand -hex 24
+  meshscope_web_password: "YOUR_UNIQUE_WEB_PASSWORD"
+  # Generate with: openssl rand -base64 32
+  meshscope_api_key: "YOUR_32_BYTE_BASE64_ESPHOME_API_KEY"
+  meshscope_ota_password: "YOUR_UNIQUE_OTA_PASSWORD"
+  meshscope_timezone: "Asia/Shanghai"

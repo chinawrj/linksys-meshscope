@@ -60,6 +60,7 @@
   }
 
   function nodeCapabilityReport(topology, node) {
+    const isDemo = topology?.meta?.demo === true;
     const children = (topology?.nodes || [])
       .filter((candidate) => candidate.online && candidate.parentId === node?.id)
       .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", {
@@ -98,11 +99,26 @@
             detail: "需要另行设计明确的 Child、Parent 与确认步骤",
           }
         : {
-            status: "unsupported",
-            label: "未发现指定接口",
-            detail: "Topology Optimization 仅提供全局自动 Node Steering",
+            status: topology?.network?.manualParentSelectionEvidence
+              === "firmware-internal-confirmed"
+              ? "internal"
+              : "unsupported",
+            label: topology?.network?.manualParentSelectionEvidence
+              === "firmware-internal-confirmed"
+              ? "固件内部已确认 · 未开放"
+              : "未发现指定接口",
+            detail: topology?.network?.manualParentSelectionEvidence
+              === "firmware-internal-confirmed"
+              ? "MX4200/WHW03 存在精确 Parent 数据路径，但当前 Web/JNAP 没有安全传输入口"
+              : "Topology Optimization 仅提供全局自动 Node Steering",
           },
-      individualRestart: individualRestartAvailable
+      individualRestart: isDemo
+        ? {
+            status: "unverified",
+            label: "演示模式 · 禁止执行",
+            detail: "真实连接时才会向所选 Node 的本地端点发送请求",
+          }
+        : individualRestartAvailable
         ? {
             status: "available",
             label: "当前 Node · 可用",
@@ -113,7 +129,14 @@
             label: "不开放 · 范围未证实",
             detail: "官方动作会重启整个 Mesh；未执行任何破坏性探测",
           },
-      localManagement: node?.managementUrl
+      localManagement: isDemo
+        ? {
+            status: "unverified",
+            label: "演示数据 · 未直连",
+            detail: "真实连接后使用 Node IP 与 Main 同步的本地凭证验证",
+            url: null,
+          }
+        : node?.managementUrl
         ? {
             status: "available",
             label: "CA Support 入口",

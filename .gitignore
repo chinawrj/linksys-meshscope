@@ -1,6 +1,7 @@
 .venv/
 .esphome-venv/
 .esphome/
+esphome_meshscope_c5.local.yaml
 esp32_serial_collector/
 __pycache__/
 *.pyc
@@ -15,3 +16,5 @@ router_upgrade.json
 router_topology_upgrade_plan.json
 router_upgrade_plan.json
 router_upgrade_plan.local.json
+firmware-analysis/input/
+firmware-analysis/work/

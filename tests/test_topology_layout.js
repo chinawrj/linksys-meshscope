@@ -4,11 +4,11 @@ const { compute } = require("../mesh_web/topology-layout.js");
 
 const nodes = [
   { id: "main", name: "Main", online: true, isAuthority: true },
-  { id: "big", name: "BigTree", online: true, parentId: "main", band: "5GH" },
-  { id: "door", name: "DoorCorner", online: true, parentId: "main", band: "5GL" },
-  { id: "yard", name: "YardEast", online: true, parentId: "main", band: "5GH" },
-  { id: "parent", name: "Parent Room", online: true, parentId: "door", band: "5GH" },
-  { id: "road", name: "RoadSouth", online: true, parentId: "big", band: "5GL" },
+  { id: "big", name: "Atrium", online: true, parentId: "main", band: "5GH" },
+  { id: "door", name: "Office", online: true, parentId: "main", band: "5GL" },
+  { id: "yard", name: "Patio", online: true, parentId: "main", band: "5GH" },
+  { id: "parent", name: "Bedroom", online: true, parentId: "door", band: "5GH" },
+  { id: "road", name: "Garage", online: true, parentId: "big", band: "5GL" },
 ];
 
 test("orders descendants by their parent subtree so second-layer edges do not cross", () => {

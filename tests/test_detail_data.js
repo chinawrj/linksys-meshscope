@@ -11,7 +11,7 @@ const {
 const topology = {
   nodes: [
     { id: "main", name: "Main" },
-    { id: "door", name: "DoorCorner" },
+    { id: "door", name: "Office" },
   ],
   clients: [
     { id: "b", name: "Tablet 2", online: true, nodeId: "door" },
@@ -39,7 +39,7 @@ test("does not mix historical clients into the live STA list", () => {
 });
 
 test("finds the parent node when opening a client detail", () => {
-  assert.equal(nodeForClient(topology, topology.clients[0]).name, "DoorCorner");
+  assert.equal(nodeForClient(topology, topology.clients[0]).name, "Office");
   assert.equal(nodeForClient(topology, { nodeId: "missing" }), null);
 });
 
@@ -52,9 +52,9 @@ test("preserves every existing node metric and identity field", () => {
       rssi: -66,
       quality: { label: "良好" },
       model: "WHW03",
-      ipAddress: "10.37.1.208",
+      ipAddress: "192.168.1.10",
       macAddress: "AA:BB:CC:DD:EE:FF",
-      parentName: "YardEast-Wi-Fi6",
+      parentName: "Patio",
       band: "5GL",
       channel: 48,
       firmwareVersion: "2.1.20.216892",
@@ -73,13 +73,14 @@ test("preserves every existing node metric and identity field", () => {
     ["型号", "IP 地址", "MAC 地址", "父节点", "回程频段", "信道", "固件版本", "硬件版本", "序列号"],
   );
   assert.equal(rows.metrics[2][1], "199 Mbps");
-  assert.equal(rows.details[3][1], "YardEast-Wi-Fi6");
+  assert.equal(rows.details[3][1], "Patio");
 });
 
-test("reports a node already proven as an automatic parent without claiming manual control", () => {
+test("reports automatic parent status and internal steering evidence without claiming web control", () => {
   const mesh = {
     network: {
       manualParentSelectionAvailable: false,
+      manualParentSelectionEvidence: "firmware-internal-confirmed",
       individualNodeRestartAvailable: true,
       documentedRestartScope: "single-node",
     },
@@ -87,20 +88,46 @@ test("reports a node already proven as an automatic parent without claiming manu
       { id: "main", name: "Main", online: true, isAuthority: true },
       {
         id: "big",
-        name: "BigTree",
+        name: "Atrium",
         online: true,
         parentId: "main",
-        ipAddress: "10.37.1.208",
-        managementUrl: "https://10.37.1.208/ca",
+        ipAddress: "192.168.1.10",
+        managementUrl: "https://192.168.1.10/ca",
       },
-      { id: "road", name: "RoadSouth", online: true, parentId: "big" },
+      { id: "road", name: "Garage", online: true, parentId: "big" },
     ],
   };
   const report = nodeCapabilityReport(mesh, mesh.nodes[1]);
   assert.equal(report.parentRole.status, "confirmed");
-  assert.deepEqual(report.children.map((node) => node.name), ["RoadSouth"]);
-  assert.equal(report.manualTarget.status, "unsupported");
+  assert.deepEqual(report.children.map((node) => node.name), ["Garage"]);
+  assert.equal(report.manualTarget.status, "internal");
+  assert.match(report.manualTarget.label, /内部已确认/);
   assert.equal(report.individualRestart.status, "available");
   assert.equal(report.localManagement.status, "available");
-  assert.equal(report.localManagement.url, "https://10.37.1.208/ca");
+  assert.equal(report.localManagement.url, "https://192.168.1.10/ca");
+});
+
+test("demo mode keeps capability information but disables live node actions", () => {
+  const mesh = {
+    meta: { demo: true },
+    network: {
+      manualParentSelectionAvailable: false,
+      manualParentSelectionEvidence: "firmware-internal-confirmed",
+      individualNodeRestartAvailable: true,
+    },
+    nodes: [
+      {
+        id: "big",
+        name: "Atrium",
+        online: true,
+        ipAddress: "192.168.1.10",
+        managementUrl: "https://192.168.1.10/ca",
+      },
+    ],
+  };
+  const report = nodeCapabilityReport(mesh, mesh.nodes[0]);
+  assert.equal(report.manualTarget.status, "internal");
+  assert.equal(report.individualRestart.status, "unverified");
+  assert.equal(report.localManagement.status, "unverified");
+  assert.equal(report.localManagement.url, null);
 });

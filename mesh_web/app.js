@@ -14,7 +14,11 @@ const state = {
   refreshing: false,
   topologyAnimationFrame: null,
   detailToken: 0,
+  detailSelection: null,
   nodeRestarts: new Map(),
+  managedConnection: false,
+  modalReturnFocus: null,
+  detailReturnFocus: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -88,23 +92,46 @@ async function api(path, options = {}) {
   if (!response.ok) {
     throw new Error(payload.error || `请求失败 (${response.status})`);
   }
-  return payload;
+  return window.MeshLinksysNormalize?.normalizeEnvelope(payload) ?? payload;
 }
 
 function openConnectModal() {
+  if ($("#connectModal").classList.contains("hidden")) {
+    state.modalReturnFocus = document.activeElement;
+  }
   $("#connectModal").classList.remove("hidden");
-  requestAnimationFrame(() => $("#passwordInput").focus());
+  requestAnimationFrame(() => {
+    (state.managedConnection ? $("#connectButton") : $("#passwordInput")).focus();
+  });
 }
 
 function closeConnectModal() {
   if (!state.topology) return;
   $("#connectModal").classList.add("hidden");
   $("#connectError").textContent = "";
+  state.modalReturnFocus?.focus?.();
+  state.modalReturnFocus = null;
 }
 
 function setConnectionStatus(connected) {
   $("#liveChip").classList.toggle("connected", connected);
   if (!connected) $("#liveText").textContent = "等待连接";
+}
+
+function configureConnectionMode(status) {
+  const mode = MeshConnectionMode.view(status);
+  state.managedConnection = mode.managed;
+  $("#settingsButton").textContent = mode.settingsLabel;
+  $("#settingsButton").setAttribute("aria-label", mode.settingsLabel);
+  $("#connectTitle").textContent = mode.title;
+  $("#connectDescription").textContent = mode.description;
+  $("#connectNoteText").textContent = mode.note;
+  $("#connectButtonLabel").textContent = mode.submitLabel;
+  $("#editableConnectionFields").hidden = mode.managed;
+  $("#managedConnectionPanel").hidden = !mode.managed;
+  $("#managedRouterHost").textContent = status.router || "—";
+  $("#hostInput").required = !mode.managed;
+  $("#passwordInput").required = !mode.managed;
 }
 
 function updateRefreshLabel() {
@@ -122,7 +149,14 @@ function updateRefreshLabel() {
   for (const mode of ["refreshing", "paused", "stale", "error"]) {
     chip.classList.toggle(mode, status.mode === mode);
   }
-  $("#liveText").textContent = status.text;
+  chip.classList.toggle("demo", state.topology?.meta?.demo === true);
+  const routerOffline = state.topology?.meta?.routerConnected === false;
+  chip.classList.toggle("error", routerOffline || status.mode === "error");
+  $("#liveText").textContent = routerOffline
+    ? "路由器离线 · 最后缓存"
+    : state.topology?.meta?.demo
+      ? `演示 · ${status.text}`
+      : status.text;
 }
 
 function scheduleAutoRefresh() {
@@ -171,13 +205,27 @@ function healthScore(data) {
 
 function renderSummary(data) {
   const { summary, network, meta } = data;
+  const routerOffline = meta.routerConnected === false;
   $("#routerLabel").textContent = meta.router;
-  $("#networkStatus").textContent = network.wanStatus === "Connected" ? "运行正常" : network.wanStatus || "状态未知";
-  $("#lastUpdated").textContent = `更新于 ${formatTime(meta.updatedAt)}`;
+  $("#heroCopy").textContent = meta.demo
+    ? "用完整离线演示数据检查节点层级、回程质量与 Client / STA 交互；不会连接或修改路由器。"
+    : routerOffline
+      ? "路由器当前不可达；页面保留最后一次完整拓扑，恢复后会自动更新。"
+      : "实时查看每个 Velop 节点、回程质量与当前接入设备。所有数据仅在本机与路由器之间流动。";
+  $("#networkStatus").textContent = meta.demo
+    ? "离线演示数据"
+    : routerOffline
+      ? "路由器离线"
+      : network.wanStatus === "Connected"
+        ? "运行正常"
+        : network.wanStatus || "状态未知";
+  $("#lastUpdated").textContent = routerOffline
+    ? `最后缓存于 ${formatTime(meta.updatedAt)}`
+    : `${meta.demo ? "未连接路由器 · " : ""}更新于 ${formatTime(meta.updatedAt)}`;
   $("#statNodes").textContent = `${summary.nodesOnline}/${summary.nodesTotal}`;
   $("#statNodesSub").textContent = `${summary.nodesTotal - summary.nodesOnline} 个离线节点`;
   $("#statClients").textContent = compactNumber(summary.clientsOnline);
-  $("#statClientsSub").textContent = `${summary.clientsKnown} 个历史设备记录`;
+  $("#statClientsSub").textContent = `${summary.clientsKnown} 个已知设备记录`;
   $("#statBackhaul").textContent = summary.backhaulMbps ? `${compactNumber(summary.backhaulMbps)}M` : "—";
   $("#statBackhaulSub").textContent = "在线节点协商速率合计";
   $("#statAttention").textContent = compactNumber(summary.weakNodes + (summary.nodesTotal - summary.nodesOnline));
@@ -192,13 +240,23 @@ function renderSummary(data) {
       : network.nodeSteeringEnabled === false
         ? "自动 · 已关闭"
         : "固件未报告";
-  $("#manualSteering").textContent = network.manualParentSelectionAvailable ? "支持" : "未发现接口";
+  $("#manualSteering").textContent = network.manualParentSelectionAvailable
+    ? "支持"
+    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
+      ? "内部已确认 · 未开放"
+      : "未发现接口";
   $("#steeringTitle").textContent =
     network.nodeSteeringEnabled === true ? "自动 Node Steering 已开启" : "自动 Node Steering 未开启";
   $("#steeringDescription").textContent = network.manualParentSelectionAvailable
     ? "固件报告了手动 Parent 选择能力。"
-    : "固件会自动选择最强信号并自愈；未发现可把子节点锁定到指定 Parent 的受支持接口。";
-  $("#steeringMode").textContent = network.manualParentSelectionAvailable ? "MANUAL AVAILABLE" : "AUTO ONLY";
+    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
+      ? "MX4200/WHW03 固件内部已确认指定 Parent 数据路径；当前 Web/JNAP 没有安全传输入口，因此保持只读。"
+      : "固件会自动选择最强信号并自愈；未发现可把子节点锁定到指定 Parent 的受支持接口。";
+  $("#steeringMode").textContent = network.manualParentSelectionAvailable
+    ? "MANUAL AVAILABLE"
+    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
+      ? "INTERNAL · NO TRANSPORT"
+      : "AUTO ONLY";
 
   const score = healthScore(data);
   $("#healthRing").style.setProperty("--score", score);
@@ -491,6 +549,10 @@ function nodeClientHtml(client) {
 }
 
 function openDetail(item, kind) {
+  if (!$("#detailDrawer").classList.contains("open")) {
+    state.detailReturnFocus = document.activeElement;
+  }
+  state.detailSelection = { id: item.id, kind };
   const detailToken = ++state.detailToken;
   const isNode = kind === "node";
   const attachedClients = isNode
@@ -619,17 +681,23 @@ async function loadNodeProbe(node, detailToken) {
     if (!probe || !probeLabel || !probeDetail || !restartLabel || !restartDetail) return;
     probe.classList.remove("unavailable");
     probe.classList.add(report.credentialsSynchronized ? "confirmed" : "unverified");
-    probeLabel.textContent = report.credentialsSynchronized
-      ? `${report.deviceMode || "本地"} · 同步凭证已验证`
-      : `${report.deviceMode || "本地"} · 凭证状态未知`;
-    probeDetail.textContent = `${report.identity.model || node.model || "Linksys Node"} 直连身份已确认 · 未执行控制`;
+    probeLabel.textContent = report.demo
+      ? "演示模式 · 未连接真实 Node"
+      : report.credentialsSynchronized
+        ? `${report.deviceMode || "本地"} · 同步凭证已验证`
+        : `${report.deviceMode || "本地"} · 凭证状态未知`;
+    probeDetail.textContent = report.demo
+      ? `${report.identity.model || node.model || "Linksys Node"} 合成身份 · 不执行网络请求`
+      : `${report.identity.model || node.model || "Linksys Node"} 直连身份已确认 · 未执行控制`;
     if (report.individualRestart.visibleInCaSupportUi) {
       const restartButton = $("#restartMeshButton");
       const activeRestart = state.nodeRestarts.get(node.id);
       restartLabel.textContent = activeRestart ? "当前 Node · 重启进行中" : "当前 Node · 可用";
       restartDetail.textContent = activeRestart
         ? `${MeshNodeRestartState.label(activeRestart)}；页面正在继续观测`
-        : `点击后直接向 ${node.ipAddress} 发送 core/Reboot`;
+        : node.isAuthority
+          ? `单击即向 ${node.ipAddress} 发送 core/Reboot，不再确认；Main 重启时整个 Mesh 可能短暂断线`
+          : `单击即向 ${node.ipAddress} 发送 core/Reboot，不再确认；该 Node 及其客户端会短暂断线`;
       if (restartButton) {
         restartButton.hidden = false;
         if (activeRestart) {
@@ -685,18 +753,33 @@ function reconcileNodeRestarts(data) {
 
 function closeDetail() {
   state.detailToken += 1;
+  state.detailSelection = null;
   $("#detailBackdrop").classList.remove("open");
   $("#detailDrawer").classList.remove("open");
   $("#detailDrawer").setAttribute("aria-hidden", "true");
+  state.detailReturnFocus?.focus?.();
+  state.detailReturnFocus = null;
 }
 
 function render(data) {
+  const detailSelection = state.detailSelection;
+  const detailScrollTop = $("#detailDrawer").scrollTop;
   reconcileNodeRestarts(data);
   state.topology = data;
-  setConnectionStatus(true);
+  setConnectionStatus(data.meta?.routerConnected !== false);
   renderSummary(data);
   renderTopology(data);
   renderClients();
+  if (detailSelection && $("#detailDrawer").classList.contains("open")) {
+    const collection = detailSelection.kind === "node" ? data.nodes : data.clients;
+    const refreshedItem = collection.find((item) => item.id === detailSelection.id);
+    if (refreshedItem) {
+      openDetail(refreshedItem, detailSelection.kind);
+      $("#detailDrawer").scrollTop = detailScrollTop;
+    } else {
+      closeDetail();
+    }
+  }
   $("#connectModal").classList.add("hidden");
   scheduleAutoRefresh();
 }
@@ -735,8 +818,9 @@ async function initialize() {
   wireEvents();
   try {
     const status = await api("/api/status");
-    $("#hostInput").value = status.router || "10.37.1.1";
-    if (status.connected) {
+    configureConnectionMode(status);
+    $("#hostInput").value = status.router || "192.168.1.1";
+    if (status.connected || status.snapshotReady) {
       render(await api("/api/topology"));
     } else {
       openConnectModal();
@@ -758,19 +842,22 @@ function wireEvents() {
     button.innerHTML = "<span>正在连接并读取…</span><i>↻</i>";
     $("#connectError").textContent = "";
     try {
+      const body = state.managedConnection
+        ? {}
+        : {
+            host: $("#hostInput").value,
+            password: $("#passwordInput").value,
+          };
       const data = await api("/api/connect", {
         method: "POST",
-        body: JSON.stringify({
-          host: $("#hostInput").value,
-          password: $("#passwordInput").value,
-        }),
+        body: JSON.stringify(body),
       });
       $("#passwordInput").value = "";
       render(data);
       toast("已连接 Linksys Mesh");
     } catch (error) {
       $("#connectError").textContent = error.message;
-      $("#passwordInput").focus();
+      (state.managedConnection ? button : $("#passwordInput")).focus();
     } finally {
       button.disabled = false;
       button.innerHTML = original;

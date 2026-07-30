@@ -1,0 +1,337 @@
+#!/bin/sh
+#
+# Firmware-side BLE-JNAP extension for an owner-controlled Linksys MX4200 or
+# MX5300 experiment. It adds four fixed Actions and passes every stock Action
+# through the unmodified btjnap path.
+
+set -u
+umask 077
+
+ACTION=
+AUTH=
+JSON={}
+
+while getopts ":a:u:j:" opt; do
+    case "$opt" in
+        a) ACTION=$OPTARG ;;
+        u) AUTH=$OPTARG ;;
+        j) JSON=$OPTARG ;;
+        *) exit 2 ;;
+    esac
+done
+
+JSONPARSE_BIN=${MESHSCOPE_JSONPARSE_BIN:-/usr/bin/jsonparse}
+JNAP_CGI=${MESHSCOPE_JNAP_CGI:-/www/JNAP/index.cgi}
+SYSEVENT_BIN=${MESHSCOPE_SYSEVENT_BIN:-/sbin/sysevent}
+SYSCFG_BIN=${MESHSCOPE_SYSCFG_BIN:-/sbin/syscfg}
+STATE_DIR=${MESHSCOPE_STATE_DIR:-/tmp}
+PREVIOUS_FILE="$STATE_DIR/meshscope_ble_parent.previous.json"
+LAST_FILE="$STATE_DIR/meshscope_ble_parent.last.json"
+LOCK_DIR="$STATE_DIR/meshscope_ble_parent.lock"
+
+ACTION_ROOT="http://linksys.com/jnap/nodes/meshscope"
+
+respond_error()
+{
+    printf '{"result":"%s"}\n' "$1"
+    exit 0
+}
+
+json_value()
+{
+    printf '%s' "$JSON" | "$JSONPARSE_BIN" "$1" 2>/dev/null
+}
+
+file_json_value()
+{
+    "$JSONPARSE_BIN" -f "$1" "$2" 2>/dev/null
+}
+
+valid_token()
+{
+    printf '%s\n' "$1" | grep -Eq '^[A-Za-z0-9._:-]{1,80}$'
+}
+
+valid_channel()
+{
+    case "$1" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 196 ] 2>/dev/null
+}
+
+valid_bssid()
+{
+    printf '%s\n' "$1" |
+        grep -Eq '^[0-9a-f]{2}(:[0-9a-f]{2}){5}$'
+}
+
+valid_band()
+{
+    [ "$1" = "5GL" ] || [ "$1" = "5GH" ]
+}
+
+event_value()
+{
+    "$SYSEVENT_BIN" get "$1" 2>/dev/null
+}
+
+band_from_channel()
+{
+    if ! valid_channel "$1"; then
+        printf 'UNKNOWN'
+    elif [ "$1" -le 13 ]; then
+        printf '2.4G'
+    elif [ "$1" -lt 65 ]; then
+        printf '5GL'
+    else
+        printf '5GH'
+    fi
+}
+
+number_or_null()
+{
+    case "$1" in
+        ""|*[!0-9]*) printf 'null' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+safe_event_token()
+{
+    VALUE=$(event_value "$1")
+    if valid_token "$VALUE"; then
+        printf '%s' "$VALUE"
+    fi
+}
+
+authorize()
+{
+    [ -n "$AUTH" ] || return 1
+
+    export JNAP_CGI_MODULES_PATH="/JNAP/modules/wan"
+    export REQUEST_METHOD="POST"
+    export REQUEST_URI="/JNAP"
+    export HTTP_X_JNAP_ACTION="http://linksys.com/jnap/core/CheckAdminPassword"
+    export HTTP_X_JNAP_AUTHORIZATION="$AUTH"
+    export JSON_DATA="{}"
+    export CONTENT_LENGTH=2
+
+    AUTH_RESPONSE=$(printf '%s' "$JSON_DATA" | "$JNAP_CGI" 2>/dev/null)
+    AUTH_RESULT=$(printf '%s' "$AUTH_RESPONSE" |
+        "$JSONPARSE_BIN" result 2>/dev/null)
+    [ "$AUTH_RESULT" = "OK" ]
+}
+
+acquire_mutation_lock()
+{
+    mkdir "$LOCK_DIR" 2>/dev/null || respond_error "ErrorBusy"
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null' 0 1 2 15
+}
+
+local_device_id()
+{
+    VALUE=$("$SYSCFG_BIN" get device::uuid 2>/dev/null |
+        tr '[:upper:]' '[:lower:]')
+    if valid_token "$VALUE"; then
+        printf '%s' "$VALUE"
+    fi
+}
+
+validate_target_request()
+{
+    REQUEST_ID=$(json_value requestId)
+    EXPECTED_DEVICE_ID=$(json_value expectedDeviceID |
+        tr '[:upper:]' '[:lower:]')
+    PARENT_DEVICE_ID=$(json_value parentDeviceID |
+        tr '[:upper:]' '[:lower:]')
+    BAND=$(json_value band)
+    CHANNEL=$(json_value channel)
+    BSSID=$(json_value bssid | tr '[:upper:]' '[:lower:]')
+    DEVICE_ID=$(local_device_id)
+
+    valid_token "$REQUEST_ID" || return 1
+    valid_token "$EXPECTED_DEVICE_ID" || return 1
+    valid_token "$PARENT_DEVICE_ID" || return 1
+    [ -n "$DEVICE_ID" ] && [ "$EXPECTED_DEVICE_ID" = "$DEVICE_ID" ] ||
+        return 1
+    valid_band "$BAND" || return 1
+    valid_channel "$CHANNEL" || return 1
+    valid_bssid "$BSSID" || return 1
+}
+
+save_previous_tuple()
+{
+    PREVIOUS_CHANNEL=$(event_value backhaul::preferred_chan)
+    PREVIOUS_BSSID=$(event_value backhaul::preferred_bssid |
+        tr '[:upper:]' '[:lower:]')
+    PREVIOUS_BAND=$(band_from_channel "$PREVIOUS_CHANNEL")
+
+    if valid_band "$PREVIOUS_BAND" &&
+            valid_channel "$PREVIOUS_CHANNEL" &&
+            valid_bssid "$PREVIOUS_BSSID"; then
+        PREVIOUS_TEMP="${PREVIOUS_FILE}.$$"
+        printf '{"band":"%s","channel":%s,"bssid":"%s"}\n' \
+            "$PREVIOUS_BAND" "$PREVIOUS_CHANNEL" "$PREVIOUS_BSSID" \
+            > "$PREVIOUS_TEMP" || return 1
+        mv "$PREVIOUS_TEMP" "$PREVIOUS_FILE" || return 1
+    else
+        rm -f "$PREVIOUS_FILE"
+    fi
+}
+
+save_last_request()
+{
+    LAST_TEMP="${LAST_FILE}.$$"
+    printf '{"requestId":"%s","operation":"%s","parentDeviceID":"%s","band":"%s","channel":%s,"bssid":"%s","state":"accepted"}\n' \
+        "$1" "$2" "$3" "$4" "$5" "$6" > "$LAST_TEMP" || return 1
+    mv "$LAST_TEMP" "$LAST_FILE"
+}
+
+set_parent_tuple()
+{
+    "$SYSEVENT_BIN" set mqttsub::bh_channel "$2" || return 1
+    "$SYSEVENT_BIN" set mqttsub::bh_bssid "$3" || return 1
+    "$SYSEVENT_BIN" set backhaul::set_intf "$1" || return 1
+}
+
+get_capabilities()
+{
+    printf '%s\n' \
+        '{"result":"OK","output":{"apiVersion":1,"directChildEndpoint":true,"stockJnapPassthrough":true,"persistentParentPin":false,"authorization":"synchronized-admin-basic","completionSemantics":"accepted-before-reconnect","actions":["GetCapabilities","GetBackhaulStatus","SteerToParent","RollbackParent"]}}'
+}
+
+get_backhaul_status()
+{
+    DEVICE_ID=$(local_device_id)
+    MODE=$("$SYSCFG_BIN" get smart_mode::mode 2>/dev/null)
+    case "$MODE" in
+        0|1|2) ;;
+        *) MODE=null ;;
+    esac
+
+    STATUS=$(safe_event_token backhaul::status)
+    MEDIA=$(safe_event_token backhaul::media)
+    INTERFACE=$(safe_event_token backhaul::intf)
+    CURRENT_CHANNEL=$(event_value backhaul::preferred_chan)
+    CURRENT_BSSID=$(event_value backhaul::preferred_bssid |
+        tr '[:upper:]' '[:lower:]')
+    CURRENT_BAND=$(band_from_channel "$CURRENT_CHANNEL")
+    valid_bssid "$CURRENT_BSSID" || CURRENT_BSSID=
+
+    REQUESTED_BAND=$(safe_event_token backhaul::set_intf)
+    valid_band "$REQUESTED_BAND" || REQUESTED_BAND=
+    REQUESTED_CHANNEL=$(event_value mqttsub::bh_channel)
+    REQUESTED_BSSID=$(event_value mqttsub::bh_bssid |
+        tr '[:upper:]' '[:lower:]')
+    valid_bssid "$REQUESTED_BSSID" || REQUESTED_BSSID=
+
+    ROLLBACK=false
+    ROLLBACK_JSON='{"available":false}'
+    if [ -f "$PREVIOUS_FILE" ]; then
+        RB_BAND=$(file_json_value "$PREVIOUS_FILE" band)
+        RB_CHANNEL=$(file_json_value "$PREVIOUS_FILE" channel)
+        RB_BSSID=$(file_json_value "$PREVIOUS_FILE" bssid |
+            tr '[:upper:]' '[:lower:]')
+        if valid_band "$RB_BAND" &&
+                valid_channel "$RB_CHANNEL" &&
+                valid_bssid "$RB_BSSID"; then
+            ROLLBACK=true
+            ROLLBACK_JSON=$(printf '{"available":true,"band":"%s","channel":%s,"bssid":"%s"}' \
+                "$RB_BAND" "$RB_CHANNEL" "$RB_BSSID")
+        fi
+    fi
+
+    LAST_REQUEST_JSON=null
+    if [ -f "$LAST_FILE" ]; then
+        LAST_ID=$(file_json_value "$LAST_FILE" requestId)
+        LAST_OPERATION=$(file_json_value "$LAST_FILE" operation)
+        LAST_PARENT=$(file_json_value "$LAST_FILE" parentDeviceID |
+            tr '[:upper:]' '[:lower:]')
+        LAST_BAND=$(file_json_value "$LAST_FILE" band)
+        LAST_CHANNEL=$(file_json_value "$LAST_FILE" channel)
+        LAST_BSSID=$(file_json_value "$LAST_FILE" bssid |
+            tr '[:upper:]' '[:lower:]')
+        LAST_STATE=$(file_json_value "$LAST_FILE" state)
+        if valid_token "$LAST_ID" &&
+                { [ "$LAST_OPERATION" = "steer" ] ||
+                    [ "$LAST_OPERATION" = "rollback" ]; } &&
+                { [ -z "$LAST_PARENT" ] || valid_token "$LAST_PARENT"; } &&
+                valid_band "$LAST_BAND" &&
+                valid_channel "$LAST_CHANNEL" &&
+                valid_bssid "$LAST_BSSID" &&
+                [ "$LAST_STATE" = "accepted" ]; then
+            LAST_REQUEST_JSON=$(printf '{"requestId":"%s","operation":"%s","parentDeviceID":"%s","band":"%s","channel":%s,"bssid":"%s","state":"accepted"}' \
+                "$LAST_ID" "$LAST_OPERATION" "$LAST_PARENT" "$LAST_BAND" \
+                "$LAST_CHANNEL" "$LAST_BSSID")
+        fi
+    fi
+
+    printf '{"result":"OK","output":{"apiVersion":1,"deviceID":"%s","mode":%s,"backhaul":{"status":"%s","media":"%s","interface":"%s","band":"%s","channel":%s,"bssid":"%s","tupleSource":"backhaul::preferred_*"},"requested":{"band":"%s","channel":%s,"bssid":"%s","tupleSource":"mqttsub::bh_*"},"rollbackAvailable":%s,"rollback":%s,"lastRequest":%s}}\n' \
+        "$DEVICE_ID" "$MODE" "$STATUS" "$MEDIA" "$INTERFACE" \
+        "$CURRENT_BAND" "$(number_or_null "$CURRENT_CHANNEL")" \
+        "$CURRENT_BSSID" "$REQUESTED_BAND" \
+        "$(number_or_null "$REQUESTED_CHANNEL")" "$REQUESTED_BSSID" \
+        "$ROLLBACK" "$ROLLBACK_JSON" "$LAST_REQUEST_JSON"
+}
+
+steer_to_parent()
+{
+    validate_target_request || respond_error "ErrorInvalidInput"
+    [ "$("$SYSCFG_BIN" get smart_mode::mode 2>/dev/null)" = "1" ] ||
+        respond_error "ErrorInvalidState"
+    acquire_mutation_lock
+
+    save_previous_tuple || respond_error "ErrorUnexpected"
+    set_parent_tuple "$BAND" "$CHANNEL" "$BSSID" ||
+        respond_error "ErrorUnexpected"
+    save_last_request "$REQUEST_ID" "steer" "$PARENT_DEVICE_ID" \
+        "$BAND" "$CHANNEL" "$BSSID" ||
+        respond_error "ErrorUnexpected"
+
+    printf '{"result":"OK","output":{"accepted":true,"requestId":"%s","deviceID":"%s","parentDeviceID":"%s","band":"%s","channel":%s,"bssid":"%s"}}\n' \
+        "$REQUEST_ID" "$DEVICE_ID" "$PARENT_DEVICE_ID" \
+        "$BAND" "$CHANNEL" "$BSSID"
+}
+
+rollback_parent()
+{
+    REQUEST_ID=$(json_value requestId)
+    EXPECTED_DEVICE_ID=$(json_value expectedDeviceID |
+        tr '[:upper:]' '[:lower:]')
+    DEVICE_ID=$(local_device_id)
+    valid_token "$REQUEST_ID" || respond_error "ErrorInvalidInput"
+    valid_token "$EXPECTED_DEVICE_ID" || respond_error "ErrorInvalidInput"
+    [ -n "$DEVICE_ID" ] && [ "$EXPECTED_DEVICE_ID" = "$DEVICE_ID" ] ||
+        respond_error "ErrorInvalidInput"
+    [ -f "$PREVIOUS_FILE" ] || respond_error "ErrorNoRollback"
+    acquire_mutation_lock
+
+    BAND=$(file_json_value "$PREVIOUS_FILE" band)
+    CHANNEL=$(file_json_value "$PREVIOUS_FILE" channel)
+    BSSID=$(file_json_value "$PREVIOUS_FILE" bssid |
+        tr '[:upper:]' '[:lower:]')
+    valid_band "$BAND" || respond_error "ErrorNoRollback"
+    valid_channel "$CHANNEL" || respond_error "ErrorNoRollback"
+    valid_bssid "$BSSID" || respond_error "ErrorNoRollback"
+
+    set_parent_tuple "$BAND" "$CHANNEL" "$BSSID" ||
+        respond_error "ErrorUnexpected"
+    save_last_request "$REQUEST_ID" "rollback" "" \
+        "$BAND" "$CHANNEL" "$BSSID" ||
+        respond_error "ErrorUnexpected"
+    rm -f "$PREVIOUS_FILE"
+
+    printf '{"result":"OK","output":{"accepted":true,"requestId":"%s","deviceID":"%s","band":"%s","channel":%s,"bssid":"%s"}}\n' \
+        "$REQUEST_ID" "$DEVICE_ID" "$BAND" "$CHANNEL" "$BSSID"
+}
+
+authorize || respond_error "_ErrorUnauthorized"
+
+case "$ACTION" in
+    "$ACTION_ROOT/GetCapabilities") get_capabilities ;;
+    "$ACTION_ROOT/GetBackhaulStatus") get_backhaul_status ;;
+    "$ACTION_ROOT/SteerToParent") steer_to_parent ;;
+    "$ACTION_ROOT/RollbackParent") rollback_parent ;;
+    *) respond_error "_ErrorUnknownAction" ;;
+esac

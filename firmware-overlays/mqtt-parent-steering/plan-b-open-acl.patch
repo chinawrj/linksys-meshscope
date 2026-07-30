@@ -1,0 +1,8 @@
+--- a/etc/mosquitto/conf.d/default.conf
++++ b/etc/mosquitto/conf.d/default.conf
+@@ -10,4 +10,4 @@
+ bind_address %IP%
+ port %PORT%
+ allow_anonymous true
+-acl_file %CONF_DIR%/strict.acl
++acl_file %CONF_DIR%/open.acl
