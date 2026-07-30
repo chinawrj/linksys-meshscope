@@ -1,23 +1,23 @@
-# Linksys BigTree node-control feasibility
+# Linksys Atrium node-control feasibility
 
-This note records a read-only feasibility investigation against the `BigTree`
+This note records a read-only feasibility investigation against the `Atrium`
 node. No reboot, reset, steering, topology change, or undocumented mutation was
 executed.
 
 ## Observed node
 
-- Name: `BigTree`
+- Name: `Atrium`
 - Model: `WHW03`, hardware version 2
 - Firmware: `2.1.20.216892`
-- Address: `10.37.1.208`
+- Address: `192.168.1.10`
 - Current parent: `Main`
 - Current backhaul: `5GH`
-- Current child: `RoadSouth` over `5GL`
+- Current child: `Garage` over `5GL`
 
-The current topology proves that BigTree can act as an automatic upstream
+The current topology proves that Atrium can act as an automatic upstream
 Parent. A later offline WHW03 firmware analysis also found an internal
 backhaul command that can request an exact Parent BSSID/channel. It has not
-been executed against BigTree.
+been executed against Atrium.
 
 ## Manual Parent selection
 
@@ -30,7 +30,7 @@ The extracted WHW03 2.1.19 filesystem contains
 `topomgmt`/`pub_bh_config`, which accepts a child UUID and a target radio's
 band, channel, and BSSID. MX4200 1.0.13.210200 independently contains the same
 underlying function and byte-identical publisher, although it omits the
-`topomgmt` wrapper. BigTree is therefore a plausible manual **Steer now**
+`topomgmt` wrapper. Atrium is therefore a plausible manual **Steer now**
 target once its live radio tuple and exact installed build are verified. This
 is not evidence of a persistent Parent pin.
 
@@ -46,12 +46,12 @@ and [MX4200 firmware analysis](mx4200-firmware-analysis.md).
 
 ## Individual restart
 
-BigTree's own address responds to the read-only `core/GetDeviceInfo` call and
+Atrium's own address responds to the read-only `core/GetDeviceInfo` call and
 advertises the `Core` and `nodes/setup/Setup3` services.
 
-The child-node redirect bypass is also confirmed from BigTree's own firmware:
+The child-node redirect bypass is also confirmed from Atrium's own firmware:
 
-1. open `https://10.37.1.208/ca`;
+1. open `https://192.168.1.10/ca`;
 2. the bootstrap page preserves the `#casupport` hash for a configured Node;
 3. the local login accepts the credential synchronized from Main; and
 4. successful login redirects to `/ui/dynamic/home.html#casupport`.

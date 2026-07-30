@@ -33,7 +33,7 @@ from urllib.parse import parse_qs, urlparse
 
 APP_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = APP_ROOT / "mesh_web"
-DEFAULT_ROUTER = "10.37.1.1"
+DEFAULT_ROUTER = "192.168.1.1"
 JNAP_PREFIX = "http://linksys.com/jnap/"
 NODE_RESTART_COOLDOWN_SECONDS = 90
 READ_ONLY_ACTIONS = {
@@ -493,8 +493,8 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
         },
         {
             "id": "demo-big-tree",
-            "name": "BigTree",
-            "ipAddress": "10.37.1.208",
+            "name": "Atrium",
+            "ipAddress": "192.168.1.10",
             "model": "WHW03",
             "isAuthority": False,
             "parentId": "demo-main",
@@ -506,8 +506,8 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
         },
         {
             "id": "demo-door-corner",
-            "name": "DoorCorner",
-            "ipAddress": "10.37.1.132",
+            "name": "Office",
+            "ipAddress": "192.168.1.11",
             "model": "MX5300",
             "isAuthority": False,
             "parentId": "demo-main",
@@ -519,8 +519,8 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
         },
         {
             "id": "demo-yard-east",
-            "name": "YardEast-Wi-Fi6",
-            "ipAddress": "10.37.1.104",
+            "name": "Patio",
+            "ipAddress": "192.168.1.12",
             "model": "MX42",
             "isAuthority": False,
             "parentId": "demo-main",
@@ -532,8 +532,8 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
         },
         {
             "id": "demo-parent-room",
-            "name": "ParentRoom",
-            "ipAddress": "10.37.1.122",
+            "name": "Bedroom",
+            "ipAddress": "192.168.1.13",
             "model": "MX5300",
             "isAuthority": False,
             "parentId": "demo-door-corner",
@@ -545,8 +545,8 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
         },
         {
             "id": "demo-road-south",
-            "name": "RoadSouth",
-            "ipAddress": "10.37.1.44",
+            "name": "Garage",
+            "ipAddress": "192.168.1.14",
             "model": "WHW03",
             "isAuthority": False,
             "parentId": "demo-big-tree",
@@ -615,7 +615,7 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
             "Air-Purifier",
             "ESP-Meter",
         ],
-        "demo-yard-east": ["Garden-Camera", "Irrigation", "Weather-Station"],
+        "demo-yard-east": ["Patio-Camera", "Irrigation", "Weather-Station"],
         "demo-parent-room": ["Parent-iPad", "Bedroom-TV"],
         "demo-road-south": ["Road-Camera"],
     }
@@ -652,7 +652,7 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
                     "manufacturer": "Demo Fixture",
                     "operatingSystem": "Demo OS",
                     "macAddress": f"02:00:00:20:{client_index // 256:02X}:{client_index % 256:02X}",
-                    "ipAddress": f"10.37.1.{150 + client_index}",
+                    "ipAddress": f"192.168.1.{150 + client_index}",
                     "parentId": node_id,
                     "nodeId": node_id,
                     "nodeName": node_names[node_id],

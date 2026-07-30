@@ -15,6 +15,7 @@ WEB_ROOT = ROOT / "mesh_web"
 OUTPUT = ROOT / "esphome_includes" / "meshscope_web_assets.h"
 SCRIPT_NAMES = (
     "refresh-state.js",
+    "connection-mode.js",
     "node-restart-state.js",
     "detail-data.js",
     "topology-layout.js",

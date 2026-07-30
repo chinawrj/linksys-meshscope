@@ -1,0 +1,13 @@
+packages:
+  meshscope: !include ../../esphome_meshscope_c5.yaml
+
+substitutions:
+  meshscope_wifi_ssid: "ci-check"
+  meshscope_wifi_password: "ci-check-only"
+  meshscope_router_host: "192.168.1.1"
+  meshscope_router_password_b64: "dGVzdA=="
+  meshscope_web_username: "meshscope"
+  meshscope_web_password: "0123456789abcdef0123456789abcdef"
+  meshscope_api_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  meshscope_ota_password: "0123456789abcdef0123456789abcdef"
+  meshscope_timezone: "UTC"

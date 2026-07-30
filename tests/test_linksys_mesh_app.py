@@ -58,7 +58,7 @@ class LinksysMeshAppTest(unittest.TestCase):
                         },
                         {
                             "deviceID": child_id,
-                            "friendlyName": "Garden",
+                            "friendlyName": "Patio",
                             "nodeType": "Slave",
                             "model": {"modelNumber": "WHW03"},
                             "unit": {"firmwareVersion": "2.1.20"},
@@ -136,7 +136,7 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertEqual(child["parentName"], "Main")
         self.assertEqual(child["clientCount"], 1)
         self.assertEqual(client["nodeId"], child_id)
-        self.assertEqual(client["nodeName"], "Garden")
+        self.assertEqual(client["nodeName"], "Patio")
         self.assertEqual(client["speedMbps"], 433)
         self.assertTrue(result["network"]["clientSteeringEnabled"])
         self.assertTrue(result["network"]["nodeSteeringEnabled"])
@@ -162,13 +162,13 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertTrue(topology["meta"]["demo"])
         self.assertEqual(topology["summary"]["nodesOnline"], 6)
         self.assertEqual(topology["summary"]["clientsOnline"], 22)
-        self.assertEqual(nodes["BigTree"]["parentName"], "Main")
-        self.assertEqual(nodes["RoadSouth"]["parentName"], "BigTree")
-        self.assertEqual(nodes["ParentRoom"]["parentName"], "DoorCorner")
-        self.assertEqual(nodes["BigTree"]["clientCount"], 0)
-        self.assertEqual(nodes["DoorCorner"]["clientCount"], 10)
-        self.assertEqual(nodes["ParentRoom"]["clientCount"], 2)
-        self.assertEqual(nodes["RoadSouth"]["clientCount"], 1)
+        self.assertEqual(nodes["Atrium"]["parentName"], "Main")
+        self.assertEqual(nodes["Garage"]["parentName"], "Atrium")
+        self.assertEqual(nodes["Bedroom"]["parentName"], "Office")
+        self.assertEqual(nodes["Atrium"]["clientCount"], 0)
+        self.assertEqual(nodes["Office"]["clientCount"], 10)
+        self.assertEqual(nodes["Bedroom"]["clientCount"], 2)
+        self.assertEqual(nodes["Garage"]["clientCount"], 1)
         self.assertEqual(
             sum(node["clientCount"] for node in topology["nodes"]),
             topology["summary"]["clientsOnline"],
@@ -200,7 +200,7 @@ class LinksysMeshAppTest(unittest.TestCase):
             "nodes": [
                 {
                     "id": "big",
-                    "name": "BigTree",
+                    "name": "Atrium",
                     "online": True,
                     "ipAddress": "10.0.0.2",
                 }
@@ -258,7 +258,7 @@ class LinksysMeshAppTest(unittest.TestCase):
             "nodes": [
                 {
                     "id": "big",
-                    "name": "BigTree",
+                    "name": "Atrium",
                     "online": True,
                     "ipAddress": "10.0.0.2",
                 }
@@ -276,7 +276,7 @@ class LinksysMeshAppTest(unittest.TestCase):
 
         self.assertTrue(result["accepted"])
         self.assertEqual(result["scope"], "single-node")
-        self.assertEqual(result["requestedThroughNode"]["name"], "BigTree")
+        self.assertEqual(result["requestedThroughNode"]["name"], "Atrium")
 
         with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
             with self.assertRaisesRegex(linksys_mesh_app.RouterError, "正在重启"):

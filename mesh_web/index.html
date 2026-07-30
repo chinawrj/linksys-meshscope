@@ -38,14 +38,14 @@
           <button class="icon-button" id="refreshButton" type="button" aria-label="刷新网络数据" title="刷新">
             <span aria-hidden="true">↻</span>
           </button>
-          <button class="button button-quiet" id="settingsButton" type="button">连接设置</button>
+          <button class="button button-quiet" id="settingsButton" type="button" aria-label="连接设置">连接设置</button>
         </div>
       </header>
 
       <main>
         <section class="hero" aria-labelledby="pageTitle">
           <div>
-            <p class="eyebrow">HOME MESH / <span id="routerLabel">10.37.1.1</span></p>
+            <p class="eyebrow">HOME MESH / <span id="routerLabel">192.168.1.1</span></p>
             <h1 id="pageTitle">你的网络，一眼看清。</h1>
             <p class="hero-copy" id="heroCopy">
               实时查看每个 Velop 节点、回程质量与当前接入设备。所有数据仅在本机与路由器之间流动。
@@ -184,7 +184,7 @@
 
       <footer>
         <span>MeshScope</span>
-        <span>本地观测 · 密码不落盘 · 支持当前 Node 重启</span>
+        <span>本地观测 · 仅允许当前 Node 重启</span>
       </footer>
     </div>
 
@@ -196,40 +196,45 @@
         </div>
         <p class="section-kicker">LOCAL CONNECTION</p>
         <h2 id="connectTitle">连接 Linksys Mesh</h2>
-        <p>
-          路由器网关已识别为 <strong>10.37.1.1</strong>。你提供的
-          10.37.1.204 是当前 Mac 的客户端地址。
-        </p>
-        <label>
-          <span>路由器地址</span>
-          <input id="hostInput" name="host" value="10.37.1.1" inputmode="url" autocomplete="off" required />
-        </label>
-        <label>
-          <span>本地登录密码</span>
-          <div class="password-field">
-            <input id="passwordInput" name="password" type="password" autocomplete="current-password" required />
-            <button id="togglePassword" type="button" aria-label="显示密码">显示</button>
-          </div>
-        </label>
+        <p id="connectDescription">输入主 Linksys 路由器的局域网地址和本地管理密码。</p>
+        <div class="managed-connection-panel" id="managedConnectionPanel" hidden>
+          <span>固件中的路由器地址</span>
+          <strong id="managedRouterHost">—</strong>
+          <p>页面只能重新读取当前配置，不会保存网页中输入的凭证。</p>
+        </div>
+        <div id="editableConnectionFields">
+          <label>
+            <span>主路由器地址</span>
+            <input id="hostInput" name="host" value="192.168.1.1" inputmode="url" autocomplete="off" required />
+          </label>
+          <label>
+            <span>本地登录密码</span>
+            <div class="password-field">
+              <input id="passwordInput" name="password" type="password" autocomplete="current-password" required />
+              <button id="togglePassword" type="button" aria-label="显示密码">显示</button>
+            </div>
+          </label>
+        </div>
         <div class="connect-note">
           <span>✓</span>
-          <p>密码仅保存在这个本地进程的内存中；关闭服务后立即清除。</p>
+          <p id="connectNoteText">密码仅保存在本地 Python 进程内存中；服务停止后清除。</p>
         </div>
         <p class="form-error" id="connectError" role="alert"></p>
         <button class="button button-primary" id="connectButton" type="submit">
-          <span>连接并读取网络</span><i aria-hidden="true">→</i>
+          <span id="connectButtonLabel">连接并读取网络</span><i aria-hidden="true">→</i>
         </button>
       </form>
     </div>
 
     <div class="drawer-backdrop" id="detailBackdrop"></div>
-    <aside class="detail-drawer" id="detailDrawer" aria-label="详情" aria-hidden="true">
+    <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-label="详情" aria-hidden="true">
       <button class="modal-close" id="detailClose" type="button" aria-label="关闭详情">×</button>
       <div id="detailContent"></div>
     </aside>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="/refresh-state.js" defer></script>
+    <script src="/connection-mode.js" defer></script>
     <script src="/node-restart-state.js" defer></script>
     <script src="/detail-data.js" defer></script>
     <script src="/topology-layout.js" defer></script>

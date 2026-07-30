@@ -258,6 +258,7 @@
         revision: deviceOutput.revision,
         edgeHosted: true,
         edgeAddress: edgeMeta.edgeAddress || null,
+        routerConnected: edgeMeta.routerConnected !== false,
       },
       network: {
         manufacturer: deviceInfo.manufacturer || "Linksys",
@@ -299,7 +300,7 @@
   function normalizeEnvelope(payload) {
     if (!payload?.rawJnap) return payload;
     return normalize(
-      payload.router || payload.meta?.router || "10.37.1.1",
+      payload.router || payload.meta?.router || "192.168.1.1",
       payload.rawJnap,
       payload.meta || {},
     );

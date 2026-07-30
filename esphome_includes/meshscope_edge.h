@@ -80,6 +80,7 @@ struct NodeInfo {
 static std::string router_host;
 static std::string router_password;
 static std::string authorization;
+static std::string web_authorization;
 static Snapshot snapshot;
 static SemaphoreHandle_t snapshot_mutex = nullptr;
 static SemaphoreHandle_t jnap_mutex = nullptr;
@@ -138,8 +139,10 @@ static bool wifi_connected() {
   return wifi != nullptr && wifi->is_connected();
 }
 
-static std::string base64_basic_auth(const std::string &password) {
-  const std::string input = "admin:" + password;
+static std::string base64_basic_auth(
+    const std::string &username,
+    const std::string &password) {
+  const std::string input = username + ":" + password;
   size_t output_size = 0;
   mbedtls_base64_encode(
       nullptr,
@@ -159,6 +162,54 @@ static std::string base64_basic_auth(const std::string &password) {
   }
   encoded.resize(written);
   return "Basic " + encoded;
+}
+
+static bool base64_decode_string(
+    const std::string &encoded,
+    std::string &decoded) {
+  size_t required = 0;
+  const int sizing = mbedtls_base64_decode(
+      nullptr,
+      0,
+      &required,
+      reinterpret_cast<const unsigned char *>(encoded.data()),
+      encoded.size());
+  if (sizing != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || required == 0) return false;
+  decoded.resize(required);
+  size_t written = 0;
+  const int result = mbedtls_base64_decode(
+      reinterpret_cast<unsigned char *>(decoded.data()),
+      decoded.size(),
+      &written,
+      reinterpret_cast<const unsigned char *>(encoded.data()),
+      encoded.size());
+  if (result != 0) {
+    decoded.clear();
+    return false;
+  }
+  decoded.resize(written);
+  return true;
+}
+
+static bool authorize_web_request(httpd_req_t *request) {
+  const size_t length = httpd_req_get_hdr_value_len(request, "Authorization");
+  std::vector<char> header(length + 1);
+  const bool authorized =
+      length > 0 &&
+      httpd_req_get_hdr_value_str(
+          request,
+          "Authorization",
+          header.data(),
+          header.size()) == ESP_OK &&
+      web_authorization == header.data();
+  if (authorized) return true;
+  httpd_resp_set_status(request, "401 Unauthorized");
+  httpd_resp_set_type(request, "text/plain; charset=utf-8");
+  httpd_resp_set_hdr(request, "WWW-Authenticate", "Basic realm=\"MeshScope\"");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "Connection", "close");
+  httpd_resp_send(request, "MeshScope login required.", HTTPD_RESP_USE_STRLEN);
+  return false;
 }
 
 static esp_err_t http_event_handler(esp_http_client_event_t *event) {
@@ -530,6 +581,7 @@ static esp_err_t send_error_json(
 }
 
 static esp_err_t asset_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   const auto *asset = static_cast<const meshscope_web_assets::Asset *>(request->user_ctx);
   if (asset == nullptr) return ESP_FAIL;
   httpd_resp_set_type(request, asset->content_type);
@@ -544,6 +596,7 @@ static esp_err_t asset_handler(httpd_req_t *request) {
 }
 
 static esp_err_t status_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   const std::string ip = edge_ip();
   uint32_t generation = 0;
   std::string cached_at;
@@ -554,8 +607,10 @@ static esp_err_t status_handler(httpd_req_t *request) {
     ready = snapshot.ready;
     xSemaphoreGive(snapshot_mutex);
   }
+  const bool connected = router_connected.load(std::memory_order_acquire);
   cJSON *root = cJSON_CreateObject();
-  cJSON_AddBoolToObject(root, "connected", ready);
+  cJSON_AddBoolToObject(root, "connected", connected);
+  cJSON_AddBoolToObject(root, "snapshotReady", ready);
   cJSON_AddBoolToObject(root, "demo", false);
   cJSON_AddBoolToObject(root, "managedConnection", true);
   cJSON_AddStringToObject(root, "router", router_host.c_str());
@@ -571,6 +626,7 @@ static esp_err_t status_handler(httpd_req_t *request) {
 }
 
 static esp_err_t topology_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
     return send_error_json(request, "503 Service Unavailable", "拓扑缓存暂时繁忙。");
   }
@@ -587,7 +643,9 @@ static esp_err_t topology_handler(httpd_req_t *request) {
       "{\"router\":\"" + router_host +
       "\",\"meta\":{\"updatedAt\":\"" + snapshot.updated_at +
       "\",\"edgeAddress\":\"" + ip +
-      "\",\"generation\":" + std::to_string(snapshot.generation) +
+      "\",\"routerConnected\":" +
+      (router_connected.load(std::memory_order_acquire) ? "true" : "false") +
+      ",\"generation\":" + std::to_string(snapshot.generation) +
       "},\"rawJnap\":{";
   esp_err_t result = httpd_resp_send_chunk(request, prefix.c_str(), prefix.size());
   bool first = true;
@@ -621,6 +679,7 @@ static void request_refresh() {
 }
 
 static esp_err_t refresh_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   const uint32_t previous = current_generation();
   request_refresh();
   const uint32_t started = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -632,6 +691,7 @@ static esp_err_t refresh_handler(httpd_req_t *request) {
 }
 
 static esp_err_t connect_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   if (request->content_len > 0) {
     char discard[256];
     size_t remaining = request->content_len;
@@ -742,6 +802,7 @@ static bool services_contain(const cJSON *identity, const char *needle) {
 }
 
 static esp_err_t capabilities_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   std::string node_id;
   if (!query_value(request, "nodeId", node_id)) {
     return send_error_json(request, "400 Bad Request", "缺少 Node ID。");
@@ -853,6 +914,7 @@ static bool read_request_json(httpd_req_t *request, std::string &body, size_t ma
 }
 
 static esp_err_t restart_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
   const size_t content_type_length =
       httpd_req_get_hdr_value_len(request, "Content-Type");
   std::vector<char> content_type(content_type_length + 1);
@@ -909,6 +971,7 @@ static esp_err_t restart_handler(httpd_req_t *request) {
 }
 
 static esp_err_t not_found_handler(httpd_req_t *request, httpd_err_code_t) {
+  if (!authorize_web_request(request)) return ESP_OK;
   return send_error_json(request, "404 Not Found", "未找到接口。");
 }
 
@@ -959,13 +1022,28 @@ static void start_server() {
   ESP_LOGI(TAG, "MeshScope HTTP server started on port 80");
 }
 
-static void setup(const char *host, const char *password) {
+static void setup(
+    const char *host,
+    const char *password_b64,
+    const char *web_username,
+    const char *web_password) {
   router_host = host ?: "";
-  router_password = password ?: "";
-  authorization = base64_basic_auth(router_password);
+  const std::string encoded_password = password_b64 ?: "";
+  const bool router_password_ok =
+      encoded_password != "SET_IN_LOCAL_CONFIG" &&
+      base64_decode_string(encoded_password, router_password);
+  authorization = base64_basic_auth("admin", router_password);
+  web_authorization = base64_basic_auth(
+      web_username ?: "",
+      web_password ?: "");
   snapshot_mutex = xSemaphoreCreateMutex();
   jnap_mutex = xSemaphoreCreateMutex();
-  if (snapshot_mutex == nullptr || jnap_mutex == nullptr || authorization.empty()) {
+  if (!router_password_ok || snapshot_mutex == nullptr || jnap_mutex == nullptr ||
+      authorization.empty() || web_authorization.empty() ||
+      (web_username ?: "")[0] == '\0' ||
+      (web_password ?: "")[0] == '\0' ||
+      strcmp(web_username ?: "", "SET_IN_LOCAL_CONFIG") == 0 ||
+      strcmp(web_password ?: "", "SET_IN_LOCAL_CONFIG") == 0) {
     ESP_LOGE(TAG, "MeshScope initialization failed");
     return;
   }
@@ -1010,8 +1088,12 @@ static std::string last_update_copy() {
 
 }  // namespace meshscope_edge
 
-inline void meshscope_edge_setup(const char *host, const char *password) {
-  meshscope_edge::setup(host, password);
+inline void meshscope_edge_setup(
+    const char *host,
+    const char *password_b64,
+    const char *web_username,
+    const char *web_password) {
+  meshscope_edge::setup(host, password_b64, web_username, web_password);
 }
 
 inline void meshscope_edge_force_refresh() {

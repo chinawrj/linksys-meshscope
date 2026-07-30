@@ -4,12 +4,18 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 VM_NAME=${MESH_FIRMWARE_VM:-mesh-firmware}
-MX5300_IMAGE=${1:-/Users/rjwang/Downloads/FW_MX5300_1.1.12.210066_prod.img}
-MX4200_IMAGE=${2:-"$REPO_ROOT/firmware-analysis/input/FW_MX4200_1.0.13.216903_prod.img"}
+MX5300_IMAGE=${1:-}
+MX4200_IMAGE=${2:-}
 OUTPUT_PARENT=${3:-"$REPO_ROOT/firmware-analysis/work/mqtt-parent-images"}
 RUN_ID=$(date -u '+%Y%m%dT%H%M%SZ')-$$
-GUEST_STAGE="/home/rjwang.guest/meshscope-mqtt-builder-$RUN_ID"
+GUEST_STAGE="/tmp/meshscope-mqtt-builder-$RUN_ID"
+GUEST_UBIREADER_BIN_DIR=${MESH_UBIREADER_BIN_DIR:-/usr/local/bin}
 HOST_OUTPUT="$OUTPUT_PARENT/$RUN_ID"
+
+if [[ -z "$MX5300_IMAGE" || -z "$MX4200_IMAGE" ]]; then
+    echo "Usage: $0 <MX5300-official.img> <MX4200-official.img> [output-parent]" >&2
+    exit 64
+fi
 
 for command_name in limactl shasum; do
     command -v "$command_name" >/dev/null || {
@@ -62,7 +68,7 @@ limactl copy \
     "$VM_NAME:$GUEST_STAGE/inputs/"
 
 limactl shell "$VM_NAME" -- bash -lc \
-    "cd '$GUEST_STAGE' && UBIREADER_BIN_DIR=/home/rjwang.guest/ubi-tools/bin bash tools/build_linksys_mqtt_images_linux.sh 'inputs/$(basename "$MX5300_IMAGE")' 'inputs/$(basename "$MX4200_IMAGE")' output"
+    "cd '$GUEST_STAGE' && UBIREADER_BIN_DIR='$GUEST_UBIREADER_BIN_DIR' bash tools/build_linksys_mqtt_images_linux.sh 'inputs/$(basename "$MX5300_IMAGE")' 'inputs/$(basename "$MX4200_IMAGE")' output"
 
 mkdir "$HOST_OUTPUT"
 limactl copy --backend=rsync -r \

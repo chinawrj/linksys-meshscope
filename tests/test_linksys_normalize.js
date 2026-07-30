@@ -26,7 +26,7 @@ const raw = {
       },
       {
         deviceID: "child",
-        friendlyName: "BigTree",
+        friendlyName: "Atrium",
         nodeType: "Slave",
         model: { modelNumber: "MX5300" },
         unit: { firmwareVersion: "1.1.12.210066" },
@@ -90,12 +90,14 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
   const result = normalize("10.0.0.1", raw, {
     updatedAt: "2026-01-01T00:00:00Z",
     edgeAddress: "10.0.0.50",
+    routerConnected: false,
   });
   const child = result.nodes.find((item) => item.id === "child");
   const client = result.clients.find((item) => item.id === "client");
 
   assert.equal(result.meta.source, "Linksys JNAP · ESP32-C5");
   assert.equal(result.meta.edgeAddress, "10.0.0.50");
+  assert.equal(result.meta.routerConnected, false);
   assert.equal(result.summary.nodesOnline, 2);
   assert.equal(result.summary.clientsOnline, 1);
   assert.equal(result.summary.clientsKnown, 2);
@@ -103,7 +105,7 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
   assert.equal(child.band, "5GH");
   assert.equal(child.speedMbps, 512.5);
   assert.equal(child.clientCount, 1);
-  assert.equal(client.nodeName, "BigTree");
+  assert.equal(client.nodeName, "Atrium");
   assert.equal(client.speedMbps, 433);
   assert.equal(result.network.radioCount, 3);
   assert.equal(result.network.nodeSteeringEnabled, true);

@@ -13,7 +13,7 @@ Slave Node.
 - Flashing either MX5300 image onto an MX5300 Slave in an MX4200-led Mesh will
   not expose a broker because the Slave does not start Mosquitto.
 - In the currently analyzed MX4200-led topology, the corresponding MX4200
-  Master image is the one that can expose `10.37.1.1:1883`.
+  Master image is the one that can expose `<main-router-ip>:1883`.
 
 ## Plans
 

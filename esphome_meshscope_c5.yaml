@@ -1,10 +1,13 @@
 substitutions:
   meshscope_wifi_ssid: "SET_IN_LOCAL_CONFIG"
   meshscope_wifi_password: "SET_IN_LOCAL_CONFIG"
-  meshscope_router_host: "10.37.1.1"
-  meshscope_router_password: "SET_IN_LOCAL_CONFIG"
-  meshscope_api_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  meshscope_router_host: "192.168.1.1"
+  meshscope_router_password_b64: "SET_IN_LOCAL_CONFIG"
+  meshscope_web_username: "SET_IN_LOCAL_CONFIG"
+  meshscope_web_password: "SET_IN_LOCAL_CONFIG"
+  meshscope_api_key: "SET_IN_LOCAL_CONFIG"
   meshscope_ota_password: "SET_IN_LOCAL_CONFIG"
+  meshscope_timezone: "UTC"
 
 esphome:
   name: meshscope-c5
@@ -19,7 +22,9 @@ esphome:
       - lambda: |-
           meshscope_edge_setup(
               "${meshscope_router_host}",
-              "${meshscope_router_password}");
+              "${meshscope_router_password_b64}",
+              "${meshscope_web_username}",
+              "${meshscope_web_password}");
 
 esp32:
   board: esp32-c5-devkitc-1
@@ -59,6 +64,7 @@ wifi:
   reboot_timeout: 0s
 
 api:
+  reboot_timeout: 0s
   encryption:
     key: "${meshscope_api_key}"
 
@@ -69,7 +75,7 @@ ota:
 time:
   - platform: sntp
     id: meshscope_clock
-    timezone: Asia/Shanghai
+    timezone: "${meshscope_timezone}"
 
 binary_sensor:
   - platform: template

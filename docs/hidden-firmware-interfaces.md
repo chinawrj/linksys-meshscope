@@ -132,7 +132,7 @@ There are three possible read paths:
 3. `GetNodesWirelessNetworkConnections` exposes a serving AP BSSID for each
    connected STA. This can infer a Node's radio BSSID only when that radio has
    a client, so it fails for zero-client Nodes such as the previously observed
-   BigTree state.
+   Atrium state.
 
 `nodes/setup/GetSelectedChannels` is insufficient by itself. Its source reads
 the DEVINFO BSSID only to determine whether a radio exists, then deliberately
@@ -344,7 +344,7 @@ The next safe milestone is an offline implementation of:
 1. target eligibility and descendant-cycle validation;
 2. Parent radio tuple parsing from a captured/sanitized DEVINFO fixture;
 3. a command preview and state machine with no transport attached; and
-4. unit tests for BigTree-style zero-client targets, failures, timeouts, and
+4. unit tests for Atrium-style zero-client targets, failures, timeouts, and
    subtree disruption.
 
 Actual activation should wait until a legitimate authenticated command

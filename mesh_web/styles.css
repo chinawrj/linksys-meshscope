@@ -379,6 +379,7 @@ button {
 }
 
 .panel {
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(255, 254, 250, 0.94);
@@ -448,6 +449,9 @@ button {
 .legend-dot.offline { background: #b8bbb8; }
 
 .map-scroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   padding: 6px;
 }
@@ -1308,6 +1312,38 @@ footer {
   line-height: 1.5;
 }
 
+.managed-connection-panel {
+  display: grid;
+  gap: 6px;
+  margin: 18px 0 4px;
+  padding: 14px;
+  border: 1px solid #c9dcd4;
+  border-radius: 12px;
+  background: var(--mint-soft);
+}
+
+.managed-connection-panel[hidden],
+#editableConnectionFields[hidden] {
+  display: none;
+}
+
+.managed-connection-panel span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.managed-connection-panel strong {
+  font-size: 14px;
+}
+
+.managed-connection-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
+
 .form-error {
   min-height: 17px;
   margin: 10px 0 3px;
@@ -1846,10 +1882,38 @@ footer {
     height: 70px;
   }
 
-  .live-chip,
-  .refresh-control,
-  .button-quiet {
+  .live-chip {
     display: none;
+  }
+
+  .brand small,
+  .refresh-control > span {
+    display: none;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
+  .refresh-control {
+    padding: 0 4px;
+  }
+
+  .refresh-control select {
+    padding: 0 19px 0 7px;
+  }
+
+  .button-quiet {
+    width: 54px;
+    min-width: 54px;
+    padding: 0;
+    overflow: hidden;
+    font-size: 0;
+  }
+
+  .button-quiet::after {
+    content: "设置";
+    font-size: 10px;
   }
 
   .hero {
