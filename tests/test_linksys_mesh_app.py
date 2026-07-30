@@ -18,12 +18,12 @@ class LinksysMeshAppTest(unittest.TestCase):
                 f"non-read-only action was added to the allowlist: {action}",
             )
 
-        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "非只读"):
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "non-read-only"):
             linksys_mesh_app.jnap_call(
                 linksys_mesh_app.RouterSession(host="10.0.0.1", password="test-only"),
                 "nodes/topologyoptimization/SetTopologyOptimizationSettings2",
             )
-        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "未经批准"):
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "unapproved"):
             linksys_mesh_app.jnap_mutating_call(
                 linksys_mesh_app.RouterSession(host="10.0.0.1", password="test-only"),
                 "core/FactoryReset",
@@ -185,7 +185,7 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertTrue(report["demo"])
         self.assertTrue(report["manualParentSelection"]["firmwareInternalPathDiscovered"])
         self.assertTrue(report["individualRestart"]["disabledInDemo"])
-        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "演示模式"):
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "Demo mode"):
             state.restart_node("demo-big-tree")
 
     def test_probe_node_uses_synchronized_credentials_and_read_only_actions(self):
@@ -279,14 +279,14 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertEqual(result["requestedThroughNode"]["name"], "Atrium")
 
         with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
-            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "正在重启"):
+            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "already restarting"):
                 state.restart_node("big")
             reboot.assert_not_called()
 
         state.node_restart_cooldowns.clear()
         state.cache["nodes"][0]["online"] = False
         with patch("linksys_mesh_app.jnap_mutating_call") as reboot:
-            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "离线"):
+            with self.assertRaisesRegex(linksys_mesh_app.RouterError, "offline"):
                 state.restart_node("big")
             reboot.assert_not_called()
 

@@ -110,16 +110,18 @@ class MeshState:
 
     def connect(self, host: str, password: str) -> dict[str, Any]:
         if self.demo:
-            raise RouterError("演示模式不会连接或认证真实路由器。")
+            raise RouterError("Demo mode does not connect to or authenticate with a real router.")
         clean_host = validate_router_host(host)
         if not password:
-            raise RouterError("请输入本地路由器密码。")
+            raise RouterError("Enter the local router password.")
         candidate = RouterSession(host=clean_host, password=password)
         response = jnap_call(candidate, "core/CheckAdminPassword")
         if response.get("result") != "OK":
             if response.get("result") == "_ErrorUnauthorized":
-                raise RouterError("密码不正确，请重新输入。")
-            raise RouterError(f"路由器拒绝认证：{response.get('result', '未知错误')}")
+                raise RouterError("The password is incorrect. Try again.")
+            raise RouterError(
+                f"The router rejected authentication: {response.get('result', 'unknown error')}"
+            )
         with self.lock:
             self.session = candidate
             self.session.connected_at = now_iso()
@@ -148,7 +150,7 @@ class MeshState:
                 self.cache_at = time.monotonic()
                 return copy.deepcopy(topology)
             if not self.session.connected:
-                raise RouterError("尚未连接路由器。")
+                raise RouterError("No router is connected.")
             if not force and self.cache and time.monotonic() - self.cache_at < 4:
                 return self.cache
             session = RouterSession(
@@ -174,11 +176,15 @@ class MeshState:
         if device_response.get("result") == "_ErrorUnauthorized":
             with self.lock:
                 self.session.clear()
-            raise RouterError("路由器登录已失效，请重新连接。")
+            raise RouterError("The router session has expired. Reconnect to continue.")
         if device_response.get("result") != "OK":
             raise RouterError(
-                "无法读取设备列表："
-                + str(device_response.get("error") or device_response.get("result") or "未知错误")
+                "Unable to read the device list: "
+                + str(
+                    device_response.get("error")
+                    or device_response.get("result")
+                    or "unknown error"
+                )
             )
 
         normalized = normalize_topology(session.host, raw)
@@ -191,7 +197,7 @@ class MeshState:
         """Probe one known node through safe, read-only local JNAP actions."""
         clean_id = (node_id or "").strip()
         if not clean_id:
-            raise RouterError("缺少 Node ID。")
+            raise RouterError("Node ID is required.")
 
         with self.lock:
             if self.demo:
@@ -201,10 +207,10 @@ class MeshState:
                     None,
                 )
                 if not node:
-                    raise RouterError("未找到指定 Node。")
+                    raise RouterError("The selected node was not found.")
                 return demo_node_probe(node)
             if not self.session.connected:
-                raise RouterError("尚未连接路由器。")
+                raise RouterError("No router is connected.")
             cached_probe = self.node_probe_cache.get(clean_id)
             if cached_probe and time.monotonic() - cached_probe[0] < 30:
                 return cached_probe[1]
@@ -215,9 +221,9 @@ class MeshState:
             topology = self.refresh()
         node = next((item for item in topology.get("nodes", []) if item.get("id") == clean_id), None)
         if not node:
-            raise RouterError("未找到指定 Node。")
+            raise RouterError("The selected node was not found.")
         if not node.get("online"):
-            raise RouterError("该 Node 当前离线，无法只读探测。")
+            raise RouterError("The selected node is offline and cannot be probed.")
         node_host = validate_router_host(str(node.get("ipAddress") or ""))
         session = RouterSession(host=node_host, password=password)
         actions = (
@@ -238,7 +244,9 @@ class MeshState:
 
         password_check = raw["core/CheckAdminPassword"]
         if password_check.get("result") == "_ErrorUnauthorized":
-            raise RouterError("该 Node 没有接受主路由器的同步凭证。")
+            raise RouterError(
+                "The selected node did not accept the credentials synchronized from Main."
+            )
         identity = output_of(raw, "core/GetDeviceInfo")
         mode = output_of(raw, "nodes/smartmode/GetDeviceMode")
         optimization = output_of(
@@ -296,21 +304,21 @@ class MeshState:
         """Restart one selected online Node through its local CA JNAP endpoint."""
         clean_id = (node_id or "").strip()
         if not clean_id:
-            raise RouterError("缺少 Node ID。")
+            raise RouterError("Node ID is required.")
         with self.lock:
             if self.demo:
-                raise RouterError("演示模式不会向任何 Node 发送重启请求。")
+                raise RouterError("Demo mode never sends restart requests to a node.")
             if not self.session.connected:
-                raise RouterError("尚未连接路由器。")
+                raise RouterError("No router is connected.")
             topology = self.cache
             password = self.session.password
         if not topology:
             topology = self.refresh()
         node = next((item for item in topology.get("nodes", []) if item.get("id") == clean_id), None)
         if not node:
-            raise RouterError("未找到指定 Node。")
+            raise RouterError("The selected node was not found.")
         if not node.get("online"):
-            raise RouterError("该 Node 当前离线，无法发起重启。")
+            raise RouterError("The selected node is offline and cannot be restarted.")
         node_host = validate_router_host(str(node.get("ipAddress") or ""))
         with self.lock:
             now = time.monotonic()
@@ -319,7 +327,9 @@ class MeshState:
                 last_restart is not None
                 and now - last_restart < NODE_RESTART_COOLDOWN_SECONDS
             ):
-                raise RouterError("该 Node 正在重启，请等待其恢复在线。")
+                raise RouterError(
+                    "The selected node is already restarting. Wait for it to come back online."
+                )
             self.node_restart_cooldowns[clean_id] = now
         try:
             response = jnap_mutating_call(
@@ -334,8 +344,8 @@ class MeshState:
             with self.lock:
                 self.node_restart_cooldowns.pop(clean_id, None)
             raise RouterError(
-                "Node 未接受重启请求："
-                + str(response.get("error") or response.get("result") or "未知错误")
+                "The node did not accept the restart request: "
+                + str(response.get("error") or response.get("result") or "unknown error")
             )
         with self.lock:
             self.node_probe_cache.clear()
@@ -348,7 +358,7 @@ class MeshState:
             },
             "action": "core/Reboot",
             "scope": "single-node",
-            "message": "重启请求只发送到所选 Node 的本地端点。",
+            "message": "The restart request was sent only to the selected node's local endpoint.",
             "requestedAt": now_iso(),
         }
 
@@ -366,29 +376,29 @@ def validate_router_host(value: str) -> str:
         value = urlparse(value).hostname or ""
     value = value.strip("[]").rstrip(".")
     if not value:
-        raise RouterError("请输入路由器地址。")
+        raise RouterError("Enter a router address.")
     if value.lower().endswith(".local"):
         return value
     try:
         addresses = socket.getaddrinfo(value, 443, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
-        raise RouterError("无法解析路由器地址。") from exc
+        raise RouterError("The router address could not be resolved.") from exc
     for address in {item[4][0] for item in addresses}:
         ip = ipaddress.ip_address(address)
         if not (ip.is_private or ip.is_link_local or ip.is_loopback):
-            raise RouterError("为安全起见，只允许连接局域网地址。")
+            raise RouterError("For safety, MeshScope only connects to private LAN addresses.")
     return value
 
 
 def jnap_call(session: RouterSession, action: str) -> dict[str, Any]:
     if action not in READ_ONLY_ACTIONS:
-        raise RouterError("已阻止非只读路由器动作。")
+        raise RouterError("A non-read-only router action was blocked.")
     return _jnap_request(session, action, READ_ONLY_ACTIONS[action])
 
 
 def jnap_mutating_call(session: RouterSession, action: str) -> dict[str, Any]:
     if action not in MUTATING_ACTIONS:
-        raise RouterError("已阻止未经批准的路由器动作。")
+        raise RouterError("An unapproved router action was blocked.")
     return _jnap_request(session, action, MUTATING_ACTIONS[action])
 
 
@@ -396,7 +406,7 @@ def _jnap_request(
     session: RouterSession, action: str, data: dict[str, Any]
 ) -> dict[str, Any]:
     if not session.password:
-        raise RouterError("没有可用的路由器密码。")
+        raise RouterError("No router password is available.")
     auth = base64.b64encode(f"admin:{session.password}".encode()).decode()
     body = json.dumps(data, separators=(",", ":")).encode()
     request = urllib.request.Request(
@@ -417,9 +427,9 @@ def _jnap_request(
         with urllib.request.urlopen(request, timeout=12, context=context) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise RouterError(f"路由器返回 HTTP {exc.code}。") from exc
+        raise RouterError(f"The router returned HTTP {exc.code}.") from exc
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise RouterError(f"无法连接 {session.host}：{exc}") from exc
+        raise RouterError(f"Unable to connect to {session.host}: {exc}") from exc
 
 
 def output_of(raw: dict[str, dict[str, Any]], action: str) -> dict[str, Any]:
@@ -457,22 +467,22 @@ def friendly_name(device: dict[str, Any]) -> str:
         props.get("userDeviceName")
         or device.get("friendlyName")
         or model.get("modelNumber")
-        or "未命名设备"
+        or "Unnamed device"
     )
 
 
 def signal_quality(rssi: int | float | None) -> dict[str, Any]:
     if rssi is None:
-        return {"label": "未知", "score": None, "tone": "muted"}
+        return {"label": "Unknown", "score": None, "tone": "muted"}
     value = float(rssi)
     score = max(0, min(100, round(2 * (value + 100))))
     if value >= -55:
-        return {"label": "极佳", "score": score, "tone": "good"}
+        return {"label": "Excellent", "score": score, "tone": "good"}
     if value >= -67:
-        return {"label": "良好", "score": score, "tone": "good"}
+        return {"label": "Good", "score": score, "tone": "good"}
     if value >= -75:
-        return {"label": "一般", "score": score, "tone": "warn"}
-    return {"label": "较弱", "score": score, "tone": "bad"}
+        return {"label": "Fair", "score": score, "tone": "warn"}
+    return {"label": "Weak", "score": score, "tone": "bad"}
 
 
 def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
@@ -565,7 +575,7 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
             {
                 **spec,
                 "location": spec["name"],
-                "role": "主节点" if spec["isAuthority"] else "子节点",
+                "role": "Primary node" if spec["isAuthority"] else "Child node",
                 "online": True,
                 "description": "Linksys Velop Mesh Node",
                 "hardwareVersion": "2" if spec["model"] == "WHW03" else "1",
@@ -670,7 +680,7 @@ def build_demo_topology(host: str = DEFAULT_ROUTER) -> dict[str, Any]:
     online_backhaul = [node for node in nodes if not node["isAuthority"]]
     return {
         "meta": {
-            "source": "MeshScope 演示数据 · 不连接路由器",
+            "source": "MeshScope demo data · No router connection",
             "router": host,
             "updatedAt": now_iso(),
             "revision": "demo",
@@ -753,7 +763,7 @@ def demo_node_probe(node: dict[str, Any]) -> dict[str, Any]:
             "available": False,
             "transport": "not-available",
             "firmwareInternalPathDiscovered": True,
-            "reason": "演示模式只展示能力证据，不连接或控制路由器。",
+            "reason": "Demo mode shows capability evidence without connecting to or controlling a router.",
         },
         "observedAt": now_iso(),
     }
@@ -876,7 +886,7 @@ def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, A
                 "id": device_id,
                 "name": friendly_name(device),
                 "location": props.get("userDeviceLocation") or friendly_name(device),
-                "role": "主节点" if device.get("isAuthority") else "子节点",
+                "role": "Primary node" if device.get("isAuthority") else "Child node",
                 "isAuthority": bool(device.get("isAuthority")),
                 "online": online,
                 "model": model.get("modelNumber") or "Linksys Velop",
@@ -975,7 +985,7 @@ def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, A
     ]
     return {
         "meta": {
-            "source": "Linksys JNAP · 本地只读",
+            "source": "Linksys JNAP · Local read-only access",
             "router": host,
             "updatedAt": now_iso(),
             "revision": device_output.get("revision"),
@@ -1041,7 +1051,7 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
             length = min(int(self.headers.get("Content-Length", "0")), 16_384)
             value = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
         except (ValueError, json.JSONDecodeError) as exc:
-            raise RouterError("请求格式无效。") from exc
+            raise RouterError("The request body is invalid.") from exc
         return value if isinstance(value, dict) else {}
 
     def do_GET(self) -> None:
@@ -1083,11 +1093,14 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 self.send_json(STATE.restart_node(str(body.get("nodeId") or "")))
                 return
-            self.send_json({"error": "未找到接口。"}, HTTPStatus.NOT_FOUND)
+            self.send_json({"error": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
         except RouterError as exc:
             self.send_json({"error": str(exc), **STATE.status()}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
-            self.send_json({"error": f"本地服务发生错误：{exc}"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            self.send_json(
+                {"error": f"The local service encountered an error: {exc}"},
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def serve_static(self, route: str) -> None:
         if route in ("", "/"):

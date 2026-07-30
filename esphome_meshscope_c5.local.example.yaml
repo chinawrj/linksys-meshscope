@@ -14,4 +14,4 @@ substitutions:
   # Generate with: openssl rand -base64 32
   meshscope_api_key: "YOUR_32_BYTE_BASE64_ESPHOME_API_KEY"
   meshscope_ota_password: "YOUR_UNIQUE_OTA_PASSWORD"
-  meshscope_timezone: "Asia/Shanghai"
+  meshscope_timezone: "Etc/UTC"

@@ -13,12 +13,12 @@ test("tracks requested, offline, and recovered phases", () => {
   const operations = new Map();
   const operation = begin(operations, { id: "big", name: "Atrium" }, 1_000);
 
-  assert.equal(label(operation), "重启请求已发送");
+  assert.equal(label(operation), "Restart requested");
   assert.deepEqual(reconcile(operations, [{ id: "big", online: true }], 5_000), []);
 
   assert.deepEqual(reconcile(operations, [{ id: "big", online: false }], 10_000), []);
   assert.equal(operation.phase, "offline");
-  assert.equal(label(operation), "正在恢复上线");
+  assert.equal(label(operation), "Coming back online");
 
   assert.deepEqual(
     reconcile(operations, [{ id: "big", online: true }], 20_000),

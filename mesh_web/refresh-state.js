@@ -38,17 +38,17 @@
     refreshDue,
     error,
   }) {
-    if (!hasTopology) return { mode: "waiting", text: "等待连接" };
-    if (refreshing) return { mode: "refreshing", text: "正在刷新" };
-    if (!interval) return { mode: "paused", text: "自动刷新已暂停" };
+    if (!hasTopology) return { mode: "waiting", text: "Waiting to connect" };
+    if (refreshing) return { mode: "refreshing", text: "Refreshing" };
+    if (!interval) return { mode: "paused", text: "Auto-refresh paused" };
     if (!visible && (refreshDue || (nextRefreshAt !== null && nextRefreshAt <= now))) {
-      return { mode: "stale", text: "后台暂停 · 返回即刷新" };
+      return { mode: "stale", text: "Paused in background · Refreshes on return" };
     }
     const seconds = nextRefreshAt === null
       ? interval
       : Math.max(0, Math.ceil((nextRefreshAt - now) / 1000));
-    if (error) return { mode: "error", text: `刷新失败 · ${seconds}s 后重试` };
-    return { mode: "live", text: `本地实时 · ${seconds}s` };
+    if (error) return { mode: "error", text: `Refresh failed · Retrying in ${seconds}s` };
+    return { mode: "live", text: `Local live · ${seconds}s` };
   }
 
   return {

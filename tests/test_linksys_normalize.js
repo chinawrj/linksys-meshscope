@@ -112,7 +112,7 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
 });
 
 test("normalizes only ESP32 envelopes and preserves Python responses", () => {
-  const existing = { meta: { source: "Linksys JNAP · 本地只读" }, nodes: [], clients: [] };
+  const existing = { meta: { source: "Linksys JNAP · Local read-only access" }, nodes: [], clients: [] };
   assert.equal(normalizeEnvelope(existing), existing);
 
   const result = normalizeEnvelope({

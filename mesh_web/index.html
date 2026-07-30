@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f4f2ec" />
     <meta
       name="description"
-      content="Linksys Velop 本地 Mesh 拓扑和客户端实时监控"
+      content="Local Linksys Velop mesh topology, backhaul, and client monitoring"
     />
     <title>MeshScope · Linksys Mesh Topology</title>
     <link rel="stylesheet" href="/styles.css" />
@@ -14,7 +14,7 @@
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="#" aria-label="MeshScope 首页">
+        <a class="brand" href="#" aria-label="MeshScope home">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>
             <strong>MeshScope</strong>
@@ -24,21 +24,21 @@
         <div class="header-actions">
           <div class="live-chip" id="liveChip">
             <span class="status-dot"></span>
-            <span id="liveText">等待连接</span>
+            <span id="liveText">Waiting to connect</span>
           </div>
           <label class="refresh-control">
-            <span>自动刷新</span>
-            <select id="refreshInterval" aria-label="自动刷新周期">
-              <option value="10">10 秒</option>
-              <option value="30" selected>30 秒</option>
-              <option value="60">1 分钟</option>
-              <option value="0">暂停</option>
+            <span>Auto-refresh</span>
+            <select id="refreshInterval" aria-label="Auto-refresh interval">
+              <option value="10">10 seconds</option>
+              <option value="30" selected>30 seconds</option>
+              <option value="60">1 minute</option>
+              <option value="0">Paused</option>
             </select>
           </label>
-          <button class="icon-button" id="refreshButton" type="button" aria-label="刷新网络数据" title="刷新">
+          <button class="icon-button" id="refreshButton" type="button" aria-label="Refresh network data" title="Refresh">
             <span aria-hidden="true">↻</span>
           </button>
-          <button class="button button-quiet" id="settingsButton" type="button" aria-label="连接设置">连接设置</button>
+          <button class="button button-quiet" id="settingsButton" type="button" aria-label="Connection settings">Connection settings</button>
         </div>
       </header>
 
@@ -46,38 +46,38 @@
         <section class="hero" aria-labelledby="pageTitle">
           <div>
             <p class="eyebrow">HOME MESH / <span id="routerLabel">192.168.1.1</span></p>
-            <h1 id="pageTitle">你的网络，一眼看清。</h1>
+            <h1 id="pageTitle">Your network, at a glance.</h1>
             <p class="hero-copy" id="heroCopy">
-              实时查看每个 Velop 节点、回程质量与当前接入设备。所有数据仅在本机与路由器之间流动。
+              See every Velop node, backhaul link, and connected device in real time. Your data stays between this device and your router.
             </p>
           </div>
           <div class="network-stamp">
-            <span class="network-stamp-label">网络状态</span>
-            <strong id="networkStatus">尚未连接</strong>
+            <span class="network-stamp-label">Network status</span>
+            <strong id="networkStatus">Not connected</strong>
             <small id="lastUpdated">—</small>
           </div>
         </section>
 
-        <section class="stat-grid" aria-label="网络摘要">
+        <section class="stat-grid" aria-label="Network summary">
           <article class="stat-card stat-blue">
             <span class="stat-icon" aria-hidden="true">◎</span>
-            <div><strong id="statNodes">—</strong><span>在线节点</span></div>
-            <small id="statNodesSub">等待数据</small>
+            <div><strong id="statNodes">—</strong><span>Online nodes</span></div>
+            <small id="statNodesSub">Waiting for data</small>
           </article>
           <article class="stat-card stat-mint">
             <span class="stat-icon" aria-hidden="true">⌁</span>
-            <div><strong id="statClients">—</strong><span>在线客户端</span></div>
-            <small id="statClientsSub">等待数据</small>
+            <div><strong id="statClients">—</strong><span>Online clients</span></div>
+            <small id="statClientsSub">Waiting for data</small>
           </article>
           <article class="stat-card stat-amber">
             <span class="stat-icon" aria-hidden="true">↯</span>
-            <div><strong id="statBackhaul">—</strong><span>回程总速率</span></div>
-            <small id="statBackhaulSub">等待数据</small>
+            <div><strong id="statBackhaul">—</strong><span>Total backhaul</span></div>
+            <small id="statBackhaulSub">Waiting for data</small>
           </article>
           <article class="stat-card stat-coral">
             <span class="stat-icon" aria-hidden="true">!</span>
-            <div><strong id="statAttention">—</strong><span>需要关注</span></div>
-            <small id="statAttentionSub">等待数据</small>
+            <div><strong id="statAttention">—</strong><span>Needs attention</span></div>
+            <small id="statAttentionSub">Waiting for data</small>
           </article>
         </section>
 
@@ -88,28 +88,28 @@
                 <p class="section-kicker">LIVE MAP</p>
                 <h2>Mesh Topology</h2>
               </div>
-              <div class="legend" aria-label="图例">
-                <span><i class="legend-line band-high"></i>5GH 高频道回程</span>
-                <span><i class="legend-line band-low"></i>5GL 低频道回程</span>
-                <span><i class="legend-dot online"></i>在线</span>
-                <span><i class="legend-dot warning"></i>信号偏弱</span>
-                <span><i class="legend-dot offline"></i>离线</span>
+              <div class="legend" aria-label="Topology legend">
+                <span><i class="legend-line band-high"></i>5GH high-band backhaul</span>
+                <span><i class="legend-line band-low"></i>5GL low-band backhaul</span>
+                <span><i class="legend-dot online"></i>Online</span>
+                <span><i class="legend-dot warning"></i>Weak signal</span>
+                <span><i class="legend-dot offline"></i>Offline</span>
               </div>
             </div>
             <div class="map-scroll">
               <div class="mesh-map" id="meshMap" aria-live="polite">
                 <div class="map-empty">
                   <span class="empty-orbit" aria-hidden="true"></span>
-                  <strong>连接后生成实时拓扑</strong>
-                  <p>主节点、子节点和回程链路将在这里出现。</p>
+                  <strong>Connect to build the live topology</strong>
+                  <p>The gateway, child nodes, and backhaul links will appear here.</p>
                 </div>
               </div>
             </div>
             <div class="steering-callout" id="steeringCallout">
               <span class="steering-icon" aria-hidden="true">⌁</span>
               <div>
-                <strong id="steeringTitle">Node Steering 状态读取中</strong>
-                <p id="steeringDescription">正在确认路由器的拓扑优化能力。</p>
+                <strong id="steeringTitle">Reading Node Steering status</strong>
+                <p id="steeringDescription">Checking the router's topology optimization capabilities.</p>
               </div>
               <span class="steering-mode" id="steeringMode">READ ONLY</span>
             </div>
@@ -119,23 +119,23 @@
             <div class="panel-heading">
               <div>
                 <p class="section-kicker">NETWORK PULSE</p>
-                <h2>网络健康</h2>
+                <h2>Network health</h2>
               </div>
               <span class="score-pill" id="healthScore">—</span>
             </div>
             <div class="health-hero">
               <div class="health-ring" id="healthRing">
-                <div><strong id="healthPercent">—</strong><span>健康评分</span></div>
+                <div><strong id="healthPercent">—</strong><span>Health score</span></div>
               </div>
-              <p id="healthSummary">连接路由器后查看网络健康情况。</p>
+              <p id="healthSummary">Connect to your router to see network health.</p>
             </div>
             <div class="health-list" id="healthList"></div>
             <div class="network-detail">
-              <div><span>网关型号</span><strong id="networkModel">—</strong></div>
-              <div><span>固件版本</span><strong id="networkFirmware">—</strong></div>
+              <div><span>Gateway model</span><strong id="networkModel">—</strong></div>
+              <div><span>Firmware version</span><strong id="networkFirmware">—</strong></div>
               <div><span>WAN</span><strong id="networkWan">—</strong></div>
               <div><span>Node Steering</span><strong id="nodeSteering">—</strong></div>
-              <div><span>指定 Parent</span><strong id="manualSteering">—</strong></div>
+              <div><span>Manual parent</span><strong id="manualSteering">—</strong></div>
             </div>
           </aside>
         </section>
@@ -144,16 +144,16 @@
           <div class="panel-heading clients-heading">
             <div>
               <p class="section-kicker">CONNECTED DEVICES</p>
-              <h2>客户端</h2>
+              <h2>Clients</h2>
             </div>
             <div class="client-tools">
-              <div class="segmented" role="group" aria-label="客户端状态筛选">
-                <button class="active" data-filter="online" type="button">在线</button>
-                <button data-filter="all" type="button">全部记录</button>
+              <div class="segmented" role="group" aria-label="Filter clients by status">
+                <button class="active" data-filter="online" type="button">Online</button>
+                <button data-filter="all" type="button">All records</button>
               </div>
               <label class="search-field">
                 <span aria-hidden="true">⌕</span>
-                <input id="clientSearch" type="search" placeholder="搜索名称、IP 或 MAC" />
+                <input id="clientSearch" type="search" placeholder="Search name, IP, or MAC" />
               </label>
             </div>
           </div>
@@ -161,74 +161,74 @@
             <table>
               <thead>
                 <tr>
-                  <th>设备</th>
-                  <th>接入节点</th>
-                  <th>连接</th>
-                  <th>信号</th>
-                  <th>速率</th>
-                  <th>IP 地址</th>
-                  <th><span class="sr-only">详情</span></th>
+                  <th>Device</th>
+                  <th>Connected node</th>
+                  <th>Connection</th>
+                  <th>Signal</th>
+                  <th>Rate</th>
+                  <th>IP address</th>
+                  <th><span class="sr-only">Details</span></th>
                 </tr>
               </thead>
               <tbody id="clientRows">
-                <tr><td colspan="7" class="empty-row">连接路由器后显示客户端。</td></tr>
+                <tr><td colspan="7" class="empty-row">Connect to your router to see clients.</td></tr>
               </tbody>
             </table>
           </div>
           <div class="table-footer">
-            <span id="clientCountLabel">0 台设备</span>
-            <button class="text-button" id="loadMoreButton" type="button" hidden>显示更多</button>
+            <span id="clientCountLabel">0 devices</span>
+            <button class="text-button" id="loadMoreButton" type="button" hidden>Show more</button>
           </div>
         </section>
       </main>
 
       <footer>
         <span>MeshScope</span>
-        <span>本地观测 · 仅允许当前 Node 重启</span>
+        <span>Local observation · Selected-node restart only</span>
       </footer>
     </div>
 
     <div class="modal-backdrop" id="connectModal" role="dialog" aria-modal="true" aria-labelledby="connectTitle">
       <form class="connect-card" id="connectForm">
-        <button class="modal-close" id="connectClose" type="button" aria-label="关闭">×</button>
+        <button class="modal-close" id="connectClose" type="button" aria-label="Close">×</button>
         <div class="connect-graphic" aria-hidden="true">
           <span></span><span></span><span></span>
         </div>
         <p class="section-kicker">LOCAL CONNECTION</p>
-        <h2 id="connectTitle">连接 Linksys Mesh</h2>
-        <p id="connectDescription">输入主 Linksys 路由器的局域网地址和本地管理密码。</p>
+        <h2 id="connectTitle">Connect to Linksys Mesh</h2>
+        <p id="connectDescription">Enter the LAN address and local admin password for your primary Linksys router.</p>
         <div class="managed-connection-panel" id="managedConnectionPanel" hidden>
-          <span>固件中的路由器地址</span>
+          <span>Router address in firmware</span>
           <strong id="managedRouterHost">—</strong>
-          <p>页面只能重新读取当前配置，不会保存网页中输入的凭证。</p>
+          <p>The page can refresh the current configuration but cannot receive or change credentials.</p>
         </div>
         <div id="editableConnectionFields">
           <label>
-            <span>主路由器地址</span>
+            <span>Primary router address</span>
             <input id="hostInput" name="host" value="192.168.1.1" inputmode="url" autocomplete="off" required />
           </label>
           <label>
-            <span>本地登录密码</span>
+            <span>Local admin password</span>
             <div class="password-field">
               <input id="passwordInput" name="password" type="password" autocomplete="current-password" required />
-              <button id="togglePassword" type="button" aria-label="显示密码">显示</button>
+              <button id="togglePassword" type="button" aria-label="Show password">Show</button>
             </div>
           </label>
         </div>
         <div class="connect-note">
           <span>✓</span>
-          <p id="connectNoteText">密码仅保存在本地 Python 进程内存中；服务停止后清除。</p>
+          <p id="connectNoteText">The password stays in this local Python process and is cleared when the service stops.</p>
         </div>
         <p class="form-error" id="connectError" role="alert"></p>
         <button class="button button-primary" id="connectButton" type="submit">
-          <span id="connectButtonLabel">连接并读取网络</span><i aria-hidden="true">→</i>
+          <span id="connectButtonLabel">Connect and load network</span><i aria-hidden="true">→</i>
         </button>
       </form>
     </div>
 
     <div class="drawer-backdrop" id="detailBackdrop"></div>
-    <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-label="详情" aria-hidden="true">
-      <button class="modal-close" id="detailClose" type="button" aria-label="关闭详情">×</button>
+    <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-label="Details" aria-hidden="true">
+      <button class="modal-close" id="detailClose" type="button" aria-label="Close details">×</button>
       <div id="detailContent"></div>
     </aside>
 

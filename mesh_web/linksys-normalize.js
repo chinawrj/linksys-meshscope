@@ -38,20 +38,20 @@
       props.userDeviceName ||
         device?.friendlyName ||
         model.modelNumber ||
-        "未命名设备",
+        "Unnamed device",
     );
   }
 
   function signalQuality(rssi) {
     if (rssi === null || rssi === undefined || rssi === "") {
-      return { label: "未知", score: null, tone: "muted" };
+      return { label: "Unknown", score: null, tone: "muted" };
     }
     const value = Number(rssi);
     const score = Math.max(0, Math.min(100, Math.round(2 * (value + 100))));
-    if (value >= -55) return { label: "极佳", score, tone: "good" };
-    if (value >= -67) return { label: "良好", score, tone: "good" };
-    if (value >= -75) return { label: "一般", score, tone: "warn" };
-    return { label: "较弱", score, tone: "bad" };
+    if (value >= -55) return { label: "Excellent", score, tone: "good" };
+    if (value >= -67) return { label: "Good", score, tone: "good" };
+    if (value >= -75) return { label: "Fair", score, tone: "warn" };
+    return { label: "Weak", score, tone: "bad" };
   }
 
   function deviceType(device) {
@@ -157,7 +157,7 @@
         id: deviceId,
         name: friendlyName(device),
         location: props.userDeviceLocation || friendlyName(device),
-        role: device.isAuthority ? "主节点" : "子节点",
+        role: device.isAuthority ? "Primary node" : "Child node",
         isAuthority: Boolean(device.isAuthority),
         online: Boolean(device.isAuthority || backhaulById.has(deviceId)),
         model: model.modelNumber || "Linksys Velop",

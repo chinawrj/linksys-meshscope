@@ -20,7 +20,7 @@
 
   function label(operation) {
     if (!operation) return "";
-    return operation.sawOffline ? "正在恢复上线" : "重启请求已发送";
+    return operation.sawOffline ? "Coming back online" : "Restart requested";
   }
 
   function requestBody(node) {

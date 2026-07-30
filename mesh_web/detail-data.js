@@ -14,7 +14,7 @@
       .filter((client) => !onlineOnly || client.online)
       .sort((a, b) => {
         if (Boolean(a.online) !== Boolean(b.online)) return a.online ? -1 : 1;
-        return String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", {
+        return String(a.name || "").localeCompare(String(b.name || ""), "en-US", {
           numeric: true,
         });
       });
@@ -28,33 +28,33 @@
   function nodeDetailRows(node, formatNumber = (value) => String(value ?? "—")) {
     return {
       metrics: [
-        ["当前状态", node.online ? "在线" : "离线"],
-        ["接入客户端", `${node.clientCount} 台`],
+        ["Current status", node.online ? "Online" : "Offline"],
+        ["Connected clients", `${node.clientCount}`],
         [
-          "回程速率",
+          "Backhaul rate",
           node.speedMbps
             ? `${formatNumber(node.speedMbps)} Mbps`
             : node.isAuthority
-              ? "网关"
+              ? "Gateway"
               : "—",
         ],
         [
-          "回程信号",
+          "Backhaul signal",
           node.rssi !== null && node.rssi !== undefined
-            ? `${node.rssi} dBm · ${node.quality?.label || "未知"}`
+            ? `${node.rssi} dBm · ${node.quality?.label || "Unknown"}`
             : "—",
         ],
       ],
       details: [
-        ["型号", node.model],
-        ["IP 地址", node.ipAddress],
-        ["MAC 地址", node.macAddress],
-        ["父节点", node.parentName || (node.isAuthority ? "Internet / WAN" : "—")],
-        ["回程频段", node.band],
-        ["信道", node.channel],
-        ["固件版本", node.firmwareVersion],
-        ["硬件版本", node.hardwareVersion],
-        ["序列号", node.serialNumber],
+        ["Model", node.model],
+        ["IP address", node.ipAddress],
+        ["MAC address", node.macAddress],
+        ["Parent node", node.parentName || (node.isAuthority ? "Internet / WAN" : "—")],
+        ["Backhaul band", node.band],
+        ["Channel", node.channel],
+        ["Firmware version", node.firmwareVersion],
+        ["Hardware version", node.hardwareVersion],
+        ["Serial number", node.serialNumber],
       ],
     };
   }
@@ -63,7 +63,7 @@
     const isDemo = topology?.meta?.demo === true;
     const children = (topology?.nodes || [])
       .filter((candidate) => candidate.online && candidate.parentId === node?.id)
-      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN", {
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "en-US", {
         numeric: true,
       }));
     const manualParentAvailable =
@@ -76,27 +76,27 @@
       parentRole: node?.isAuthority
         ? {
             status: "gateway",
-            label: "主网关",
+            label: "Primary gateway",
             detail: children.length
-              ? `${children.map((child) => child.name).join("、")} 当前直接上联此节点`
-              : "当前没有直接下游 Mesh 节点",
+              ? `Direct downstream: ${children.map((child) => child.name).join(", ")}`
+              : "No mesh nodes currently connect directly downstream",
           }
         : children.length
           ? {
               status: "confirmed",
-              label: "自动 Parent · 已验证",
-              detail: `${children.map((child) => child.name).join("、")} 当前直接上联此节点`,
+              label: "Automatic parent · Verified",
+              detail: `Direct downstream: ${children.map((child) => child.name).join(", ")}`,
             }
           : {
               status: "automatic",
-              label: "由固件自动决定",
-              detail: "当前没有下游节点；这不代表该节点不能成为 Parent",
+              label: "Selected automatically by firmware",
+              detail: "There are no downstream nodes now; this does not mean the node cannot become a parent",
             },
       manualTarget: manualParentAvailable
         ? {
             status: "available",
-            label: "固件报告支持",
-            detail: "需要另行设计明确的 Child、Parent 与确认步骤",
+            label: "Reported as supported",
+            detail: "A separate workflow with explicit child, parent, and confirmation steps is required",
           }
         : {
             status: topology?.network?.manualParentSelectionEvidence
@@ -105,48 +105,48 @@
               : "unsupported",
             label: topology?.network?.manualParentSelectionEvidence
               === "firmware-internal-confirmed"
-              ? "固件内部已确认 · 未开放"
-              : "未发现指定接口",
+              ? "Confirmed in firmware · Not exposed"
+              : "No target interface found",
             detail: topology?.network?.manualParentSelectionEvidence
               === "firmware-internal-confirmed"
-              ? "MX4200/WHW03 存在精确 Parent 数据路径，但当前 Web/JNAP 没有安全传输入口"
-              : "Topology Optimization 仅提供全局自动 Node Steering",
+              ? "MX4200/WHW03 firmware contains an exact-parent data path, but current Web/JNAP interfaces expose no supported transport"
+              : "Topology Optimization provides only global automatic Node Steering",
           },
       individualRestart: isDemo
         ? {
             status: "unverified",
-            label: "演示模式 · 禁止执行",
-            detail: "真实连接时才会向所选 Node 的本地端点发送请求",
+            label: "Demo mode · Disabled",
+            detail: "Requests are sent to a selected node's local endpoint only during a live connection",
           }
         : individualRestartAvailable
         ? {
             status: "available",
-            label: "当前 Node · 可用",
-            detail: "请求直接发送到所选 Node 的本地端点",
+            label: "Selected node · Available",
+            detail: "The request goes directly to the selected node's local endpoint",
           }
         : {
             status: "unverified",
-            label: "不开放 · 范围未证实",
-            detail: "官方动作会重启整个 Mesh；未执行任何破坏性探测",
+            label: "Unavailable · Scope unverified",
+            detail: "The official action restarts the entire mesh; no destructive probe was performed",
           },
       localManagement: isDemo
         ? {
             status: "unverified",
-            label: "演示数据 · 未直连",
-            detail: "真实连接后使用 Node IP 与 Main 同步的本地凭证验证",
+            label: "Demo data · No direct connection",
+            detail: "A live connection verifies the node IP with local credentials synchronized from Main",
             url: null,
           }
         : node?.managementUrl
         ? {
             status: "available",
-            label: "CA Support 入口",
-            detail: `${node.ipAddress} · 使用与 Main 同步的本地凭证`,
+            label: "CA Support entry point",
+            detail: `${node.ipAddress} · Uses local credentials synchronized from Main`,
             url: node.managementUrl,
           }
         : {
             status: "unavailable",
-            label: "当前不可用",
-            detail: "Node 没有在线管理地址",
+            label: "Currently unavailable",
+            detail: "The node has no online management address",
             url: null,
           },
     };

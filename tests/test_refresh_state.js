@@ -27,23 +27,23 @@ test("exposes waiting, refreshing, paused, countdown, and error states", () => {
   };
   assert.deepEqual(view({ ...base, hasTopology: false }), {
     mode: "waiting",
-    text: "等待连接",
+    text: "Waiting to connect",
   });
   assert.deepEqual(view({ ...base, refreshing: true }), {
     mode: "refreshing",
-    text: "正在刷新",
+    text: "Refreshing",
   });
   assert.deepEqual(view({ ...base, interval: 0 }), {
     mode: "paused",
-    text: "自动刷新已暂停",
+    text: "Auto-refresh paused",
   });
   assert.deepEqual(view(base), {
     mode: "live",
-    text: "本地实时 · 25s",
+    text: "Local live · 25s",
   });
   assert.deepEqual(view({ ...base, error: "timeout" }), {
     mode: "error",
-    text: "刷新失败 · 25s 后重试",
+    text: "Refresh failed · Retrying in 25s",
   });
 });
 
@@ -62,7 +62,7 @@ test("marks an expired hidden page stale and refreshes immediately on return", (
       visible: false,
       error: null,
     }),
-    { mode: "stale", text: "后台暂停 · 返回即刷新" },
+    { mode: "stale", text: "Paused in background · Refreshes on return" },
   );
   assert.equal(visibilityAction({ ...timing, visible: true }), "refresh");
   assert.equal(

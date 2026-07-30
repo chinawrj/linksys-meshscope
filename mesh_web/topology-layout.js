@@ -42,7 +42,7 @@
       children.get(parentId).push(byId.get(nodeId));
     }
     for (const list of children.values()) {
-      list.sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+      list.sort((a, b) => a.name.localeCompare(b.name, "en-US", { numeric: true }));
     }
 
     let leafCursor = top;

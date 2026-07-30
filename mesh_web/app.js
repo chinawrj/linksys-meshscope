@@ -47,7 +47,7 @@ function escapeHtml(value) {
 
 function compactNumber(value, digits = 0) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
-  return Number(value).toLocaleString("zh-CN", {
+  return Number(value).toLocaleString("en-US", {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
   });
@@ -57,7 +57,7 @@ function formatTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return new Intl.DateTimeFormat("en-US", {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -75,7 +75,7 @@ function signalLevel(rssi) {
 
 function signalBars(rssi, tone = "") {
   const level = signalLevel(rssi);
-  return `<span class="signal-bars level-${level} ${escapeHtml(tone)}" aria-label="信号 ${rssi ?? "未知"} dBm"><i></i><i></i><i></i><i></i></span>`;
+  return `<span class="signal-bars level-${level} ${escapeHtml(tone)}" aria-label="Signal ${rssi ?? "unknown"} dBm"><i></i><i></i><i></i><i></i></span>`;
 }
 
 async function api(path, options = {}) {
@@ -87,10 +87,10 @@ async function api(path, options = {}) {
   try {
     payload = await response.json();
   } catch {
-    payload = { error: "本地服务返回了无法识别的数据。" };
+    payload = { error: "The local service returned an unrecognized response." };
   }
   if (!response.ok) {
-    throw new Error(payload.error || `请求失败 (${response.status})`);
+    throw new Error(payload.error || `Request failed (${response.status})`);
   }
   return window.MeshLinksysNormalize?.normalizeEnvelope(payload) ?? payload;
 }
@@ -115,7 +115,7 @@ function closeConnectModal() {
 
 function setConnectionStatus(connected) {
   $("#liveChip").classList.toggle("connected", connected);
-  if (!connected) $("#liveText").textContent = "等待连接";
+  if (!connected) $("#liveText").textContent = "Waiting to connect";
 }
 
 function configureConnectionMode(status) {
@@ -153,9 +153,9 @@ function updateRefreshLabel() {
   const routerOffline = state.topology?.meta?.routerConnected === false;
   chip.classList.toggle("error", routerOffline || status.mode === "error");
   $("#liveText").textContent = routerOffline
-    ? "路由器离线 · 最后缓存"
+    ? "Router offline · Last cached data"
     : state.topology?.meta?.demo
-      ? `演示 · ${status.text}`
+      ? `Demo · ${status.text}`
       : status.text;
 }
 
@@ -208,50 +208,50 @@ function renderSummary(data) {
   const routerOffline = meta.routerConnected === false;
   $("#routerLabel").textContent = meta.router;
   $("#heroCopy").textContent = meta.demo
-    ? "用完整离线演示数据检查节点层级、回程质量与 Client / STA 交互；不会连接或修改路由器。"
+    ? "Explore a complete offline topology, backhaul quality, and Client/STA interactions without connecting to or changing a router."
     : routerOffline
-      ? "路由器当前不可达；页面保留最后一次完整拓扑，恢复后会自动更新。"
-      : "实时查看每个 Velop 节点、回程质量与当前接入设备。所有数据仅在本机与路由器之间流动。";
+      ? "The router is currently unreachable. MeshScope is showing the last complete topology and will update automatically after recovery."
+      : "See every Velop node, backhaul link, and connected device in real time. Your data stays between this device and your router.";
   $("#networkStatus").textContent = meta.demo
-    ? "离线演示数据"
+    ? "Offline demo data"
     : routerOffline
-      ? "路由器离线"
+      ? "Router offline"
       : network.wanStatus === "Connected"
-        ? "运行正常"
-        : network.wanStatus || "状态未知";
+        ? "Operating normally"
+        : network.wanStatus || "Status unknown";
   $("#lastUpdated").textContent = routerOffline
-    ? `最后缓存于 ${formatTime(meta.updatedAt)}`
-    : `${meta.demo ? "未连接路由器 · " : ""}更新于 ${formatTime(meta.updatedAt)}`;
+    ? `Last cached at ${formatTime(meta.updatedAt)}`
+    : `${meta.demo ? "No router connection · " : ""}Updated at ${formatTime(meta.updatedAt)}`;
   $("#statNodes").textContent = `${summary.nodesOnline}/${summary.nodesTotal}`;
-  $("#statNodesSub").textContent = `${summary.nodesTotal - summary.nodesOnline} 个离线节点`;
+  $("#statNodesSub").textContent = `${summary.nodesTotal - summary.nodesOnline} offline nodes`;
   $("#statClients").textContent = compactNumber(summary.clientsOnline);
-  $("#statClientsSub").textContent = `${summary.clientsKnown} 个已知设备记录`;
+  $("#statClientsSub").textContent = `${summary.clientsKnown} known device records`;
   $("#statBackhaul").textContent = summary.backhaulMbps ? `${compactNumber(summary.backhaulMbps)}M` : "—";
-  $("#statBackhaulSub").textContent = "在线节点协商速率合计";
+  $("#statBackhaulSub").textContent = "Combined negotiated rate for online nodes";
   $("#statAttention").textContent = compactNumber(summary.weakNodes + (summary.nodesTotal - summary.nodesOnline));
-  $("#statAttentionSub").textContent = `${summary.weakNodes} 个弱信号 · ${summary.nodesTotal - summary.nodesOnline} 个离线`;
+  $("#statAttentionSub").textContent = `${summary.weakNodes} weak signal · ${summary.nodesTotal - summary.nodesOnline} offline`;
 
   $("#networkModel").textContent = network.model || "—";
   $("#networkFirmware").textContent = network.firmwareVersion || "—";
-  $("#networkWan").textContent = network.wanStatus === "Connected" ? `已连接 · ${network.wanType || "WAN"}` : network.wanStatus || "未知";
+  $("#networkWan").textContent = network.wanStatus === "Connected" ? `Connected · ${network.wanType || "WAN"}` : network.wanStatus || "Unknown";
   $("#nodeSteering").textContent =
     network.nodeSteeringEnabled === true
-      ? "自动 · 已开启"
+      ? "Automatic · On"
       : network.nodeSteeringEnabled === false
-        ? "自动 · 已关闭"
-        : "固件未报告";
+        ? "Automatic · Off"
+        : "Not reported by firmware";
   $("#manualSteering").textContent = network.manualParentSelectionAvailable
-    ? "支持"
+    ? "Available"
     : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
-      ? "内部已确认 · 未开放"
-      : "未发现接口";
+      ? "Confirmed internally · Not exposed"
+      : "No interface found";
   $("#steeringTitle").textContent =
-    network.nodeSteeringEnabled === true ? "自动 Node Steering 已开启" : "自动 Node Steering 未开启";
+    network.nodeSteeringEnabled === true ? "Automatic Node Steering is on" : "Automatic Node Steering is off";
   $("#steeringDescription").textContent = network.manualParentSelectionAvailable
-    ? "固件报告了手动 Parent 选择能力。"
+    ? "The firmware reports manual parent selection support."
     : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
-      ? "MX4200/WHW03 固件内部已确认指定 Parent 数据路径；当前 Web/JNAP 没有安全传输入口，因此保持只读。"
-      : "固件会自动选择最强信号并自愈；未发现可把子节点锁定到指定 Parent 的受支持接口。";
+      ? "The exact-parent data path is confirmed inside MX4200/WHW03 firmware, but current Web/JNAP interfaces expose no supported transport. MeshScope remains read-only."
+      : "The firmware automatically selects the strongest signal and self-heals. No supported interface was found for pinning a child node to a specific parent.";
   $("#steeringMode").textContent = network.manualParentSelectionAvailable
     ? "MANUAL AVAILABLE"
     : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
@@ -261,13 +261,13 @@ function renderSummary(data) {
   const score = healthScore(data);
   $("#healthRing").style.setProperty("--score", score);
   $("#healthPercent").textContent = `${score}%`;
-  $("#healthScore").textContent = score >= 85 ? "状态良好" : score >= 65 ? "建议检查" : "需要关注";
+  $("#healthScore").textContent = score >= 85 ? "Healthy" : score >= 65 ? "Check recommended" : "Needs attention";
   $("#healthScore").style.background = score >= 85 ? "var(--mint-soft)" : score >= 65 ? "var(--amber-soft)" : "var(--coral-soft)";
   $("#healthScore").style.color = score >= 85 ? "var(--mint)" : score >= 65 ? "var(--amber)" : "var(--coral)";
   $("#healthSummary").textContent =
     score >= 85
-      ? "网络整体稳定。回程链路与在线客户端都在持续响应。"
-      : "部分节点离线或回程信号偏弱，建议查看下方具体节点。";
+      ? "The network is stable. Backhaul links and online clients are responding."
+      : "Some nodes are offline or have weak backhaul signals. Review the affected nodes below.";
 
   const weakest = data.nodes
     .filter((node) => node.online && !node.isAuthority)
@@ -278,22 +278,22 @@ function renderSummary(data) {
   $("#healthList").innerHTML = [
     {
       tone: network.wanStatus === "Connected" ? "" : "bad",
-      label: "互联网连接",
-      value: network.wanStatus === "Connected" ? "在线" : network.wanStatus || "异常",
+      label: "Internet connection",
+      value: network.wanStatus === "Connected" ? "Online" : network.wanStatus || "Issue detected",
     },
     {
       tone: summary.nodesTotal === summary.nodesOnline ? "" : "warn",
-      label: "Mesh 节点",
-      value: `${summary.nodesOnline}/${summary.nodesTotal} 在线`,
+      label: "Mesh nodes",
+      value: `${summary.nodesOnline}/${summary.nodesTotal} online`,
     },
     {
       tone: weakest?.quality?.tone === "bad" ? "bad" : weakest?.quality?.tone === "warn" ? "warn" : "",
-      label: "最弱回程",
+      label: "Weakest backhaul",
       value: weakest ? `${weakest.name} · ${weakest.rssi ?? "—"} dBm` : "—",
     },
     {
       tone: "",
-      label: "最快回程",
+      label: "Fastest backhaul",
       value: strongest?.speedMbps ? `${strongest.name} · ${compactNumber(strongest.speedMbps)} Mbps` : "—",
     },
   ]
@@ -340,21 +340,21 @@ function renderTopology(data) {
           <strong>${escapeHtml(node.name)}</strong>
           <span class="node-role">${node.isAuthority ? "GATEWAY" : "NODE"}</span>
         </div>
-        <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "无 IP")}</div>
+        <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "No IP")}</div>
         ${node.isAuthority ? "" : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`}
         <div class="node-stats">
-          <div><span>客户端</span><strong>${node.clientCount}</strong></div>
-          <div><span>${node.isAuthority ? "状态" : "回程"}</span><strong>${node.isAuthority ? "在线" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
+          <div><span>Clients</span><strong>${node.clientCount}</strong></div>
+          <div><span>${node.isAuthority ? "Status" : "Backhaul"}</span><strong>${node.isAuthority ? "Online" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
           <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
         ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
       </button>`;
   }
   if (offline.length) {
-    html += `<div class="offline-strip"><strong>${offline.length} 个离线节点</strong>${offline
+    html += `<div class="offline-strip"><strong>${offline.length} offline nodes</strong>${offline
       .slice(0, 5)
       .map((node) => `<button class="offline-node-chip text-button" data-node-id="${escapeHtml(node.id)}" type="button">${escapeHtml(node.name)}</button>`)
-      .join("")}${offline.length > 5 ? `<span>还有 ${offline.length - 5} 个</span>` : ""}</div>`;
+      .join("")}${offline.length > 5 ? `<span>${offline.length - 5} more</span>` : ""}</div>`;
   }
   map.innerHTML = html;
   const canvasEdges = [
@@ -490,8 +490,8 @@ function renderClients() {
   const visible = clients.slice(0, state.visibleRows);
   $("#clientRows").innerHTML = visible.length
     ? visible.map(clientRowHtml).join("")
-    : `<tr><td colspan="7" class="empty-row">没有匹配的客户端。</td></tr>`;
-  $("#clientCountLabel").textContent = `显示 ${visible.length} / ${clients.length} 台设备`;
+    : `<tr><td colspan="7" class="empty-row">No matching clients.</td></tr>`;
+  $("#clientCountLabel").textContent = `Showing ${visible.length} of ${clients.length} devices`;
   $("#loadMoreButton").hidden = visible.length >= clients.length;
   $$("[data-client-id]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -504,7 +504,7 @@ function renderClients() {
 function clientRowHtml(client) {
   const signal = client.online && client.rssi !== null
     ? `${signalBars(client.rssi, client.quality?.tone)}<span>${client.rssi} dBm</span>`
-    : `<span>${client.online ? "有线" : "离线"}</span>`;
+    : `<span>${client.online ? "Wired" : "Offline"}</span>`;
   return `
     <tr>
       <td>
@@ -514,30 +514,30 @@ function clientRowHtml(client) {
         </div>
       </td>
       <td><span class="node-chip">${escapeHtml(client.nodeName || "—")}</span></td>
-      <td><span class="connection-chip">${escapeHtml(client.online ? client.band || (client.rssi === null ? "Ethernet" : "Wi‑Fi") : "历史")}</span></td>
+      <td><span class="connection-chip">${escapeHtml(client.online ? client.band || (client.rssi === null ? "Ethernet" : "Wi‑Fi") : "History")}</span></td>
       <td><div class="signal-cell">${signal}</div></td>
       <td>${client.speedMbps !== null && client.speedMbps !== undefined ? `${compactNumber(client.speedMbps)} Mbps` : "—"}</td>
       <td>${escapeHtml(client.ipAddress || "—")}</td>
-      <td><button class="row-detail" data-client-id="${escapeHtml(client.id)}" type="button" aria-label="查看 ${escapeHtml(client.name)} 详情">›</button></td>
+      <td><button class="row-detail" data-client-id="${escapeHtml(client.id)}" type="button" aria-label="View details for ${escapeHtml(client.name)}">›</button></td>
     </tr>`;
 }
 
 function nodeClientHtml(client) {
   const connection = client.online
     ? client.band || (client.rssi === null ? "Ethernet" : "Wi‑Fi")
-    : "历史";
+    : "History";
   const signal = client.rssi !== null && client.rssi !== undefined
     ? `${client.rssi} dBm`
     : client.online
-      ? "有线"
-      : "离线";
+      ? "Wired"
+      : "Offline";
   return `
     <button class="node-client" data-node-client-id="${escapeHtml(client.id)}" type="button">
       <span class="device-icon" aria-hidden="true">${typeIcons[client.type] || typeIcons.device}</span>
       <span class="node-client-copy">
         <strong>${escapeHtml(client.name)}</strong>
-        <small>${escapeHtml(client.model || client.manufacturer || client.type || "网络设备")}</small>
-        <code>${escapeHtml(client.ipAddress || client.macAddress || "无地址")}</code>
+        <small>${escapeHtml(client.model || client.manufacturer || client.type || "Network device")}</small>
+        <code>${escapeHtml(client.ipAddress || client.macAddress || "No address")}</code>
       </span>
       <span class="node-client-link">
         <strong>${escapeHtml(connection)}</strong>
@@ -566,32 +566,32 @@ function openDetail(item, kind) {
   const metrics = isNode
     ? nodeRows.metrics
     : [
-        ["当前状态", item.online ? "在线" : "历史设备"],
-        ["接入节点", item.nodeName || "—"],
-        ["协商速率", item.speedMbps !== null && item.speedMbps !== undefined ? `${compactNumber(item.speedMbps)} Mbps` : "—"],
-        ["信号质量", item.rssi !== null && item.rssi !== undefined ? `${item.rssi} dBm · ${item.quality.label}` : "—"],
+        ["Current status", item.online ? "Online" : "Historical device"],
+        ["Connected node", item.nodeName || "—"],
+        ["Negotiated rate", item.speedMbps !== null && item.speedMbps !== undefined ? `${compactNumber(item.speedMbps)} Mbps` : "—"],
+        ["Signal quality", item.rssi !== null && item.rssi !== undefined ? `${item.rssi} dBm · ${item.quality.label}` : "—"],
       ];
   const details = isNode
     ? nodeRows.details
     : [
-        ["设备类型", item.type],
-        ["型号", item.model],
-        ["厂商", item.manufacturer],
-        ["操作系统", item.operatingSystem],
-        ["IP 地址", item.ipAddress],
-        ["MAC 地址", item.macAddress],
-        ["连接频段", item.band],
+        ["Device type", item.type],
+        ["Model", item.model],
+        ["Manufacturer", item.manufacturer],
+        ["Operating system", item.operatingSystem],
+        ["IP address", item.ipAddress],
+        ["MAC address", item.macAddress],
+        ["Connection band", item.band],
         ["Radio", item.radioId],
-        ["最后观测", item.lastSeen ? new Date(item.lastSeen).toLocaleString("zh-CN") : null],
+        ["Last seen", item.lastSeen ? new Date(item.lastSeen).toLocaleString("en-US") : null],
       ];
   $("#detailContent").innerHTML = `
-    ${parentNode ? `<button class="detail-back" id="detailBackToNode" type="button">← 返回 ${escapeHtml(parentNode.name)}</button>` : ""}
+    ${parentNode ? `<button class="detail-back" id="detailBackToNode" type="button">← Back to ${escapeHtml(parentNode.name)}</button>` : ""}
     <div class="detail-head">
       <span class="detail-type-icon" aria-hidden="true">${isNode ? typeIcons.node : typeIcons[item.type] || typeIcons.device}</span>
       <p class="section-kicker">${isNode ? "MESH NODE" : "CLIENT DEVICE"}</p>
       <h2>${escapeHtml(item.name)}</h2>
-      <p>${escapeHtml(isNode ? item.description || item.role : item.model || item.manufacturer || "网络设备")}</p>
-      <span class="detail-status ${item.online ? "" : "offline"}">${item.online ? "● 在线" : "○ 离线"}</span>
+      <p>${escapeHtml(isNode ? item.description || item.role : item.model || item.manufacturer || "Network device")}</p>
+      <span class="detail-status ${item.online ? "" : "offline"}">${item.online ? "● Online" : "○ Offline"}</span>
     </div>
     <div class="detail-grid">${metrics
       .map(([label, value]) => `<div class="detail-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value ?? "—")}</strong></div>`)
@@ -605,53 +605,53 @@ function openDetail(item, kind) {
         <div class="node-feasibility-heading">
           <div>
             <p class="section-kicker">NODE CAPABILITIES</p>
-            <h3 id="nodeFeasibilityTitle">${escapeHtml(item.name)} 节点能力</h3>
+            <h3 id="nodeFeasibilityTitle">${escapeHtml(item.name)} node capabilities</h3>
           </div>
-          <span>单节点操作</span>
+          <span>Per-node operations</span>
         </div>
         <div class="node-capability-list">
           <article class="node-capability ${escapeHtml(capabilityReport.parentRole.status)}">
             <i aria-hidden="true">↳</i>
-            <div><span>作为上游 Parent</span><strong>${escapeHtml(capabilityReport.parentRole.label)}</strong><small>${escapeHtml(capabilityReport.parentRole.detail)}</small></div>
+            <div><span>As an upstream parent</span><strong>${escapeHtml(capabilityReport.parentRole.label)}</strong><small>${escapeHtml(capabilityReport.parentRole.detail)}</small></div>
           </article>
           <article class="node-capability ${escapeHtml(capabilityReport.manualTarget.status)}">
             <i aria-hidden="true">⌁</i>
-            <div><span>手动指定到此 Parent</span><strong>${escapeHtml(capabilityReport.manualTarget.label)}</strong><small>${escapeHtml(capabilityReport.manualTarget.detail)}</small></div>
+            <div><span>Manually target this parent</span><strong>${escapeHtml(capabilityReport.manualTarget.label)}</strong><small>${escapeHtml(capabilityReport.manualTarget.detail)}</small></div>
           </article>
           <article class="node-capability ${escapeHtml(capabilityReport.individualRestart.status)}">
             <i aria-hidden="true">↻</i>
             <div>
-              <span>重启当前 Node</span>
+              <span>Restart this node</span>
               <strong id="nodeRestartProbeLabel">${escapeHtml(capabilityReport.individualRestart.label)}</strong>
               <small id="nodeRestartProbeDetail">${escapeHtml(capabilityReport.individualRestart.detail)}</small>
-              <button class="node-restart-button" id="restartMeshButton" type="button" hidden>立即重启 ${escapeHtml(item.name)}</button>
+              <button class="node-restart-button" id="restartMeshButton" type="button" hidden>Restart ${escapeHtml(item.name)} now</button>
             </div>
           </article>
           <article class="node-capability ${escapeHtml(capabilityReport.localManagement.status)}" id="nodeDirectProbe">
             <i aria-hidden="true">⌘</i>
             <div>
               <span>Node Web / JNAP</span>
-              <strong id="nodeProbeLabel">${escapeHtml(item.online ? "正在只读探测…" : capabilityReport.localManagement.label)}</strong>
+              <strong id="nodeProbeLabel">${escapeHtml(item.online ? "Running read-only probe…" : capabilityReport.localManagement.label)}</strong>
               <small id="nodeProbeDetail">${escapeHtml(capabilityReport.localManagement.detail)}</small>
-              ${capabilityReport.localManagement.url ? `<a class="node-management-link" href="${escapeHtml(capabilityReport.localManagement.url)}" target="_blank" rel="noopener noreferrer">打开 ${escapeHtml(item.name)} CA 页面 ↗</a>` : ""}
+              ${capabilityReport.localManagement.url ? `<a class="node-management-link" href="${escapeHtml(capabilityReport.localManagement.url)}" target="_blank" rel="noopener noreferrer">Open ${escapeHtml(item.name)} CA page ↗</a>` : ""}
             </div>
           </article>
         </div>
-        <p class="node-feasibility-note">隐藏入口为 <code>https://&lt;Node-IP&gt;/ca</code>；登录后固件进入 <code>#casupport</code>。重启请求直接发送到当前 Node 的本地端点。</p>
+        <p class="node-feasibility-note">The hidden entry point is <code>https://&lt;node-ip&gt;/ca</code>; after login, the firmware opens <code>#casupport</code>. Restart requests go directly to the selected node's local endpoint.</p>
       </section>` : ""}
     ${isNode ? `
       <section class="node-clients-section" aria-labelledby="nodeClientsTitle">
         <div class="node-clients-heading">
           <div>
             <p class="section-kicker">ASSOCIATED STATIONS</p>
-            <h3 id="nodeClientsTitle">当前 Client / STA</h3>
+            <h3 id="nodeClientsTitle">Current clients / STAs</h3>
           </div>
           <span>${attachedClients.length}</span>
         </div>
         <div class="node-clients-list">
           ${attachedClients.length
             ? attachedClients.map(nodeClientHtml).join("")
-            : `<div class="node-clients-empty"><span>◇</span><strong>当前没有在线 Client / STA</strong><small>历史设备不会被错误归到该节点。</small></div>`}
+            : `<div class="node-clients-empty"><span>◇</span><strong>No online clients or STAs</strong><small>Historical devices are not incorrectly assigned to this node.</small></div>`}
         </div>
       </section>` : ""}`;
   $$("[data-node-client-id]").forEach((button) => {
@@ -682,22 +682,22 @@ async function loadNodeProbe(node, detailToken) {
     probe.classList.remove("unavailable");
     probe.classList.add(report.credentialsSynchronized ? "confirmed" : "unverified");
     probeLabel.textContent = report.demo
-      ? "演示模式 · 未连接真实 Node"
+      ? "Demo mode · No live node connection"
       : report.credentialsSynchronized
-        ? `${report.deviceMode || "本地"} · 同步凭证已验证`
-        : `${report.deviceMode || "本地"} · 凭证状态未知`;
+        ? `${report.deviceMode || "Local"} · Synchronized credentials verified`
+        : `${report.deviceMode || "Local"} · Credential status unknown`;
     probeDetail.textContent = report.demo
-      ? `${report.identity.model || node.model || "Linksys Node"} 合成身份 · 不执行网络请求`
-      : `${report.identity.model || node.model || "Linksys Node"} 直连身份已确认 · 未执行控制`;
+      ? `${report.identity.model || node.model || "Linksys Node"} synthetic identity · No network request made`
+      : `${report.identity.model || node.model || "Linksys Node"} direct identity verified · No control action performed`;
     if (report.individualRestart.visibleInCaSupportUi) {
       const restartButton = $("#restartMeshButton");
       const activeRestart = state.nodeRestarts.get(node.id);
-      restartLabel.textContent = activeRestart ? "当前 Node · 重启进行中" : "当前 Node · 可用";
+      restartLabel.textContent = activeRestart ? "Selected node · Restart in progress" : "Selected node · Available";
       restartDetail.textContent = activeRestart
-        ? `${MeshNodeRestartState.label(activeRestart)}；页面正在继续观测`
+        ? `${MeshNodeRestartState.label(activeRestart)}; MeshScope is continuing to monitor it`
         : node.isAuthority
-          ? `单击即向 ${node.ipAddress} 发送 core/Reboot，不再确认；Main 重启时整个 Mesh 可能短暂断线`
-          : `单击即向 ${node.ipAddress} 发送 core/Reboot，不再确认；该 Node 及其客户端会短暂断线`;
+          ? `One click immediately sends core/Reboot to ${node.ipAddress}; restarting Main may briefly interrupt the entire mesh`
+          : `One click immediately sends core/Reboot to ${node.ipAddress}; this node and its clients will briefly disconnect`;
       if (restartButton) {
         restartButton.hidden = false;
         if (activeRestart) {
@@ -713,7 +713,7 @@ async function loadNodeProbe(node, detailToken) {
     const probe = $("#nodeDirectProbe");
     probe?.classList.remove("available");
     probe?.classList.add("unverified");
-    if ($("#nodeProbeLabel")) $("#nodeProbeLabel").textContent = "只读探测未完成";
+    if ($("#nodeProbeLabel")) $("#nodeProbeLabel").textContent = "Read-only probe did not complete";
     if ($("#nodeProbeDetail")) $("#nodeProbeDetail").textContent = error.message;
   }
 }
@@ -721,7 +721,7 @@ async function loadNodeProbe(node, detailToken) {
 async function restartNode(node, button) {
   if (state.nodeRestarts.has(node.id)) return;
   button.disabled = true;
-  button.textContent = `正在重启 ${node.name}…`;
+  button.textContent = `Restarting ${node.name}…`;
   try {
     const result = await api("/api/restart-node", {
       method: "POST",
@@ -731,13 +731,13 @@ async function restartNode(node, button) {
     closeDetail();
     state.refreshError = null;
     renderTopology(state.topology);
-    toast(`${result.requestedThroughNode.name} 正在重启`);
+    toast(`${result.requestedThroughNode.name} is restarting`);
     MeshNodeRestartState.POLL_DELAYS_MS.forEach((delay) => {
       window.setTimeout(() => refresh(true), delay);
     });
   } catch (error) {
     button.disabled = false;
-    button.textContent = `立即重启 ${node.name}`;
+    button.textContent = `Restart ${node.name} now`;
     toast(error.message);
   }
 }
@@ -745,9 +745,9 @@ async function restartNode(node, button) {
 function reconcileNodeRestarts(data) {
   const events = MeshNodeRestartState.reconcile(state.nodeRestarts, data.nodes);
   for (const event of events) {
-    if (event.type === "recovered") toast(`${event.name} 已恢复在线`);
-    else if (event.type === "online-timeout") toast(`${event.name} 当前在线`);
-    else toast(`${event.name} 状态观测已结束，可手动刷新`);
+    if (event.type === "recovered") toast(`${event.name} is back online`);
+    else if (event.type === "online-timeout") toast(`${event.name} is still online`);
+    else toast(`Monitoring ended for ${event.name}; refresh manually to check again`);
   }
 }
 
@@ -802,7 +802,7 @@ async function refresh(silent = false) {
   try {
     render(await api("/api/refresh", { method: "POST", body: "{}" }));
     state.refreshError = null;
-    if (!silent) toast("网络数据已刷新");
+    if (!silent) toast("Network data refreshed");
   } catch (error) {
     state.refreshError = error.message;
     setConnectionStatus(false);
@@ -839,7 +839,7 @@ function wireEvents() {
     const button = $("#connectButton");
     const original = button.innerHTML;
     button.disabled = true;
-    button.innerHTML = "<span>正在连接并读取…</span><i>↻</i>";
+    button.innerHTML = "<span>Connecting and loading…</span><i>↻</i>";
     $("#connectError").textContent = "";
     try {
       const body = state.managedConnection
@@ -854,7 +854,7 @@ function wireEvents() {
       });
       $("#passwordInput").value = "";
       render(data);
-      toast("已连接 Linksys Mesh");
+      toast("Connected to Linksys Mesh");
     } catch (error) {
       $("#connectError").textContent = error.message;
       (state.managedConnection ? button : $("#passwordInput")).focus();
@@ -871,7 +871,7 @@ function wireEvents() {
     state.refreshError = null;
     localStorage.setItem("meshscopeRefreshInterval", String(state.refreshInterval));
     scheduleAutoRefresh();
-    toast(state.refreshInterval ? `自动刷新已设为 ${state.refreshInterval} 秒` : "自动刷新已暂停");
+    toast(state.refreshInterval ? `Auto-refresh set to ${state.refreshInterval} seconds` : "Auto-refresh paused");
   });
   document.addEventListener("visibilitychange", () => {
     const action = MeshRefreshState.visibilityAction({
@@ -889,7 +889,7 @@ function wireEvents() {
     const input = $("#passwordInput");
     const visible = input.type === "text";
     input.type = visible ? "password" : "text";
-    $("#togglePassword").textContent = visible ? "显示" : "隐藏";
+    $("#togglePassword").textContent = visible ? "Show" : "Hide";
   });
   $$(".segmented button").forEach((button) => {
     button.addEventListener("click", () => {
