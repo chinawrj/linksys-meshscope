@@ -50,7 +50,7 @@ test("preserves every existing node metric and identity field", () => {
       clientCount: 3,
       speedMbps: 199.4,
       rssi: -66,
-      quality: { label: "良好" },
+      quality: { label: "Good" },
       model: "WHW03",
       ipAddress: "192.168.1.10",
       macAddress: "AA:BB:CC:DD:EE:FF",
@@ -66,11 +66,11 @@ test("preserves every existing node metric and identity field", () => {
 
   assert.deepEqual(
     rows.metrics.map(([label]) => label),
-    ["当前状态", "接入客户端", "回程速率", "回程信号"],
+    ["Current status", "Connected clients", "Backhaul rate", "Backhaul signal"],
   );
   assert.deepEqual(
     rows.details.map(([label]) => label),
-    ["型号", "IP 地址", "MAC 地址", "父节点", "回程频段", "信道", "固件版本", "硬件版本", "序列号"],
+    ["Model", "IP address", "MAC address", "Parent node", "Backhaul band", "Channel", "Firmware version", "Hardware version", "Serial number"],
   );
   assert.equal(rows.metrics[2][1], "199 Mbps");
   assert.equal(rows.details[3][1], "Patio");
@@ -101,7 +101,7 @@ test("reports automatic parent status and internal steering evidence without cla
   assert.equal(report.parentRole.status, "confirmed");
   assert.deepEqual(report.children.map((node) => node.name), ["Garage"]);
   assert.equal(report.manualTarget.status, "internal");
-  assert.match(report.manualTarget.label, /内部已确认/);
+  assert.match(report.manualTarget.label, /Confirmed in firmware/);
   assert.equal(report.individualRestart.status, "available");
   assert.equal(report.localManagement.status, "available");
   assert.equal(report.localManagement.url, "https://192.168.1.10/ca");

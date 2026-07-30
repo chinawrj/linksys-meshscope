@@ -1912,7 +1912,7 @@ footer {
   }
 
   .button-quiet::after {
-    content: "设置";
+    content: "Settings";
     font-size: 10px;
   }
 

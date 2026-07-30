@@ -1,49 +1,55 @@
 # MeshScope
 
-MeshScope 是一个面向 Linksys Velop / Intelligent Mesh 的本地拓扑仪表盘。它把
-Node 的 Parent/Child 关系、`5GH` / `5GL` 回程、信号与速率，以及每个 Node
-下的 Client/STA 放在同一页里。拓扑读取保持只读；唯一开放的写操作是向用户
-选中的在线 Node 直接发送一次 `core/Reboot`。
+MeshScope is a local-first Linksys Velop / Intelligent Mesh topology and
+Client/STA dashboard. It shows parent/child relationships, `5GH` and `5GL`
+backhaul links, signal quality, negotiated rates, and the clients attached to
+each node on one screen.
 
-MeshScope is a local-first Linksys Mesh topology and Client/STA dashboard. The
-UI is Chinese today, while the code and research notes are kept readable for
-international contributors.
+Topology collection is read-only. The only enabled write operation is an
+immediate `core/Reboot` request sent directly to a selected online node.
 
 [![CI](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml/badge.svg)](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml)
 ![Linksys](https://img.shields.io/badge/Linksys-local%20JNAP-16769b)
 ![Runtime](https://img.shields.io/badge/runtime-Python%20%7C%20ESPHome-2d705b)
 
-> MeshScope 不是 Linksys 官方产品。请只管理你拥有或获准管理的网络。
+> MeshScope is an independent community project and is not affiliated with or
+> endorsed by Linksys. Use it only on networks you own or are authorized to
+> manage.
 
-## 先选择运行方式
+## Choose how to run MeshScope
 
-| | 桌面本地版 | ESPHome / ESP32-C5 常开版 |
+| | Desktop local app | ESPHome / ESP32-C5 appliance |
 |---|---|---|
-| 适合 | 先试用、调试、偶尔查看 | 长期运行、手机访问、接入 Home Assistant |
-| 运行位置 | Mac / Linux / Windows 上的 Python | ESP32-C5，页面直接由设备提供 |
-| 依赖 | Python 3.10+，运行时无第三方包 | ESPHome 2026.7.2、8 MB Flash、至少 4 MB PSRAM |
-| 路由器凭证 | 仅保存在 Python 进程内存 | 保存在忽略提交的 YAML、构建产物与设备 Flash |
-| 网页访问 | 默认仅 `127.0.0.1:8765` | 家庭 LAN 上的 HTTP Basic 登录 |
-| Home Assistant | 无 | 加密 ESPHome Native API |
+| Best for | Trying the UI, diagnostics, occasional use | Always-on access, phones, Home Assistant |
+| Runs on | Python on macOS, Linux, or Windows | ESP32-C5 with the page served by the device |
+| Requirements | Python 3.10+, no runtime packages | ESPHome 2026.7.2, 8 MB flash, at least 4 MB PSRAM |
+| Router credentials | Python process memory only | Ignored YAML, build output, and device flash |
+| Web access | `127.0.0.1:8765` by default | HTTP Basic Auth on the trusted home LAN |
+| Home Assistant | Not exposed | Encrypted ESPHome Native API |
 
-如果只是想确认页面是否适合自己的 Mesh，先运行桌面版的 `--demo`。它包含完整
-的多层 Parent 拓扑、`5GH` / `5GL`、Node/Client 详情和重启状态演示，但不会
-认证或控制任何路由器。
+If you are evaluating compatibility, start with desktop demo mode. It includes
+a complete multi-level topology, `5GH`/`5GL` links, node and client details,
+and restart-state UI without authenticating with or controlling a router.
 
-## 页面提供什么
+## What the dashboard shows
 
-- 按 Parent 子树排列的拓扑，回程路径带动画和方向
-- `5GH` / `5GL`、信道、协商速率与 RSSI，不合并或隐藏字段
-- 10 / 30 / 60 秒自动刷新、暂停、手动刷新，以及后台页面恢复后的补刷新
-- 点击 Node 查看其 Client/STA；点击 Client 可回到所属 Node
-- Client 的频段、信号、速率、IP、MAC、型号和在线状态
-- 自动 Client Steering / Node Steering 状态
-- 直接读取子 Node 的身份、同步凭证和固件能力
-- Linksys 子 Node 支持页入口：`https://<node-ip>/ca`
-- 选定在线 Node 的即时重启，以及离线、恢复过程跟踪
-- 路由器暂时不可达时保留最后完整拓扑，并明确标记“离线 · 最后缓存”
+- Parent-aware topology layout with animated, directional backhaul paths
+- Separate `5GH` and `5GL` labels, channel, negotiated rate, and RSSI
+- 10, 30, or 60 second auto-refresh, pause, manual refresh, and refresh after
+  returning from a background tab
+- Node details with the Client/STA list attached to that specific node
+- Client band, signal, rate, IP, MAC, model, and online state
+- Automatic Client Steering and Node Steering status
+- Read-only inspection of child-node identity, synchronized credentials, and
+  firmware capabilities
+- Direct access to the Linksys child-node support page at
+  `https://<node-ip>/ca`
+- Immediate restart of one selected online node, with offline and recovery
+  tracking
+- The last complete topology remains visible, clearly marked as cached, when
+  the router is temporarily unreachable
 
-## 桌面版：5 分钟开始
+## Desktop app: start in five minutes
 
 ```bash
 git clone https://github.com/chinawrj/linksys-meshscope.git
@@ -51,46 +57,50 @@ cd linksys-meshscope
 python3 linksys_mesh_app.py
 ```
 
-然后打开 [http://127.0.0.1:8765](http://127.0.0.1:8765)。macOS 也可以双击
-`Start MeshScope.command`。
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765). On macOS, you can also
+double-click `Start MeshScope.command`.
 
-首次打开时输入：
+On first launch, enter:
 
-1. 主 Linksys 路由器的 LAN 地址，例如 `192.168.1.1`；不要填写当前电脑或
-   ESP32 的地址。
-2. Linksys 本地管理密码。它通常会自动同步到所有子 Node。
+1. The LAN address of the primary Linksys router, such as `192.168.1.1`. Do not
+   enter the address of the computer or ESP32 running MeshScope.
+2. The Linksys local admin password. Linksys normally synchronizes this
+   password to child nodes.
 
-也可以在完全离线的情况下查看完整演示：
+To explore MeshScope without a router:
 
 ```bash
 python3 linksys_mesh_app.py --demo
 ```
 
-如需自动连接，可通过环境变量启动：
+For unattended startup, pass the router address and password at launch:
 
 ```bash
 LINKSYS_PASSWORD='your-local-router-password' python3 linksys_mesh_app.py \
   --router 192.168.1.1
 ```
 
-交互式网页输入更适合共享电脑，因为命令行和 shell history 可能记录环境变量。
-桌面服务默认只监听 `127.0.0.1`，密码仅存在于该 Python 进程内存，服务停止后
-清除。
+Entering the password in the web page is preferable on a shared computer,
+because environment variables can be recorded in shell history or process
+metadata. The desktop service listens only on `127.0.0.1` by default. The
+password exists only in the Python process and is cleared when it stops.
 
-## ESPHome / ESP32-C5 常开版
+## ESPHome / ESP32-C5 always-on appliance
 
-### 已验证目标和前提
+### Verified target and network assumptions
 
 - `esp32-c5-devkitc-1`
-- 8 MB Flash
-- 至少 4 MB PSRAM；没有 PSRAM 会在配置阶段直接失败
-- ESP32、Linksys 主路由器和访问网页的设备位于同一个可信家庭 LAN
-- Linksys 固件提供本地 HTTPS JNAP
+- 8 MB flash
+- At least 4 MB PSRAM; configuration fails early when PSRAM is unavailable
+- The ESP32, primary Linksys router, and browser are on the same trusted LAN
+- The Linksys firmware provides local HTTPS JNAP
 
-开发时在由 MX42、MX5300 和 WHW03 组成的混合 Mesh 上做过真实验证。其他
-Linksys 型号可能使用不同 JNAP 字段，建议先用桌面版确认兼容性。
+Development was validated on a mixed mesh containing MX42, MX5300, and WHW03
+nodes. Other Linksys models may return different JNAP fields. Use desktop demo
+mode to evaluate the UI, then use the desktop live connection to verify router
+compatibility before flashing hardware.
 
-### 1. 创建只在本机保存的配置
+### 1. Create a private local configuration
 
 ```bash
 git clone https://github.com/chinawrj/linksys-meshscope.git
@@ -98,36 +108,38 @@ cd linksys-meshscope
 cp esphome_meshscope_c5.local.example.yaml esphome_meshscope_c5.local.yaml
 ```
 
-先生成三组互不复用的凭证：
+Generate three independent sets of credentials:
 
 ```bash
-# 隐藏输入 Linksys 本地密码，输出可安全放进 C++ 配置的 Base64 值
+# Prompts without echo and returns the Linksys password as Base64 for the C++ config
 python3 tools/encode_secret.py
 
-# ESPHome Native API key：把输出放到 meshscope_api_key
+# ESPHome Native API key; use this as meshscope_api_key
 openssl rand -base64 32
 
-# 分别生成 Web 登录密码和 OTA 密码；不要复用
+# Generate separate Web and OTA passwords; do not reuse them
 openssl rand -hex 24
 openssl rand -hex 24
 ```
 
-编辑 `esphome_meshscope_c5.local.yaml`：
+Edit `esphome_meshscope_c5.local.yaml`:
 
-- `meshscope_wifi_ssid` / `meshscope_wifi_password`：家庭 Wi-Fi
-- `meshscope_router_host`：主 Linksys 路由器的 LAN 地址
-- `meshscope_router_password_b64`：`encode_secret.py` 的输出，不是明文密码
-- `meshscope_web_username` / `meshscope_web_password`：浏览器访问 ESP32 页面时
-  使用；建议用户名只含字母、数字、`-` 或 `_`，密码使用上面的 hex 输出
-- `meshscope_api_key`：Home Assistant 使用的 32-byte Base64 key
-- `meshscope_ota_password`：后续 OTA 更新密码
-- `meshscope_timezone`：ESPHome 日志与时间组件使用的时区，例如
-  `Asia/Shanghai`
+- `meshscope_wifi_ssid` / `meshscope_wifi_password`: home Wi-Fi credentials
+- `meshscope_router_host`: primary Linksys router LAN address
+- `meshscope_router_password_b64`: output from `encode_secret.py`, not the
+  plaintext password
+- `meshscope_web_username` / `meshscope_web_password`: credentials required by
+  browsers opening the ESP32 page; use only letters, digits, `-`, or `_` in the
+  username, and use a generated password
+- `meshscope_api_key`: 32-byte Base64 key used by Home Assistant
+- `meshscope_ota_password`: password for later OTA updates
+- `meshscope_timezone`: timezone used by ESPHome logs and time components, such
+  as `America/New_York` or `Europe/London`
 
-这个 local 文件已加入 `.gitignore`。不要把它、`.esphome/`、构建日志或固件
-二进制上传到仓库。
+The local YAML is ignored by Git. Never publish it, `.esphome/`, build logs, or
+firmware binaries containing your credentials.
 
-### 2. 首次 USB 安装
+### 2. Install over USB for the first time
 
 ```bash
 python3 -m venv .esphome-venv
@@ -137,29 +149,32 @@ python3 tools/generate_esp32_meshscope_assets.py
 .esphome-venv/bin/esphome run esphome_meshscope_c5.local.yaml
 ```
 
-第一次 `run` 时连接 USB 并选择串口。首次下载 ESP-IDF 与编译可能需要数分钟；
-后续构建会使用缓存。安装完成后可从以下位置找到设备 IP：
+Connect the ESP32 over USB and select its serial port when prompted. The first
+build downloads ESP-IDF and may take several minutes; later builds use the
+cache.
 
-- ESPHome 串口日志
-- Linksys 的 DHCP Client 列表
-- Home Assistant 的 ESPHome 发现通知
+After installation, find the device IP in one of these places:
 
-建议在路由器中为 ESP32 建立 DHCP reservation。`.local` 可用时可访问
-`http://meshscope-c5.local/`；不能解析 mDNS 时直接使用
-`http://<esp32-ip>/`。浏览器会要求输入上一步设置的 MeshScope Web 用户名和
-密码。
+- ESPHome serial logs
+- The Linksys DHCP client list
+- Home Assistant's ESPHome discovery notification
 
-### 3. 接入 Home Assistant
+Create a DHCP reservation for the ESP32. If mDNS works, open
+`http://meshscope-c5.local/`. Otherwise use `http://<esp32-ip>/`. Your browser
+will request the MeshScope Web username and password from the local YAML.
 
-ESPHome Native API 使用独立加密 key，和网页的 HTTP Basic 登录互不相同。
+### 3. Add MeshScope to Home Assistant
 
-1. 等待最多约五分钟，Home Assistant 通常会在“设置 → 设备与服务”中发现
-   `MeshScope C5`。
-2. 没有自动发现时，选择“添加集成 → ESPHome”。
-3. 输入 `meshscope-c5.local` 或固定的 ESP32 IP。
-4. 按提示输入 local YAML 中的 `meshscope_api_key`。
+The encrypted ESPHome Native API key is separate from the HTTP Basic
+credentials used by the web page.
 
-设备会暴露：
+1. Wait up to five minutes for `MeshScope C5` to appear under
+   **Settings → Devices & services**.
+2. If it is not discovered, choose **Add integration → ESPHome**.
+3. Enter `meshscope-c5.local` or the ESP32's reserved IP address.
+4. Enter `meshscope_api_key` from the local YAML when prompted.
+
+Home Assistant receives these entities:
 
 - Router Connected
 - Online / Total Mesh Nodes
@@ -169,14 +184,16 @@ ESPHome Native API 使用独立加密 key，和网页的 HTTP Basic 登录互不
 - Topology Summary / Last Topology Update
 - MeshScope URL
 - ESP32 Free Heap
-- Refresh Mesh Topology 按钮
+- Refresh Mesh Topology button
 
-即使 Home Assistant 停机或从未接入，ESP32 也会继续采集并提供网页；配置显式
-关闭了“Native API 长时间无客户端就重启”的默认联动。
+The ESP32 continues collecting data and serving the web page when Home
+Assistant is offline or has never been connected. The configuration explicitly
+disables the ESPHome Native API reboot behavior when no API client is present.
 
-### 4. 后续 OTA 更新
+### 4. Update over the air
 
-先拉取代码并检查本地配置，再通过设备 IP 更新：
+Pull the latest source, verify the local configuration, and target the reserved
+device address:
 
 ```bash
 git pull --ff-only
@@ -185,96 +202,115 @@ python3 tools/generate_esp32_meshscope_assets.py --check
   --device <esp32-ip>
 ```
 
-如果 Wi-Fi、OTA 密码或设备地址配置错误，请重新连接 USB 运行同一个 `esphome
-run` 命令。设备没有开放 fallback AP，避免在家庭网络中意外出现未规划的配置
-入口。
+If an incorrect Wi-Fi setting, OTA password, or device address makes the board
+unreachable, reconnect it over USB and run the same `esphome run` command.
+MeshScope does not enable a fallback access point, avoiding an unexpected
+configuration portal on the home network.
 
-## 日常使用和 Node 重启
+## Daily use and node restart
 
-页面中的自动刷新周期是浏览器的显示节奏；ESP32 后台本身每 10 秒采集一次完整
-拓扑。浏览器进入后台后不会持续制造刷新请求，重新可见且数据过期时会立即补刷。
+The browser's auto-refresh interval controls how often the display updates.
+The ESP32 itself collects a complete topology every 10 seconds. Background
+tabs do not keep issuing refresh requests; an overdue refresh runs immediately
+when the page becomes visible again.
 
-点击拓扑卡片会打开 Node 详情并列出该 Node 下的 Client/STA。`5GH` 和 `5GL`
-始终显示在回程线上，附带能够读取到的信道、速率和 RSSI。
+Select any topology card to open the node details and view the clients or STAs
+attached to that node. `5GH` and `5GL` remain visible on the backhaul paths,
+together with every available channel, rate, and RSSI value.
 
-Node 详情中的“立即重启”是即时操作，没有第二次确认：
+**Restart now is immediate and has no second confirmation.**
 
-- 请求只会发送到当前选中、在线且仍在实时拓扑中的 Node
-- 该 Node 和接在它下面的客户端会短暂离线
-- 如果选择 Main，整个 Mesh 的管理与联网可能短暂中断
-- 页面会标记“已请求 → 已离线 → 已恢复”，90 秒内拒绝重复请求
-- Demo、离线 Node、未知地址和不在当前拓扑中的 ID 都不能重启
+- The request is sent only to the currently selected, online node that is still
+  present in the live topology
+- The node and all clients attached to it will briefly go offline
+- Restarting Main may temporarily interrupt management and Internet access for
+  the entire mesh
+- The UI tracks requested, offline, and recovered states and rejects duplicate
+  restart requests for 90 seconds
+- Demo nodes, offline nodes, unknown addresses, and IDs absent from the current
+  topology cannot be restarted
 
-如果不希望家庭 LAN 用户具备重启权限，不要向其提供 MeshScope Web 登录。
+Do not share the MeshScope Web credentials with LAN users who should not have
+permission to restart a node.
 
-## 常见问题
+## Troubleshooting
 
-| 现象 | 处理 |
+| Symptom | What to do |
 |---|---|
-| `meshscope-c5.local` 打不开 | 使用 Linksys DHCP 列表或串口日志中的 IP；为 ESP32 建立 DHCP reservation |
-| 页面提示路由器离线但仍有拓扑 | 这是最后一次成功缓存，不是假装在线；检查主路由器地址、Wi-Fi 和 Linksys 本地密码 |
-| 首次页面显示“正在读取” | 给 ESP32 最多一个完整 JNAP 周期；持续失败时查看 ESPHome 日志 |
-| 浏览器反复要求登录 | 核对 `meshscope_web_username/password`，清除该地址的错误 Basic Auth 凭证后重试 |
-| Home Assistant 未发现 | 手动添加 ESPHome 集成并输入 ESP32 IP 与 `meshscope_api_key` |
-| 配置报告 PSRAM 缺失 | 当前固件不能在无 PSRAM 的板上运行；确认开发板型号和硬件规格 |
-| 改了前端但 ESP32 页面没变 | 运行资产生成器，再重新编译/OTA |
-| Wi-Fi 或 OTA 配错后设备失联 | USB 连接设备并重新运行 `esphome run` |
-| Linksys 密码含特殊字符 | 使用 `tools/encode_secret.py` 生成 Base64；不要把明文直接插入固件 lambda |
+| `meshscope-c5.local` does not open | Find the IP in Linksys DHCP or serial logs, then create a DHCP reservation |
+| The page says the router is offline but still shows topology | This is the last successful snapshot, not a false online state. Check the router address, Wi-Fi, and Linksys local password |
+| The first page remains on “Loading” | Allow one complete JNAP collection cycle; check ESPHome logs if it continues |
+| The browser repeatedly asks for credentials | Verify `meshscope_web_username/password`, clear the incorrect Basic Auth entry for the address, and retry |
+| Home Assistant does not discover MeshScope | Add the ESPHome integration manually with the ESP32 IP and `meshscope_api_key` |
+| ESPHome reports missing PSRAM | This firmware cannot run without PSRAM; verify the exact development board and hardware specification |
+| Front-end changes do not appear on ESP32 | Regenerate embedded assets, then rebuild or update over OTA |
+| The device disappeared after changing Wi-Fi or OTA settings | Connect over USB and run `esphome run` again |
+| The Linksys password contains special characters | Use `tools/encode_secret.py`; never insert a plaintext password directly into the firmware lambda |
 
-## 安全与隐私边界
+## Security and privacy boundaries
 
-桌面版和 ESPHome 版的凭证模型不同：
+The desktop and ESPHome versions use different credential models:
 
-- 桌面版密码只保存在 Python 进程内存，默认网页也只绑定 localhost。
-- ESPHome 版必须把 Wi-Fi、Linksys、Web、API 和 OTA 凭证保存在忽略提交的
-  local YAML，并编译到设备 Flash；HTTP API 不会把这些值返回给浏览器。
-- ESP32 页面和所有页面 API 受独立 HTTP Basic 登录保护，但 HTTP 本身不提供
-  传输加密。只在可信家庭 LAN 使用，禁止端口转发或直接暴露到互联网。
-- ESPHome Native API 使用单独的加密 key；它不会自动加密 MeshScope 网页。
-- Linksys 本地 JNAP 使用路由器的自签名 HTTPS 证书。客户端为本地兼容性跳过
-  证书验证，因此安全假设包含“家庭 LAN 和网关未被恶意劫持”。
+- The desktop password remains in Python process memory, and the web service
+  binds to localhost by default.
+- The ESPHome version stores Wi-Fi, Linksys, Web, API, and OTA credentials in an
+  ignored local YAML and compiles them into device flash. HTTP APIs never
+  return those values to the browser.
+- The ESP32 page and all page APIs require independent HTTP Basic Auth. HTTP
+  itself does not encrypt traffic. Use MeshScope only on a trusted home LAN;
+  never port-forward it or expose it directly to the Internet.
+- The ESPHome Native API uses a separate encrypted key. It does not encrypt the
+  MeshScope web page.
+- Linksys local JNAP uses the router's self-signed HTTPS certificate. MeshScope
+  skips certificate verification for local compatibility, so its trust model
+  assumes the home LAN and gateway have not been maliciously intercepted.
 
-读取操作由允许名单限制为 `Get*` / `Check*`。写操作允许名单只有
-`core/Reboot`，并且必须解析到实时拓扑中已知的私有地址和在线 Node。Reset、
-Parent Steering、固件更新以及其他变更在生成路由器请求之前即被拒绝。
+Read operations are restricted to an allowlist of `Get*` and `Check*` actions.
+The write allowlist contains only `core/Reboot`, and its target must resolve to
+an online node with a known private address in the live topology. Reset,
+parent steering, firmware updates, and all other mutations are rejected before
+a router request is generated.
 
-仓库里的 MQTT / BLE / 固件 overlay 是离线、owner-controlled 的研究材料；
-运行中的网页无法调用它们，生成的 IMG 和官方固件输入也不会发布。
+The MQTT, BLE, and firmware overlays in this repository are offline,
+owner-controlled research artifacts. The running dashboard cannot invoke them,
+and generated IMG files and vendor firmware inputs are not published.
 
-## Node 支持页、Steering 与高级研究
+## Node support page, steering, and advanced research
 
-在线 Node 详情会进行以下只读调用：
+Online node details use only these read-only calls:
 
 - `core/CheckAdminPassword`
 - `core/GetDeviceInfo`
 - `nodes/smartmode/GetDeviceMode`
 - `nodes/topologyoptimization/GetTopologyOptimizationSettings2`
 
-Linksys 子 Node 的重定向绕过入口为：
+The redirect-bypass entry point for a Linksys child node is:
 
 ```text
 https://<node-ip>/ca
 ```
 
-浏览器会因路由器的自签名证书显示警告。当前公开 JNAP 只提供自动 Client
-Steering / Node Steering。离线固件分析已经确认指定 Parent 的内部数据路径，
-但尚无适合普通网页暴露的受支持传输，所以 MeshScope 不提供手动 Parent 控制。
+The browser will warn about the router's self-signed certificate. Public JNAP
+currently exposes automatic Client Steering and Node Steering only. Offline
+firmware analysis confirmed an internal exact-parent data path, but no
+supported transport suitable for a normal web UI has been identified.
+MeshScope therefore does not expose manual parent control.
 
-详细材料：
+Research notes:
 
 - [Node control feasibility](docs/node-control-findings.md)
 - [Node Steering findings](docs/node-steering-findings.md)
-- [Hidden firmware interfaces and Parent steering](docs/hidden-firmware-interfaces.md)
+- [Hidden firmware interfaces and parent steering](docs/hidden-firmware-interfaces.md)
 - [WHW03 firmware and SSH scaffold analysis](docs/whw03-firmware-analysis.md)
 - [MX4200 firmware, steering, reboot, and SSH analysis](docs/mx4200-firmware-analysis.md)
-- [MX4200 SSH bootstrap and exact-Parent control plan](docs/mx4200-ssh-parent-control.md)
+- [MX4200 SSH bootstrap and exact-parent control plan](docs/mx4200-ssh-parent-control.md)
 - [MX4200 MQTT control and custom-IMG feasibility](docs/mx4200-mqtt-and-custom-img.md)
-- [MX5300 MQTT, exact-Parent control, and custom-IMG feasibility](docs/mx5300-mqtt-and-custom-img.md)
-- [MX4200/MX5300 BLE and exact-Parent steering](docs/linksys-ble-parent-steering.md)
-- [Offline BLE-JNAP advanced-Action proof overlay](firmware-overlays/ble-parent-steering/README.md)
+- [MX5300 MQTT, exact-parent control, and custom-IMG feasibility](docs/mx5300-mqtt-and-custom-img.md)
+- [MX4200/MX5300 BLE and exact-parent steering](docs/linksys-ble-parent-steering.md)
+- [Offline BLE-JNAP advanced-action proof overlay](firmware-overlays/ble-parent-steering/README.md)
 - [MQTT experiment-image builder](firmware-overlays/mqtt-parent-steering/README.md)
 
-## 测试与前端开发
+## Testing and front-end development
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -287,16 +323,34 @@ node --test \
   tests/test_linksys_normalize.js
 ```
 
-修改 `mesh_web/` 后必须同步生成 ESP32 内嵌资产：
+After changing `mesh_web/`, regenerate the assets embedded in the ESP32 build:
 
 ```bash
 python3 tools/generate_esp32_meshscope_assets.py
 python3 tools/generate_esp32_meshscope_assets.py --check
 ```
 
-CI 会检查 Python/JavaScript 语法、所有单元测试和内嵌资产是否与网页源文件一致。
+CI checks Python and JavaScript syntax, runs every unit test, validates the
+ESPHome configuration, and confirms that embedded assets match the web source.
 
-## 许可证状态
+## Contributing
 
-仓库目前公开可见，但尚未选择 `LICENSE`。在 owner 明确选择许可证之前，请不要
-把“public repository”理解为已经授予复制、修改或再分发许可。
+Issues and pull requests are welcome. Please:
+
+- Write user-facing text, documentation, code comments, issues, and pull
+  requests in English
+- Keep the dashboard local-first and avoid cloud dependencies
+- Preserve all topology and Client/STA detail when changing the layout
+- Add or update tests for behavior changes
+- Never commit router credentials, real household topology data, vendor
+  firmware, or generated credential-bearing images
+
+When reporting router compatibility, include the Linksys model and firmware
+version, but remove serial numbers, MAC addresses, public IPs, and personally
+identifying node or client names.
+
+## License status
+
+This repository is publicly visible but does not yet contain a `LICENSE`.
+Public visibility does not grant permission to copy, modify, or redistribute
+the project until the owner selects a license.

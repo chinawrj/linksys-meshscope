@@ -628,11 +628,11 @@ static esp_err_t status_handler(httpd_req_t *request) {
 static esp_err_t topology_handler(httpd_req_t *request) {
   if (!authorize_web_request(request)) return ESP_OK;
   if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) {
-    return send_error_json(request, "503 Service Unavailable", "拓扑缓存暂时繁忙。");
+    return send_error_json(request, "503 Service Unavailable", "The topology cache is temporarily busy.");
   }
   if (!snapshot.ready) {
     xSemaphoreGive(snapshot_mutex);
-    return send_error_json(request, "503 Service Unavailable", "ESP32 正在读取首次拓扑。");
+    return send_error_json(request, "503 Service Unavailable", "The ESP32 is loading its first topology snapshot.");
   }
   httpd_resp_set_type(request, "application/json; charset=utf-8");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
@@ -805,11 +805,11 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
   if (!authorize_web_request(request)) return ESP_OK;
   std::string node_id;
   if (!query_value(request, "nodeId", node_id)) {
-    return send_error_json(request, "400 Bad Request", "缺少 Node ID。");
+    return send_error_json(request, "400 Bad Request", "Node ID is required.");
   }
   NodeInfo node;
   if (!resolve_node(node_id, node)) {
-    return send_error_json(request, "400 Bad Request", "Node 不在线或不在当前拓扑。");
+    return send_error_json(request, "400 Bad Request", "The node is offline or absent from the current topology.");
   }
 
   const JnapResult check = jnap_request(node.ip, "core/CheckAdminPassword");
@@ -825,7 +825,7 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
   if (identity == nullptr) {
     cJSON_Delete(mode);
     cJSON_Delete(optimization);
-    return send_error_json(request, "502 Bad Gateway", "无法读取 Node 身份。");
+    return send_error_json(request, "502 Bad Gateway", "Unable to read the node identity.");
   }
 
   cJSON *root = cJSON_CreateObject();
@@ -886,7 +886,7 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
   cJSON_AddStringToObject(
       manual,
       "reason",
-      "固件内部已确认指定 Parent 数据路径，但普通 JNAP 尚无传输入口。");
+      "The exact-parent data path is confirmed in firmware, but ordinary JNAP exposes no transport.");
   cJSON_AddStringToObject(root, "observedAt", iso_timestamp().c_str());
 
   char *body = cJSON_PrintUnformatted(root);
@@ -922,35 +922,35 @@ static esp_err_t restart_handler(httpd_req_t *request) {
       httpd_req_get_hdr_value_str(
           request, "Content-Type", content_type.data(), content_type.size()) != ESP_OK ||
       strstr(content_type.data(), "application/json") == nullptr) {
-    return send_error_json(request, "415 Unsupported Media Type", "请求必须是 JSON。");
+    return send_error_json(request, "415 Unsupported Media Type", "The request must use JSON.");
   }
   std::string request_body;
   if (!read_request_json(request, request_body)) {
-    return send_error_json(request, "400 Bad Request", "重启请求格式无效。");
+    return send_error_json(request, "400 Bad Request", "The restart request is invalid.");
   }
   cJSON *payload = cJSON_ParseWithLength(request_body.c_str(), request_body.size());
   const char *node_id = payload != nullptr ? json_string(payload, "nodeId") : nullptr;
   if (node_id == nullptr || node_id[0] == '\0') {
     cJSON_Delete(payload);
-    return send_error_json(request, "400 Bad Request", "缺少 Node ID。");
+    return send_error_json(request, "400 Bad Request", "Node ID is required.");
   }
   NodeInfo node;
   if (!resolve_node(node_id, node)) {
     cJSON_Delete(payload);
-    return send_error_json(request, "400 Bad Request", "Node 不在线或不在当前拓扑。");
+    return send_error_json(request, "400 Bad Request", "The node is offline or absent from the current topology.");
   }
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
   const auto cooldown = restart_cooldowns.find(node.id);
   if (cooldown != restart_cooldowns.end() && now - cooldown->second < RESTART_COOLDOWN_MS) {
     cJSON_Delete(payload);
-    return send_error_json(request, "409 Conflict", "该 Node 正在重启，请等待恢复。");
+    return send_error_json(request, "409 Conflict", "The node is already restarting. Wait for it to recover.");
   }
   restart_cooldowns[node.id] = now;
   const JnapResult reboot = jnap_request(node.ip, "core/Reboot");
   if (!reboot.transport_ok || reboot.status != 200 || !response_is_ok(reboot.body)) {
     restart_cooldowns.erase(node.id);
     cJSON_Delete(payload);
-    return send_error_json(request, "502 Bad Gateway", "Node 未接受重启请求。");
+    return send_error_json(request, "502 Bad Gateway", "The node did not accept the restart request.");
   }
   cJSON_Delete(payload);
   request_refresh();
@@ -972,7 +972,7 @@ static esp_err_t restart_handler(httpd_req_t *request) {
 
 static esp_err_t not_found_handler(httpd_req_t *request, httpd_err_code_t) {
   if (!authorize_web_request(request)) return ESP_OK;
-  return send_error_json(request, "404 Not Found", "未找到接口。");
+  return send_error_json(request, "404 Not Found", "Endpoint not found.");
 }
 
 static void register_handler(
@@ -1130,12 +1130,12 @@ inline float meshscope_edge_free_heap() {
 
 inline std::string meshscope_edge_url() {
   const std::string ip = meshscope_edge::edge_ip();
-  return ip.empty() ? std::string("等待 Wi-Fi") : "http://" + ip + "/";
+  return ip.empty() ? std::string("Waiting for Wi-Fi") : "http://" + ip + "/";
 }
 
 inline std::string meshscope_edge_summary() {
   const meshscope_edge::MeshStats stats = meshscope_edge::stats_copy();
-  if (std::isnan(stats.nodes_online)) return "等待首次拓扑";
+  if (std::isnan(stats.nodes_online)) return "Waiting for first topology";
   char output[96];
   snprintf(
       output,
@@ -1150,5 +1150,5 @@ inline std::string meshscope_edge_summary() {
 
 inline std::string meshscope_edge_last_update() {
   const std::string value = meshscope_edge::last_update_copy();
-  return value.empty() ? std::string("等待首次拓扑") : value;
+  return value.empty() ? std::string("Waiting for first topology") : value;
 }
