@@ -14,8 +14,10 @@
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
-#include "esp_psram.h"
 #include "esp_timer.h"
+#if defined(CONFIG_SPIRAM)
+#include "esp_psram.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -30,7 +32,7 @@
 
 namespace meshscope_edge {
 
-static constexpr const char *TAG = "meshscope_c5";
+static constexpr const char *TAG = "meshscope_edge";
 static constexpr const char *JNAP_PREFIX = "http://linksys.com/jnap/";
 static constexpr size_t MAX_JNAP_RESPONSE = 512 * 1024;
 static constexpr uint32_t REFRESH_INTERVAL_MS = 10000;
@@ -137,6 +139,22 @@ static std::string edge_ip() {
 static bool wifi_connected() {
   auto *wifi = esphome::wifi::global_wifi_component;
   return wifi != nullptr && wifi->is_connected();
+}
+
+static size_t external_memory_size() {
+#if defined(CONFIG_SPIRAM)
+  return esp_psram_get_size();
+#else
+  return 0;
+#endif
+}
+
+static size_t external_memory_free() {
+#if defined(CONFIG_SPIRAM)
+  return heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+#else
+  return 0;
+#endif
 }
 
 static std::string base64_basic_auth(
@@ -547,7 +565,7 @@ static void collector_task(void *) {
             "Topology generation %u cached; free=%u external=%u",
             static_cast<unsigned>(generation),
             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
-            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+            static_cast<unsigned>(external_memory_free()));
         App.wake_loop_threadsafe();
       }
     } else {
@@ -1052,7 +1070,7 @@ static void setup(
       "MeshScope ESPHome edge starting; assets=%u source=%s PSRAM=%u",
       static_cast<unsigned>(meshscope_web_assets::ASSET_COUNT),
       meshscope_web_assets::SOURCE_SHA256,
-      static_cast<unsigned>(esp_psram_get_size()));
+      static_cast<unsigned>(external_memory_size()));
   start_server();
   if (xTaskCreate(
           collector_task,
