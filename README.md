@@ -18,11 +18,11 @@ immediate `core/Reboot` request sent directly to a selected online node.
 
 ## Choose how to run MeshScope
 
-| | Desktop local app | ESPHome / ESP32-C5 appliance |
+| | Desktop local app | ESPHome / ESP32 appliance |
 |---|---|---|
 | Best for | Trying the UI, diagnostics, occasional use | Always-on access, phones, Home Assistant |
-| Runs on | Python on macOS, Linux, or Windows | ESP32-C5 with the page served by the device |
-| Requirements | Python 3.10+, no runtime packages | ESPHome 2026.7.2, 8 MB flash, at least 4 MB PSRAM |
+| Runs on | Python on macOS, Linux, or Windows | ESP32-C5 or ESP32-C3 with the page served by the device |
+| Requirements | Python 3.10+, no runtime packages | ESPHome 2026.7.2; see the target table below |
 | Router credentials | Python process memory only | Ignored YAML, build output, and device flash |
 | Web access | `127.0.0.1:8765` by default | HTTP Basic Auth on the trusted home LAN |
 | Home Assistant | Not exposed | Encrypted ESPHome Native API |
@@ -85,14 +85,27 @@ because environment variables can be recorded in shell history or process
 metadata. The desktop service listens only on `127.0.0.1` by default. The
 password exists only in the Python process and is cleared when it stops.
 
-## ESPHome / ESP32-C5 always-on appliance
+## ESPHome / ESP32 always-on appliance
 
-### Verified target and network assumptions
+### Choose an ESP32 target
 
-- `esp32-c5-devkitc-1`
-- 8 MB flash
-- At least 4 MB PSRAM; configuration fails early when PSRAM is unavailable
+| Target | Board configuration | Memory | Status |
+|---|---|---|---|
+| ESP32-C5 | `esp32-c5-devkitc-1` | 8 MB flash and at least 4 MB PSRAM | Recommended and supported |
+| ESP32-C3 | Exact `esp32-c3-devkitm-1` target | 4 MB flash, no PSRAM required; 2.4 GHz Wi-Fi | Experimental; compile and link verified, hardware runtime not yet certified |
+
+Both builds contain the same full topology page, Client/STA and `5GH`/`5GL`
+fields, auto-refresh, Home Assistant entities, and selected-node restart. The
+C3 source does not use a reduced page or a reduced topology payload. However,
+successful C3 compilation does not prove that its internal RAM is sufficient
+for every real mesh, so this release does not claim C3 runtime parity. Use C5
+for an always-on installation until C3 hardware validation is complete.
+
+Network assumptions:
+
 - The ESP32, primary Linksys router, and browser are on the same trusted LAN
+- An ESP32-C3 must be able to join a 2.4 GHz SSID that can reach the Linksys
+  router; it does not support 5 GHz Wi-Fi
 - The Linksys firmware provides local HTTPS JNAP
 
 Development was validated on a mixed mesh containing MX42, MX5300, and WHW03
@@ -100,12 +113,25 @@ nodes. Other Linksys models may return different JNAP fields. Use desktop demo
 mode to evaluate the UI, then use the desktop live connection to verify router
 compatibility before flashing hardware.
 
+Before C3 is promoted from experimental status, the exact target must pass a
+cold boot and at least 100 refresh cycles on a realistic mesh, concurrent web
+and Home Assistant access, node-detail collection, cached-offline behavior,
+OTA, and selected-node restart/recovery. Free heap must remain stable
+throughout. This acceptance gate intentionally preserves the complete user
+experience instead of reducing data to fit the target.
+
 ### 1. Create a private local configuration
 
 ```bash
 git clone https://github.com/chinawrj/linksys-meshscope.git
 cd linksys-meshscope
 cp esphome_meshscope_c5.local.example.yaml esphome_meshscope_c5.local.yaml
+```
+
+For an ESP32-C3, use the C3 example instead:
+
+```bash
+cp esphome_meshscope_c3.local.example.yaml esphome_meshscope_c3.local.yaml
 ```
 
 Generate three independent sets of credentials:
@@ -122,7 +148,7 @@ openssl rand -hex 24
 openssl rand -hex 24
 ```
 
-Edit `esphome_meshscope_c5.local.yaml`:
+Edit the local YAML for your selected target:
 
 - `meshscope_wifi_ssid` / `meshscope_wifi_password`: home Wi-Fi credentials
 - `meshscope_router_host`: primary Linksys router LAN address
@@ -149,6 +175,8 @@ python3 tools/generate_esp32_meshscope_assets.py
 .esphome-venv/bin/esphome run esphome_meshscope_c5.local.yaml
 ```
 
+Replace `c5` with `c3` in both commands when using an ESP32-C3.
+
 Connect the ESP32 over USB and select its serial port when prompted. The first
 build downloads ESP-IDF and may take several minutes; later builds use the
 cache.
@@ -160,18 +188,19 @@ After installation, find the device IP in one of these places:
 - Home Assistant's ESPHome discovery notification
 
 Create a DHCP reservation for the ESP32. If mDNS works, open
-`http://meshscope-c5.local/`. Otherwise use `http://<esp32-ip>/`. Your browser
-will request the MeshScope Web username and password from the local YAML.
+`http://meshscope-c5.local/` or `http://meshscope-c3.local/`, depending on the
+target. Otherwise use `http://<esp32-ip>/`. Your browser will request the
+MeshScope Web username and password from the local YAML.
 
 ### 3. Add MeshScope to Home Assistant
 
 The encrypted ESPHome Native API key is separate from the HTTP Basic
 credentials used by the web page.
 
-1. Wait up to five minutes for `MeshScope C5` to appear under
+1. Wait up to five minutes for `MeshScope C5` or `MeshScope C3` to appear under
    **Settings → Devices & services**.
 2. If it is not discovered, choose **Add integration → ESPHome**.
-3. Enter `meshscope-c5.local` or the ESP32's reserved IP address.
+3. Enter the target's `.local` address or the ESP32's reserved IP address.
 4. Enter `meshscope_api_key` from the local YAML when prompted.
 
 Home Assistant receives these entities:
@@ -201,6 +230,8 @@ python3 tools/generate_esp32_meshscope_assets.py --check
 .esphome-venv/bin/esphome run esphome_meshscope_c5.local.yaml \
   --device <esp32-ip>
 ```
+
+Use the matching C3 local YAML when updating an ESP32-C3.
 
 If an incorrect Wi-Fi setting, OTA password, or device address makes the board
 unreachable, reconnect it over USB and run the same `esphome run` command.
@@ -237,12 +268,12 @@ permission to restart a node.
 
 | Symptom | What to do |
 |---|---|
-| `meshscope-c5.local` does not open | Find the IP in Linksys DHCP or serial logs, then create a DHCP reservation |
+| The target's `.local` address does not open | Find the IP in Linksys DHCP or serial logs, then create a DHCP reservation |
 | The page says the router is offline but still shows topology | This is the last successful snapshot, not a false online state. Check the router address, Wi-Fi, and Linksys local password |
 | The first page remains on “Loading” | Allow one complete JNAP collection cycle; check ESPHome logs if it continues |
 | The browser repeatedly asks for credentials | Verify `meshscope_web_username/password`, clear the incorrect Basic Auth entry for the address, and retry |
 | Home Assistant does not discover MeshScope | Add the ESPHome integration manually with the ESP32 IP and `meshscope_api_key` |
-| ESPHome reports missing PSRAM | This firmware cannot run without PSRAM; verify the exact development board and hardware specification |
+| ESPHome reports missing PSRAM on C5 | Verify the exact C5 development board and its PSRAM specification, or use the no-PSRAM C3 target on an ESP32-C3 |
 | Front-end changes do not appear on ESP32 | Regenerate embedded assets, then rebuild or update over OTA |
 | The device disappeared after changing Wi-Fi or OTA settings | Connect over USB and run `esphome run` again |
 | The Linksys password contains special characters | Use `tools/encode_secret.py`; never insert a plaintext password directly into the firmware lambda |
@@ -331,7 +362,8 @@ python3 tools/generate_esp32_meshscope_assets.py --check
 ```
 
 CI checks Python and JavaScript syntax, runs every unit test, validates the
-ESPHome configuration, and confirms that embedded assets match the web source.
+ESPHome configurations, fully compiles and links both C3 and C5 firmware, and
+confirms that embedded assets match the web source.
 
 ## Contributing
 

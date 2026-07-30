@@ -2,6 +2,8 @@ name: Test MeshScope
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -34,9 +36,10 @@ jobs:
             exit 1
           fi
 
-      - name: Validate ESPHome configuration
+      - name: Validate ESPHome configurations
         run: |
           python -m pip install -r requirements-esphome.txt
+          esphome config esphome_meshscope_c3.ci.yaml
           esphome config esphome_meshscope_c5.ci.yaml
 
       - name: Run Python tests
@@ -61,3 +64,29 @@ jobs:
             tests/test_detail_data.js \
             tests/test_node_restart_state.js \
             tests/test_linksys_normalize.js
+
+  firmware-build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ESP32-C3 (no PSRAM)
+            config: esphome_meshscope_c3.ci.yaml
+          - target: ESP32-C5 (PSRAM)
+            config: esphome_meshscope_c5.ci.yaml
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: python -m pip install -r requirements-esphome.txt
+
+      - name: Compile and link firmware
+        run: esphome compile "${{ matrix.config }}"
