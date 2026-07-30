@@ -8,6 +8,7 @@ substitutions:
   meshscope_api_key: "SET_IN_LOCAL_CONFIG"
   meshscope_ota_password: "SET_IN_LOCAL_CONFIG"
   meshscope_timezone: "UTC"
+  meshscope_client_details: "auto"
 
 esphome:
   min_version: 2026.7.2
@@ -22,7 +23,8 @@ esphome:
               "${meshscope_router_host}",
               "${meshscope_router_password_b64}",
               "${meshscope_web_username}",
-              "${meshscope_web_password}");
+              "${meshscope_web_password}",
+              "${meshscope_client_details}");
 
 logger:
   baud_rate: 115200

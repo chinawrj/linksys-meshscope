@@ -15,3 +15,5 @@ substitutions:
   meshscope_api_key: "YOUR_32_BYTE_BASE64_ESPHOME_API_KEY"
   meshscope_ota_password: "YOUR_UNIQUE_OTA_PASSWORD"
   meshscope_timezone: "Etc/UTC"
+  # auto keeps full client details when memory allows; full and nodes-only override it.
+  meshscope_client_details: "auto"

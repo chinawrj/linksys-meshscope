@@ -3,6 +3,7 @@
 .esphome/
 esphome_meshscope_c5.local.yaml
 esphome_meshscope_c3.local.yaml
+esphome_meshscope_c6.local.yaml
 esp32_serial_collector/
 __pycache__/
 *.pyc

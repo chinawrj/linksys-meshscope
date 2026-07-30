@@ -91,13 +91,15 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
     updatedAt: "2026-01-01T00:00:00Z",
     edgeAddress: "10.0.0.50",
     routerConnected: false,
+    clientDetails: "nodes-only",
   });
   const child = result.nodes.find((item) => item.id === "child");
   const client = result.clients.find((item) => item.id === "client");
 
-  assert.equal(result.meta.source, "Linksys JNAP · ESP32-C5");
+  assert.equal(result.meta.source, "Linksys JNAP · ESP32 MeshScope");
   assert.equal(result.meta.edgeAddress, "10.0.0.50");
   assert.equal(result.meta.routerConnected, false);
+  assert.equal(result.meta.clientDetails, "nodes-only");
   assert.equal(result.summary.nodesOnline, 2);
   assert.equal(result.summary.clientsOnline, 1);
   assert.equal(result.summary.clientsKnown, 2);
