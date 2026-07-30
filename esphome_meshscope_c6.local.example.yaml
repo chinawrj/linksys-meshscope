@@ -1,8 +1,8 @@
 packages:
-  meshscope: !include esphome_meshscope_c3.yaml
+  meshscope: !include esphome_meshscope_c6.yaml
 
 substitutions:
-  # Copy this file to esphome_meshscope_c3.local.yaml; never commit the copy.
+  # Copy this file to esphome_meshscope_c6.local.yaml; never commit the copy.
   meshscope_wifi_ssid: "YOUR_WIFI_SSID"
   meshscope_wifi_password: "YOUR_WIFI_PASSWORD"
   meshscope_router_host: "192.168.1.1"

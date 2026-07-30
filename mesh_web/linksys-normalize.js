@@ -252,13 +252,14 @@
 
     return {
       meta: {
-        source: "Linksys JNAP · ESP32-C5",
+        source: "Linksys JNAP · ESP32 MeshScope",
         router: host,
         updatedAt: edgeMeta.updatedAt || new Date().toISOString(),
         revision: deviceOutput.revision,
         edgeHosted: true,
         edgeAddress: edgeMeta.edgeAddress || null,
         routerConnected: edgeMeta.routerConnected !== false,
+        clientDetails: edgeMeta.clientDetails || "full",
       },
       network: {
         manufacturer: deviceInfo.manufacturer || "Linksys",

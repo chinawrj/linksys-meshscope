@@ -1,3 +1,4 @@
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -7,10 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 COMMON = ROOT / "esphome_meshscope_common.yaml"
 C5_CONFIG = ROOT / "esphome_meshscope_c5.yaml"
 C3_CONFIG = ROOT / "esphome_meshscope_c3.yaml"
+C6_CONFIG = ROOT / "esphome_meshscope_c6.yaml"
 EDGE = ROOT / "esphome_includes" / "meshscope_edge.h"
 GITIGNORE = ROOT / ".gitignore"
 C5_EXAMPLE = ROOT / "esphome_meshscope_c5.local.example.yaml"
 C3_EXAMPLE = ROOT / "esphome_meshscope_c3.local.example.yaml"
+C6_EXAMPLE = ROOT / "esphome_meshscope_c6.local.example.yaml"
 
 
 class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
@@ -19,6 +22,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         cls.common = COMMON.read_text(encoding="utf-8")
         cls.c5_config = C5_CONFIG.read_text(encoding="utf-8")
         cls.c3_config = C3_CONFIG.read_text(encoding="utf-8")
+        cls.c6_config = C6_CONFIG.read_text(encoding="utf-8")
         cls.edge = EDGE.read_text(encoding="utf-8")
 
     def test_shared_configuration_preserves_home_assistant_experience(self):
@@ -74,6 +78,24 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.c3_config)
 
+    def test_c6_builds_without_psram_and_uses_native_usb_logging(self):
+        for fragment in (
+            "!include esphome_meshscope_common.yaml",
+            "board: esp32-c6-devkitc-1",
+            "variant: esp32c6",
+            "flash_size: 4MB",
+            "hardware_uart: USB_SERIAL_JTAG",
+            'CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"',
+            'CONFIG_LWIP_MAX_SOCKETS: "12"',
+        ):
+            self.assertIn(fragment, self.c6_config)
+        for forbidden in (
+            "psram:",
+            "CONFIG_SPIRAM",
+            "CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC",
+        ):
+            self.assertNotIn(forbidden, self.c6_config)
+
     def test_edge_psram_access_is_target_guarded(self):
         self.assertIn("#if defined(CONFIG_SPIRAM)", self.edge)
         self.assertIn("external_memory_size()", self.edge)
@@ -96,17 +118,60 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "jnap_mutex",
             "REFRESH_INTERVAL_MS = 10000",
             "xTaskCreate(",
+            "stream_decompressed_response(",
+            "compressed_response",
+            "memory_mutex",
+        ):
+            self.assertIn(fragment, self.edge)
+
+    def test_client_details_are_adaptive_and_explicit(self):
+        for fragment in (
+            'meshscope_client_details: "auto"',
+            '"${meshscope_client_details}"',
+        ):
+            self.assertIn(fragment, self.common)
+        for fragment in (
+            "ClientDetailsMode::AUTO",
+            "ClientDetailsMode::FULL",
+            "ClientDetailsMode::NODES_ONLY",
+            '"nodes-only"',
+            '"clientDetails"',
+            '"clientDetailsRequested"',
+            '"nodes/firmwareupdate/GetFirmwareUpdateStatus"',
+            '"deviceIDs"',
+        ):
+            self.assertIn(fragment, self.edge)
+        for example_path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE):
+            self.assertIn(
+                'meshscope_client_details: "auto"',
+                example_path.read_text(encoding="utf-8"),
+            )
+
+    def test_no_psram_collection_keeps_device_list_last_and_reuses_buffers(self):
+        actions_start = self.edge.index("static const char *const READ_ACTIONS[]")
+        actions_end = self.edge.index("};", actions_start)
+        actions = self.edge[actions_start:actions_end]
+        self.assertLess(
+            actions.index('"wirelessap/GetRadioInfo3"'),
+            actions.index('"devicelist/GetDevices3"'),
+        )
+        for fragment in (
+            "device_receive_workspace",
+            "standard_receive_workspace",
+            "reuse_snapshot_compression_buffer(",
+            "COMPRESSION_WINDOW = 8 * 1024",
+            "response_size",
         ):
             self.assertIn(fragment, self.edge)
 
     def test_only_allowed_router_mutation_is_node_reboot(self):
-        mutations = [
-            line
-            for line in self.edge.splitlines()
-            if "jnap_request(" in line and '"core/' in line
-        ]
-        reboot = [line for line in mutations if '"core/Reboot"' in line]
-        self.assertEqual(len(reboot), 1)
+        self.assertRegex(
+            self.edge,
+            re.compile(
+                r"jnap_request\(\s*node\.ip,\s*\"core/Reboot\"",
+                re.MULTILINE,
+            ),
+        )
         self.assertNotIn("FactoryReset", self.edge)
         self.assertIn("RESTART_COOLDOWN_MS = 90000", self.edge)
         self.assertIn("resolve_node(node_id, node)", self.edge)
@@ -115,14 +180,20 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         ignored = GITIGNORE.read_text(encoding="utf-8").splitlines()
         self.assertIn("esphome_meshscope_c5.local.yaml", ignored)
         self.assertIn("esphome_meshscope_c3.local.yaml", ignored)
+        self.assertIn("esphome_meshscope_c6.local.yaml", ignored)
 
     def test_examples_require_unique_web_and_api_credentials(self):
-        for example_path in (C5_EXAMPLE, C3_EXAMPLE):
+        for example_path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE):
             example = example_path.read_text(encoding="utf-8")
             self.assertIn("meshscope_router_password_b64:", example)
             self.assertIn("meshscope_web_password:", example)
             self.assertIn("meshscope_api_key:", example)
-        for config in (self.common, self.c5_config, self.c3_config):
+        for config in (
+            self.common,
+            self.c5_config,
+            self.c3_config,
+            self.c6_config,
+        ):
             self.assertNotIn(
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 config,

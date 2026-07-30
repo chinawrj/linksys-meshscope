@@ -211,6 +211,8 @@ function renderSummary(data) {
     ? "Explore a complete offline topology, backhaul quality, and Client/STA interactions without connecting to or changing a router."
     : routerOffline
       ? "The router is currently unreachable. MeshScope is showing the last complete topology and will update automatically after recovery."
+      : meta.clientDetails === "nodes-only"
+        ? "Low-memory mode is showing online mesh nodes. Client/STA details and offline nodes are not collected; select full mode when the device has enough memory."
       : "See every Velop node, backhaul link, and connected device in real time. Your data stays between this device and your router.";
   $("#networkStatus").textContent = meta.demo
     ? "Offline demo data"
