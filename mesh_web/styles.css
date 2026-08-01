@@ -12,6 +12,8 @@
   --coral-soft: #f4dfda;
   --amber: #c7812b;
   --amber-soft: #f3e6cf;
+  --violet: #6f55b5;
+  --violet-soft: #ece7f7;
   --shadow: 0 18px 50px rgba(35, 43, 39, 0.08);
   --radius: 20px;
 }
@@ -546,6 +548,10 @@ button {
   transition: transform 150ms ease, box-shadow 150ms ease;
 }
 
+.mesh-node.lock-expanded {
+  min-height: 184px;
+}
+
 .mesh-node:hover,
 .mesh-node:focus-visible {
   transform: translateY(-3px);
@@ -565,6 +571,63 @@ button {
 .mesh-node.restarting {
   border-color: #b9772b;
   box-shadow: 0 0 0 3px rgba(185, 119, 43, 0.12), 0 12px 30px rgba(39, 48, 44, 0.12);
+}
+
+.mesh-node.lock-correct {
+  border-color: #63a58d;
+  background: linear-gradient(155deg, #fffefa 56%, #e9f5ef);
+  box-shadow: 0 0 0 3px rgba(61, 133, 109, 0.09), 0 10px 28px rgba(39, 48, 44, 0.1);
+}
+
+.mesh-node.lock-confirming {
+  border-color: #d2a05b;
+  background: linear-gradient(155deg, #fffefa 54%, #fff1d8);
+  box-shadow: 0 0 0 3px rgba(199, 129, 43, 0.1), 0 10px 28px rgba(39, 48, 44, 0.1);
+}
+
+.mesh-node.lock-cooldown,
+.mesh-node.lock-ready {
+  border-color: #d8624d;
+  background: linear-gradient(155deg, #fffefa 50%, #fbe3dd);
+  box-shadow: 0 0 0 3px rgba(216, 98, 77, 0.12), 0 12px 31px rgba(120, 55, 43, 0.13);
+}
+
+.mesh-node.lock-blocked {
+  border-color: #7896a4;
+  background: linear-gradient(155deg, #fffefa 52%, #e7eff2);
+  box-shadow: 0 0 0 3px rgba(74, 113, 130, 0.1), 0 10px 28px rgba(39, 48, 44, 0.1);
+}
+
+.mesh-node.lock-recovering {
+  border-color: var(--violet);
+  background: linear-gradient(155deg, #fffefa 50%, var(--violet-soft));
+  box-shadow: 0 0 0 3px rgba(111, 85, 181, 0.12), 0 12px 31px rgba(79, 61, 128, 0.13);
+}
+
+.mesh-node.lock-offline {
+  border-color: #a6aaa6;
+  background: linear-gradient(155deg, #fffefa 55%, #ecece8);
+}
+
+.mesh-node.lock-draggable {
+  border-color: #b8a8d8;
+  background: linear-gradient(155deg, #fffefa 62%, #f2eef9);
+  cursor: grab;
+}
+
+.mesh-node.lock-draggable:active {
+  cursor: grabbing;
+}
+
+.mesh-node.dragging {
+  opacity: 0.45;
+  transform: scale(0.97);
+}
+
+.mesh-node.drop-target {
+  border-color: var(--violet);
+  box-shadow: 0 0 0 5px rgba(111, 85, 181, 0.18), 0 18px 38px rgba(79, 61, 128, 0.17);
+  transform: translateY(-4px) scale(1.02);
 }
 
 .node-operation {
@@ -634,6 +697,76 @@ button {
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-parent.desired {
+  color: var(--violet);
+}
+
+.node-parent.current {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.node-lock-status {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  margin-top: 9px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  text-align: left;
+}
+
+.node-lock-status > i {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.node-lock-status strong,
+.node-lock-status small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-lock-status strong {
+  font-size: 8px;
+}
+
+.node-lock-status small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 6px;
+}
+
+.node-lock-status.lock-correct { background: var(--mint-soft); color: var(--mint); }
+.node-lock-status.lock-confirming { background: var(--amber-soft); color: #9b6825; }
+.node-lock-status.lock-cooldown,
+.node-lock-status.lock-ready { background: var(--coral-soft); color: #a53b31; }
+.node-lock-status.lock-blocked { background: #dfe9ed; color: #436d7f; }
+.node-lock-status.lock-recovering { background: var(--violet-soft); color: var(--violet); }
+.node-lock-status.lock-offline { background: #e8e8e4; color: #737975; }
+
+.node-drag-hint {
+  margin-top: 8px;
+  padding: 5px 7px;
+  border: 1px dashed #a896d2;
+  border-radius: 8px;
+  background: var(--violet-soft);
+  color: var(--violet);
+  font-size: 7px;
+  font-weight: 900;
+  text-align: center;
 }
 
 .node-stats {
@@ -736,6 +869,17 @@ button {
   background: #eff7f2;
 }
 
+.edge-label.band-lock {
+  border-color: #b9aadf;
+  background: #f3effb;
+  color: var(--violet);
+}
+
+.edge-label.edge-current {
+  border-style: dashed;
+  opacity: 0.82;
+}
+
 .offline-strip {
   position: absolute;
   z-index: 4;
@@ -766,6 +910,317 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.offline-node-chip b,
+.offline-node-chip small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.offline-node-chip small {
+  margin-top: 2px;
+  font-size: 6px;
+}
+
+.offline-node-chip.lock-recovering {
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.offline-node-chip.lock-offline {
+  background: #dedfda;
+  color: #626963;
+}
+
+.topology-lock-panel {
+  margin: 0 12px 12px;
+  overflow: hidden;
+  border: 1px solid #d8d8d1;
+  border-radius: 15px;
+  background: #f7f6f1;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.topology-heading-tools {
+  display: grid;
+  justify-items: end;
+  gap: 9px;
+}
+
+.topology-recovery-chip {
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid #d2d3cd;
+  border-radius: 999px;
+  background: #f2f1ec;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 8px;
+  font-weight: 900;
+}
+
+.topology-recovery-chip.active.correct {
+  border-color: #a9cabb;
+  background: var(--mint-soft);
+  color: var(--mint);
+}
+
+.topology-recovery-chip.active.attention {
+  border-color: #e4aa9e;
+  background: var(--coral-soft);
+  color: #a53b31;
+}
+
+.topology-recovery-chip.editing {
+  border-color: #b7a6df;
+  background: var(--violet-soft);
+  color: var(--violet);
+}
+
+.topology-lock-panel.enabled {
+  border-color: #a9cabb;
+  box-shadow: 0 8px 22px rgba(61, 133, 109, 0.08);
+}
+
+.topology-lock-panel.editing {
+  border-color: #b7a6df;
+  box-shadow: 0 8px 24px rgba(111, 85, 181, 0.1);
+}
+
+.topology-lock-summary {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 13px;
+}
+
+.topology-lock-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--violet-soft);
+  color: var(--violet);
+  font-size: 17px;
+  font-weight: 900;
+}
+
+.topology-lock-panel.enabled .topology-lock-icon {
+  background: var(--mint-soft);
+  color: var(--mint);
+}
+
+.topology-lock-copy {
+  min-width: 0;
+}
+
+.topology-lock-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topology-lock-title-row > strong {
+  font-size: 10px;
+}
+
+.topology-lock-mode {
+  padding: 3px 6px;
+  border: 1px solid #c8badf;
+  border-radius: 999px;
+  color: var(--violet);
+  font-size: 6px;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+}
+
+.topology-lock-copy > p,
+.topology-lock-editor-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.topology-lock-actions,
+.topology-lock-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.topology-lock-primary,
+.topology-unlock-button {
+  min-height: 33px;
+  padding: 0 11px;
+  font-size: 8px;
+}
+
+.topology-lock-primary {
+  border-color: #ae9bd6;
+  background: var(--violet-soft);
+  color: #5c4499;
+}
+
+.topology-lock-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.topology-lock-stats span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #ebeae5;
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.topology-lock-stats span.correct { background: var(--mint-soft); color: var(--mint); }
+.topology-lock-stats span.mismatch { background: var(--coral-soft); color: #a53b31; }
+.topology-lock-stats span.blocked { background: #dfe9ed; color: #436d7f; }
+.topology-lock-stats span.offline { background: #e8e8e4; color: #626963; }
+
+.topology-lock-editor {
+  padding: 14px;
+  border-top: 1px solid #ddd5ed;
+  background: linear-gradient(135deg, rgba(236, 231, 247, 0.72), rgba(255, 254, 250, 0.88));
+}
+
+.topology-lock-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topology-lock-editor-heading strong {
+  font-size: 10px;
+}
+
+.topology-lock-editor-heading > span {
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--violet-soft);
+  color: var(--violet);
+  font-size: 7px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.topology-lock-fields {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);
+  align-items: end;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.topology-lock-fields label {
+  display: grid;
+  gap: 5px;
+}
+
+.topology-lock-fields label > span {
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.topology-lock-fields select {
+  width: 100%;
+  height: 35px;
+  padding: 0 9px;
+  border: 1px solid #c8bfd9;
+  border-radius: 9px;
+  background: #fffefa;
+  color: var(--ink);
+  font-size: 9px;
+}
+
+.topology-lock-arrow {
+  padding-bottom: 8px;
+  color: var(--violet);
+  font-weight: 900;
+}
+
+.topology-lock-validation {
+  min-height: 17px;
+  margin: 7px 0 0;
+  color: #a53b31;
+  font-size: 8px;
+}
+
+.topology-lock-warning {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid #e2c895;
+  border-radius: 10px;
+  background: var(--amber-soft);
+  color: #70582c;
+  font-size: 8px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.topology-lock-warning input {
+  width: 17px;
+  height: 17px;
+  margin: 1px 0 0;
+  accent-color: var(--violet);
+}
+
+.topology-lock-warning strong {
+  color: var(--ink);
+}
+
+.topology-lock-editor-actions {
+  justify-content: flex-end;
+}
+
+.topology-lock-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+  padding: 9px 13px;
+  border-top: 1px solid #e1e0da;
+  background: #f1f0eb;
+  font-size: 7px;
+}
+
+.topology-lock-history[hidden] {
+  display: none !important;
+}
+
+.topology-lock-history > strong {
+  width: 100%;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.topology-lock-history span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.topology-lock-history i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--coral);
+}
+
+.topology-lock-history i.accepted { background: var(--mint); }
 
 .steering-callout {
   display: grid;
@@ -1344,6 +1799,13 @@ footer {
   line-height: 1.55;
 }
 
+.managed-connection-panel .sign-out-button {
+  width: max-content;
+  padding: 7px 0 0;
+  color: #8f332b;
+  text-align: left;
+}
+
 .form-error {
   min-height: 17px;
   margin: 10px 0 3px;
@@ -1522,6 +1984,59 @@ footer {
   padding-top: 22px;
   border-top: 1px solid var(--line);
 }
+
+.node-lock-detail {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 22px;
+  padding: 13px;
+  border: 1px solid #c9d9d1;
+  border-radius: 13px;
+  background: var(--mint-soft);
+}
+
+.node-lock-detail > span {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--mint);
+  font-weight: 900;
+}
+
+.node-lock-detail small,
+.node-lock-detail strong,
+.node-lock-detail p {
+  display: block;
+}
+
+.node-lock-detail small {
+  color: var(--muted);
+  font-size: 6px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.node-lock-detail strong {
+  margin-top: 3px;
+  font-size: 10px;
+}
+
+.node-lock-detail p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.node-lock-detail.lock-confirming { border-color: #dfbf8d; background: var(--amber-soft); }
+.node-lock-detail.lock-cooldown,
+.node-lock-detail.lock-ready { border-color: #e4aa9d; background: var(--coral-soft); }
+.node-lock-detail.lock-blocked { border-color: #adc2cb; background: #dfe9ed; }
+.node-lock-detail.lock-recovering { border-color: #c2b4e1; background: var(--violet-soft); }
+.node-lock-detail.lock-offline { border-color: #d0d1cd; background: #e8e8e4; }
 
 .node-feasibility {
   margin-top: 28px;
@@ -1903,7 +2418,7 @@ footer {
     padding: 0 19px 0 7px;
   }
 
-  .button-quiet {
+  #settingsButton {
     width: 54px;
     min-width: 54px;
     padding: 0;
@@ -1911,7 +2426,7 @@ footer {
     font-size: 0;
   }
 
-  .button-quiet::after {
+  #settingsButton::after {
     content: "Settings";
     font-size: 10px;
   }
@@ -1957,6 +2472,15 @@ footer {
     display: none;
   }
 
+  .topology-heading-tools {
+    justify-items: end;
+  }
+
+  .topology-recovery-chip {
+    min-height: 44px;
+    font-size: 11px;
+  }
+
   .health-panel {
     display: block;
   }
@@ -1991,6 +2515,54 @@ footer {
 
   .steering-callout {
     grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .topology-lock-summary {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .topology-lock-actions {
+    grid-column: 2;
+    justify-self: start;
+    flex-wrap: wrap;
+  }
+
+  .topology-lock-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .topology-lock-copy > p,
+  .topology-lock-editor-heading p,
+  .topology-lock-warning,
+  .topology-lock-validation {
+    font-size: 12px;
+  }
+
+  .topology-lock-title-row > strong {
+    font-size: 14px;
+  }
+
+  .topology-lock-mode,
+  .topology-lock-stats span,
+  .topology-lock-fields label > span,
+  .topology-lock-history {
+    font-size: 11px;
+  }
+
+  .topology-lock-primary,
+  .topology-unlock-button,
+  .topology-lock-editor-actions .button,
+  .topology-lock-fields select {
+    min-height: 44px;
+    font-size: 12px;
+  }
+
+  .topology-lock-arrow {
+    display: none;
+  }
+
+  .topology-lock-editor-heading {
+    flex-direction: column;
   }
 
   .steering-mode {

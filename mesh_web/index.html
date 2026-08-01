@@ -88,12 +88,15 @@
                 <p class="section-kicker">LIVE MAP</p>
                 <h2>Mesh Topology</h2>
               </div>
-              <div class="legend" aria-label="Topology legend">
-                <span><i class="legend-line band-high"></i>5GH high-band backhaul</span>
-                <span><i class="legend-line band-low"></i>5GL low-band backhaul</span>
-                <span><i class="legend-dot online"></i>Online</span>
-                <span><i class="legend-dot warning"></i>Weak signal</span>
-                <span><i class="legend-dot offline"></i>Offline</span>
+              <div class="topology-heading-tools">
+                <button class="topology-recovery-chip" id="topologyRecoveryChip" type="button">Recovery: Off · Set up</button>
+                <div class="legend" aria-label="Topology legend">
+                  <span><i class="legend-line band-high"></i>5GH high-band backhaul</span>
+                  <span><i class="legend-line band-low"></i>5GL low-band backhaul</span>
+                  <span><i class="legend-dot online"></i>Online</span>
+                  <span><i class="legend-dot warning"></i>Weak signal</span>
+                  <span><i class="legend-dot offline"></i>Offline</span>
+                </div>
               </div>
             </div>
             <div class="map-scroll">
@@ -105,6 +108,53 @@
                 </div>
               </div>
             </div>
+            <section class="topology-lock-panel" id="topologyLockPanel" aria-labelledby="topologyLockTitle">
+              <div class="topology-lock-summary">
+                <span class="topology-lock-icon" id="topologyLockIcon" aria-hidden="true">◇</span>
+                <div class="topology-lock-copy">
+                  <div class="topology-lock-title-row">
+                    <strong id="topologyLockTitle">Topology lock is off</strong>
+                    <span class="topology-lock-mode" id="topologyLockMode">UNLOCKED</span>
+                  </div>
+                  <p id="topologyLockDescription">Save the current parent structure or edit it by dragging nodes before enabling continuous monitoring.</p>
+                  <div class="topology-lock-stats" id="topologyLockStats" hidden></div>
+                </div>
+                <div class="topology-lock-actions">
+                  <button class="button topology-lock-primary" id="editTopologyLockButton" type="button">Edit & lock topology</button>
+                  <button class="button button-quiet topology-unlock-button" id="unlockTopologyButton" type="button" hidden>Stop automatic recovery</button>
+                </div>
+              </div>
+              <div class="topology-lock-editor" id="topologyLockEditor" hidden>
+                <div class="topology-lock-editor-heading">
+                  <div>
+                    <strong>Desired topology draft</strong>
+                    <p>Drag a child node onto its desired parent, or use the selectors below. Nothing restarts until you apply the lock.</p>
+                  </div>
+                  <span id="topologyLockDraftStatus">Current live structure</span>
+                </div>
+                <div class="topology-lock-fields">
+                  <label>
+                    <span>Child node</span>
+                    <select id="topologyLockNodeSelect"></select>
+                  </label>
+                  <span class="topology-lock-arrow" aria-hidden="true">→</span>
+                  <label>
+                    <span>Desired parent</span>
+                    <select id="topologyLockParentSelect"></select>
+                  </label>
+                </div>
+                <label class="topology-lock-warning">
+                  <input id="topologyLockAcknowledgement" type="checkbox" />
+                  <span><strong>Enable automatic topology recovery?</strong> MeshScope may restart a mismatched child node after three confirmed checks. The node and its clients will disconnect briefly. Linksys chooses the parent after reboot, so the desired parent is not guaranteed. If the mismatch continues, MeshScope may retry one restart every five minutes until you stop recovery.</span>
+                </label>
+                <p class="topology-lock-validation" id="topologyLockValidation" role="alert"></p>
+                <div class="topology-lock-editor-actions">
+                  <button class="button button-quiet" id="cancelTopologyLockButton" type="button">Keep recovery off</button>
+                  <button class="button button-primary" id="applyTopologyLockButton" type="button">Enable restart-based recovery</button>
+                </div>
+              </div>
+              <div class="topology-lock-history" id="topologyLockHistory" hidden></div>
+            </section>
             <div class="steering-callout" id="steeringCallout">
               <span class="steering-icon" aria-hidden="true">⌁</span>
               <div>
@@ -184,11 +234,37 @@
 
       <footer>
         <span>MeshScope</span>
-        <span>Local observation · Selected-node restart only</span>
+        <span>Local topology monitoring · Opt-in guarded node recovery</span>
       </footer>
     </div>
 
-    <div class="modal-backdrop" id="connectModal" role="dialog" aria-modal="true" aria-labelledby="connectTitle">
+    <div class="modal-backdrop hidden" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <form class="connect-card auth-card" id="authForm">
+        <div class="connect-graphic" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <p class="section-kicker">LOCAL DASHBOARD</p>
+        <h2 id="authTitle">Unlock MeshScope</h2>
+        <p>Enter the dashboard password you created during installation. This is not your Wi-Fi password, Linksys admin password, Home Assistant API key, or OTA password.</p>
+        <label>
+          <span>Dashboard password</span>
+          <div class="password-field">
+            <input id="dashboardPasswordInput" name="password" type="password" autocomplete="current-password" required />
+            <button id="toggleDashboardPassword" type="button" aria-label="Show dashboard password">Show</button>
+          </div>
+        </label>
+        <div class="connect-note">
+          <span>✓</span>
+          <p>The internal account name is handled automatically. Your dashboard password stays on this local network.</p>
+        </div>
+        <p class="form-error" id="authError" role="alert"></p>
+        <button class="button button-primary" id="authButton" type="submit">
+          <span>Open dashboard</span><i aria-hidden="true">→</i>
+        </button>
+      </form>
+    </div>
+
+    <div class="modal-backdrop hidden" id="connectModal" role="dialog" aria-modal="true" aria-labelledby="connectTitle">
       <form class="connect-card" id="connectForm">
         <button class="modal-close" id="connectClose" type="button" aria-label="Close">×</button>
         <div class="connect-graphic" aria-hidden="true">
@@ -201,6 +277,7 @@
           <span>Router address in firmware</span>
           <strong id="managedRouterHost">—</strong>
           <p>The page can refresh the current configuration but cannot receive or change credentials.</p>
+          <button class="text-button sign-out-button" id="signOutButton" type="button">Sign out of this dashboard</button>
         </div>
         <div id="editableConnectionFields">
           <label>
@@ -238,6 +315,7 @@
     <script src="/node-restart-state.js" defer></script>
     <script src="/detail-data.js" defer></script>
     <script src="/topology-layout.js" defer></script>
+    <script src="/topology-lock-state.js" defer></script>
     <script src="/linksys-normalize.js" defer></script>
     <script src="/app.js" defer></script>
   </body>

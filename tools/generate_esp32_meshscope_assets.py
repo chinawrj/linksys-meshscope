@@ -19,6 +19,7 @@ SCRIPT_NAMES = (
     "node-restart-state.js",
     "detail-data.js",
     "topology-layout.js",
+    "topology-lock-state.js",
     "linksys-normalize.js",
     "app.js",
 )

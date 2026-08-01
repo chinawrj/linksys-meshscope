@@ -14,6 +14,9 @@ GITIGNORE = ROOT / ".gitignore"
 C5_EXAMPLE = ROOT / "esphome_meshscope_c5.local.example.yaml"
 C3_EXAMPLE = ROOT / "esphome_meshscope_c3.local.example.yaml"
 C6_EXAMPLE = ROOT / "esphome_meshscope_c6.local.example.yaml"
+WEB_HTML = ROOT / "mesh_web" / "index.html"
+WEB_APP = ROOT / "mesh_web" / "app.js"
+WEB_CSS = ROOT / "mesh_web" / "styles.css"
 
 
 class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
@@ -41,6 +44,9 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "Topology Summary",
             "Last Topology Update",
             "Refresh Mesh Topology",
+            "Topology Lock Active",
+            "Topology Lock Issues",
+            "Topology Lock Summary",
         ):
             self.assertIn(fragment, self.common)
 
@@ -109,8 +115,10 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"/api/refresh"',
             '"/api/node-capabilities"',
             '"/api/restart-node"',
+            '"/api/topology-lock"',
+            '"/api/login"',
+            '"/api/logout"',
             "authorize_web_request(request)",
-            "WWW-Authenticate",
             "managedConnection",
             "snapshotReady",
             "routerConnected",
@@ -121,8 +129,64 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "stream_decompressed_response(",
             "compressed_response",
             "memory_mutex",
+            "topology_lock_mutex",
+            "HttpOnly; SameSite=Strict",
+            "esp_fill_random",
+            "WEB_SESSION_LIMIT = 4",
         ):
             self.assertIn(fragment, self.edge)
+        self.assertNotIn("WWW-Authenticate", self.edge)
+        self.assertNotIn("web_authorization", self.edge)
+
+    def test_dashboard_login_is_password_only_and_has_sign_out(self):
+        html = WEB_HTML.read_text(encoding="utf-8")
+        app = WEB_APP.read_text(encoding="utf-8")
+        self.assertIn("Unlock MeshScope", html)
+        self.assertIn("Dashboard password", html)
+        self.assertIn("No username is required", "".join(
+            path.read_text(encoding="utf-8")
+            for path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE)
+        ))
+        self.assertNotIn('name="username"', html)
+        self.assertIn('id="signOutButton"', html)
+        self.assertIn('api("/api/login"', app)
+        self.assertIn('api("/api/logout"', app)
+
+    def test_topology_recovery_requires_explicit_acknowledgement(self):
+        html = WEB_HTML.read_text(encoding="utf-8")
+        app = WEB_APP.read_text(encoding="utf-8")
+        css = WEB_CSS.read_text(encoding="utf-8")
+        self.assertIn('id="topologyLockAcknowledgement"', html)
+        self.assertIn("Linksys chooses the parent after reboot", html)
+        self.assertIn("!state.topologyLockAcknowledged", app)
+        self.assertIn("#settingsButton::after", css)
+        self.assertNotIn("\n  .button-quiet::after", css)
+
+    def test_topology_lock_is_persistent_observable_and_rate_limited(self):
+        for fragment in (
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MS = 5 * 60 * 1000",
+            "TOPOLOGY_LOCK_CONFIRMATIONS = 3",
+            'TOPOLOGY_LOCK_NVS_NAMESPACE = "meshscope_lock"',
+            "persist_topology_lock_locked()",
+            "load_topology_lock()",
+            "validate_topology_lock_mappings(",
+            "evaluate_topology_lock(",
+            '"nextActionInSeconds"',
+            '"expectedParentOnline"',
+            '"confirmations"',
+            '"parent-offline"',
+            '"restart-ready"',
+            "restart_cooldowns.find(mapping.node_id)",
+        ):
+            self.assertIn(fragment, self.edge)
+        self.assertRegex(
+            self.edge,
+            re.compile(
+                r"node == nullptr \|\| parent == nullptr \|\| !node->online \|\|\s*"
+                r"!parent->online \|\| node->authority",
+                re.MULTILINE,
+            ),
+        )
 
     def test_client_details_are_adaptive_and_explicit(self):
         for fragment in (
@@ -182,11 +246,12 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("esphome_meshscope_c3.local.yaml", ignored)
         self.assertIn("esphome_meshscope_c6.local.yaml", ignored)
 
-    def test_examples_require_unique_web_and_api_credentials(self):
+    def test_examples_require_unique_dashboard_and_api_credentials(self):
         for example_path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE):
             example = example_path.read_text(encoding="utf-8")
             self.assertIn("meshscope_router_password_b64:", example)
-            self.assertIn("meshscope_web_password:", example)
+            self.assertIn("meshscope_dashboard_password:", example)
+            self.assertNotIn("meshscope_web_username:", example)
             self.assertIn("meshscope_api_key:", example)
         for config in (
             self.common,

@@ -5,12 +5,20 @@ Client/STA dashboard. It shows parent/child relationships, `5GH` and `5GL`
 backhaul links, signal quality, negotiated rates, and the clients attached to
 each node on one screen.
 
-Topology collection is read-only. The only enabled write operation is an
-immediate `core/Reboot` request sent directly to a selected online node.
+Topology collection is read-only. Router changes are deliberately limited to
+`core/Reboot`: either an immediate request for a selected online node, or the
+same request issued by the opt-in ESP32 Topology Lock recovery guard.
 
 [![CI](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml/badge.svg)](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml)
 ![Linksys](https://img.shields.io/badge/Linksys-local%20JNAP-16769b)
 ![Runtime](https://img.shields.io/badge/runtime-Python%20%7C%20ESPHome-2d705b)
+
+> **v0.3.0 preview highlight:** lock the topology you trust. MeshScope now
+> detects parent drift, shows compliance and restart countdowns directly on
+> every node card, supports drag-and-drop desired-parent editing, and runs the
+> guarded restart-based recovery monitor on an ESP32. Linksys still chooses the
+> parent after a reboot. The ESP32 dashboard now unlocks with a
+> single password—there is no browser username prompt.
 
 > MeshScope is an independent community project and is not affiliated with or
 > endorsed by Linksys. Use it only on networks you own or are authorized to
@@ -24,7 +32,7 @@ immediate `core/Reboot` request sent directly to a selected online node.
 | Runs on | Python on macOS, Linux, or Windows | ESP32-C5, ESP32-C6, or ESP32-C3 with the page served by the device |
 | Requirements | Python 3.10+, no runtime packages | ESPHome 2026.7.2; see the target table below |
 | Router credentials | Python process memory only | Ignored YAML, build output, and device flash |
-| Web access | `127.0.0.1:8765` by default | HTTP Basic Auth on the trusted home LAN |
+| Web access | `127.0.0.1:8765` by default | MeshScope password-only session on the trusted home LAN |
 | Home Assistant | Not exposed | Encrypted ESPHome Native API |
 
 If you are evaluating compatibility, start with desktop demo mode. It includes
@@ -46,6 +54,11 @@ and restart-state UI without authenticating with or controlling a router.
   `https://<node-ip>/ca`
 - Immediate restart of one selected online node, with offline and recovery
   tracking
+- ESP32 Topology Lock that saves every online node's desired parent, shows
+  parent compliance and restart countdowns directly on the map, and can
+  recover a persistent mismatch under strict safety gates
+- Drag-and-drop desired-parent editing on desktop browsers, with accessible
+  child/parent selectors as an equivalent input method
 - The last complete topology remains visible, clearly marked as cached, when
   the router is temporarily unreachable
 
@@ -96,13 +109,13 @@ password exists only in the Python process and is cleared when it stops.
 | ESP32-C3 | Exact `esp32-c3-devkitm-1` target | 4 MB flash, no PSRAM required; 2.4 GHz Wi-Fi | Experimental; compile and link verified, hardware runtime not yet certified |
 
 All targets contain the same topology page, Client/STA and `5GH`/`5GL`
-fields, auto-refresh, Home Assistant entities, and selected-node restart. The
-page is never reduced. Client details default to `auto`: targets with enough
-memory retain the complete raw topology payload, while smaller devices can use
-the explicit `nodes-only` capability described below. Successful compilation
-does not prove that internal RAM is sufficient for every real mesh, so this
-release does not claim runtime parity until each target passes the hardware
-acceptance gate.
+fields, auto-refresh, Home Assistant entities, selected-node restart, and
+Topology Lock. The page is never reduced. Client details default to `auto`:
+targets with enough memory retain the complete raw topology payload, while
+smaller devices can use the explicit `nodes-only` capability described below.
+Successful compilation does not prove that internal RAM is sufficient for
+every real mesh, so this release does not claim runtime parity until each
+target passes the hardware acceptance gate.
 
 Network assumptions:
 
@@ -123,15 +136,17 @@ cached-offline behavior, OTA, and selected-node restart/recovery. Free heap
 must remain stable throughout. The full-mode acceptance gate requires complete
 Client/STA data; `nodes-only` results do not qualify a target for promotion.
 
-ESP32-C6 hardware validation on 2026-07-30 used an ESP32-C6FH4 revision 0.1
-with 4 MB flash and no PSRAM. The board compiled, flashed over native USB,
-joined a 2.4 GHz network, and collected a live mixed Linksys mesh with 12 nodes
-and 250 clients. The ten JNAP responses totaled about 133 KB; the 110 KB device
-list was cached losslessly and served back as all 262 records. Validation
-included 22 consecutive full collection cycles during development, eight
-back-to-back full topology reads across automatic refreshes, a manual refresh,
-and a read-only BigTree node capability probe. The 100-cycle, OTA, Home
-Assistant concurrency, and restart/recovery acceptance items remain pending.
+ESP32-C6 hardware validation used an ESP32-C6FH4 revision 0.1 with 4 MB flash
+and no PSRAM. The board compiled, flashed over native USB, joined a 2.4 GHz
+network, and retained a complete large Client/STA response without truncation.
+The 100-cycle, Home Assistant concurrency, and restart/recovery acceptance
+items remain pending, so C6 stays experimental.
+
+ESP32-C5 validation covered USB and OTA installation, full Client/STA mode,
+password-only login and sign-out, persistent Topology Lock state, the
+three-snapshot mismatch gate, a single-node restart, the five-minute global
+cooldown, card colors, and the visible `MM:SS` countdown. Household node names,
+addresses, and credentials are intentionally omitted.
 
 ### 1. Create a private local configuration
 
@@ -153,7 +168,7 @@ For an ESP32-C6, use:
 cp esphome_meshscope_c6.local.example.yaml esphome_meshscope_c6.local.yaml
 ```
 
-Generate three independent sets of credentials:
+Generate three independent credentials:
 
 ```bash
 # Prompts without echo and returns the Linksys password as Base64 for the C++ config
@@ -162,7 +177,7 @@ python3 tools/encode_secret.py
 # ESPHome Native API key; use this as meshscope_api_key
 openssl rand -base64 32
 
-# Generate separate Web and OTA passwords; do not reuse them
+# Generate separate dashboard and OTA passwords; do not reuse them
 openssl rand -hex 24
 openssl rand -hex 24
 ```
@@ -173,9 +188,8 @@ Edit the local YAML for your selected target:
 - `meshscope_router_host`: primary Linksys router LAN address
 - `meshscope_router_password_b64`: output from `encode_secret.py`, not the
   plaintext password
-- `meshscope_web_username` / `meshscope_web_password`: credentials required by
-  browsers opening the ESP32 page; use only letters, digits, `-`, or `_` in the
-  username, and use a generated password
+- `meshscope_dashboard_password`: the only value requested by the ESP32 web
+  page; no username is configured or entered
 - `meshscope_api_key`: 32-byte Base64 key used by Home Assistant
 - `meshscope_ota_password`: password for later OTA updates
 - `meshscope_timezone`: timezone used by ESPHome logs and time components, such
@@ -192,6 +206,17 @@ than allowing an automatic downgrade.
 
 The local YAML is ignored by Git. Never publish it, `.esphome/`, build logs, or
 firmware binaries containing your credentials.
+
+| Credential | What it unlocks | Where you enter it |
+|---|---|---|
+| Wi-Fi password | Joins the ESP32 to your home network | Local YAML only |
+| Linksys local admin password | Reads topology and sends an allowed node restart | Encoded into local YAML with `tools/encode_secret.py` |
+| Dashboard password | Opens the MeshScope web page and APIs | Browser password-only form |
+| ESPHome API key | Encrypted Home Assistant connection | Home Assistant integration |
+| OTA password | Future firmware uploads | ESPHome update command |
+
+These credentials serve different purposes. Do not reuse the Linksys, Wi-Fi,
+Home Assistant, or OTA secret as the dashboard password.
 
 ### 2. Install over USB for the first time
 
@@ -218,13 +243,14 @@ After installation, find the device IP in one of these places:
 Create a DHCP reservation for the ESP32. If mDNS works, open
 `http://meshscope-c5.local/`, `http://meshscope-c6.local/`, or
 `http://meshscope-c3.local/`, depending on the target. Otherwise use
-`http://<esp32-ip>/`. Your browser will request the MeshScope Web username and
-password from the local YAML.
+`http://<esp32-ip>/`. Enter only `meshscope_dashboard_password` on the
+MeshScope unlock screen. The internal session account is automatic. Sessions
+are held in ESP32 memory, expire after 24 hours of inactivity, and end when the
+ESP32 restarts; use **Connection settings → Sign out** on a shared browser.
 
 ### 3. Add MeshScope to Home Assistant
 
-The encrypted ESPHome Native API key is separate from the HTTP Basic
-credentials used by the web page.
+The encrypted ESPHome Native API key is separate from the dashboard password.
 
 1. Wait up to five minutes for the selected MeshScope target to appear under
    **Settings → Devices & services**.
@@ -243,6 +269,9 @@ Home Assistant receives these entities:
 - MeshScope URL
 - ESP32 Free Heap
 - Refresh Mesh Topology button
+- Topology Lock Active
+- Topology Lock Issues
+- Topology Lock Summary
 
 The ESP32 continues collecting data and serving the web page when Home
 Assistant is offline or has never been connected. The configuration explicitly
@@ -278,6 +307,43 @@ Select any topology card to open the node details and view the clients or STAs
 attached to that node. `5GH` and `5GL` remain visible on the backhaul paths,
 together with every available channel, rate, and RSSI value.
 
+### Topology Lock
+
+Topology Lock is available on the ESP32-hosted page. Select **Edit & lock
+topology** to capture the current live structure. On a desktop browser, drag a
+child card onto its desired parent; on touch devices or with a keyboard, use
+the child and desired-parent selectors. The preview keeps the current `5GH` or
+`5GL` link visible beside the proposed relationship. Nothing is sent to a
+router while editing. Review the restart warning, acknowledge it, then select
+**Enable restart-based recovery**.
+
+After applying, every node card becomes a live status surface:
+
+- Green: the current parent matches the saved parent
+- Amber: a mismatch is being confirmed across three successful snapshots
+- Red/orange: the mismatch is confirmed and a restart is queued or counting
+  down; the `MM:SS` countdown is shown directly on the node card
+- Blue/gray: the desired parent is offline, so recovery is blocked
+- Violet: a restart was sent and the node is being observed during recovery
+- Gray: the child node is offline
+
+The ESP32 stores the lock in non-volatile storage and evaluates it after each
+successful ten-second topology collection. An automatic restart is allowed
+only when the child and its saved parent are both online, the child has a
+private LAN address, and the mismatch has appeared in three consecutive
+snapshots. Automatic actions share a global five-minute cooldown, so at most
+one node can be restarted in that period. If several nodes remain mismatched,
+the scheduler rotates among them instead of repeatedly favoring one node.
+Recent attempts are displayed below the map, and Home Assistant receives
+**Topology Lock Active**, **Topology Lock Issues**, and **Topology Lock
+Summary** entities.
+
+Topology Lock is recovery by guarded node restart, not direct parent steering.
+Linksys firmware chooses the attachment again when the node returns, so the
+desired parent is not guaranteed. Use **Stop automatic recovery** to clear the saved structure
+and stop automatic actions. Locks include only nodes online at apply time; edit
+and reapply after intentionally adding, removing, or relocating mesh nodes.
+
 **Restart now is immediate and has no second confirmation.**
 
 - The request is sent only to the currently selected, online node that is still
@@ -290,7 +356,7 @@ together with every available channel, rate, and RSSI value.
 - Demo nodes, offline nodes, unknown addresses, and IDs absent from the current
   topology cannot be restarted
 
-Do not share the MeshScope Web credentials with LAN users who should not have
+Do not share the MeshScope dashboard password with LAN users who should not have
 permission to restart a node.
 
 ## Troubleshooting
@@ -300,7 +366,7 @@ permission to restart a node.
 | The target's `.local` address does not open | Find the IP in Linksys DHCP or serial logs, then create a DHCP reservation |
 | The page says the router is offline but still shows topology | This is the last successful snapshot, not a false online state. Check the router address, Wi-Fi, and Linksys local password |
 | The first page remains on “Loading” | Allow one complete JNAP collection cycle; check ESPHome logs if it continues |
-| The browser repeatedly asks for credentials | Verify `meshscope_web_username/password`, clear the incorrect Basic Auth entry for the address, and retry |
+| The dashboard password is rejected | Verify `meshscope_dashboard_password` in the target's ignored local YAML. Rebuild and flash if it changed |
 | Home Assistant does not discover MeshScope | Add the ESPHome integration manually with the ESP32 IP and `meshscope_api_key` |
 | Client/STA details are unavailable | Check `/api/status` or the page notice for `nodes-only`; set `meshscope_client_details: "full"` only if the board has enough memory |
 | ESPHome reports missing PSRAM on C5 | Verify the exact C5 development board and its PSRAM specification, or use the matching no-PSRAM C3/C6 target |
@@ -314,12 +380,14 @@ The desktop and ESPHome versions use different credential models:
 
 - The desktop password remains in Python process memory, and the web service
   binds to localhost by default.
-- The ESPHome version stores Wi-Fi, Linksys, Web, API, and OTA credentials in an
+- The ESPHome version stores Wi-Fi, Linksys, dashboard, API, and OTA credentials in an
   ignored local YAML and compiles them into device flash. HTTP APIs never
   return those values to the browser.
-- The ESP32 page and all page APIs require independent HTTP Basic Auth. HTTP
-  itself does not encrypt traffic. Use MeshScope only on a trusted home LAN;
-  never port-forward it or expose it directly to the Internet.
+- The ESP32 page uses a password-only form and random, RAM-only session tokens.
+  Protected APIs return `401` without a valid session. Cookies are `HttpOnly`
+  and `SameSite=Strict`; no username is exposed or required. HTTP itself does
+  not encrypt traffic. Use MeshScope only on a trusted home LAN; never
+  port-forward it or expose it directly to the Internet.
 - The ESPHome Native API uses a separate encrypted key. It does not encrypt the
   MeshScope web page.
 - Linksys local JNAP uses the router's self-signed HTTPS certificate. MeshScope
@@ -328,9 +396,11 @@ The desktop and ESPHome versions use different credential models:
 
 Read operations are restricted to an allowlist of `Get*` and `Check*` actions.
 The write allowlist contains only `core/Reboot`, and its target must resolve to
-an online node with a known private address in the live topology. Reset,
-parent steering, firmware updates, and all other mutations are rejected before
-a router request is generated.
+an online node with a known private address in the live topology. Topology Lock
+adds the saved-parent-online, three-snapshot confirmation, and global
+five-minute cooldown gates before using that same action. Reset, direct parent
+steering, firmware updates, and all other mutations are rejected before a
+router request is generated.
 
 The MQTT, BLE, and firmware overlays in this repository are offline,
 owner-controlled research artifacts. The running dashboard cannot invoke them,
@@ -381,6 +451,7 @@ node --test \
   tests/test_topology_layout.js \
   tests/test_detail_data.js \
   tests/test_node_restart_state.js \
+  tests/test_topology_lock_state.js \
   tests/test_linksys_normalize.js
 ```
 

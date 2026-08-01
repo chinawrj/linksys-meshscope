@@ -3,8 +3,7 @@ substitutions:
   meshscope_wifi_password: "SET_IN_LOCAL_CONFIG"
   meshscope_router_host: "192.168.1.1"
   meshscope_router_password_b64: "SET_IN_LOCAL_CONFIG"
-  meshscope_web_username: "SET_IN_LOCAL_CONFIG"
-  meshscope_web_password: "SET_IN_LOCAL_CONFIG"
+  meshscope_dashboard_password: "SET_IN_LOCAL_CONFIG"
   meshscope_api_key: "SET_IN_LOCAL_CONFIG"
   meshscope_ota_password: "SET_IN_LOCAL_CONFIG"
   meshscope_timezone: "UTC"
@@ -22,8 +21,7 @@ esphome:
           meshscope_edge_setup(
               "${meshscope_router_host}",
               "${meshscope_router_password_b64}",
-              "${meshscope_web_username}",
-              "${meshscope_web_password}",
+              "${meshscope_dashboard_password}",
               "${meshscope_client_details}");
 
 logger:
@@ -58,6 +56,11 @@ binary_sensor:
     id: meshscope_router_connected
     device_class: connectivity
     lambda: return meshscope_edge_router_connected();
+  - platform: template
+    name: Topology Lock Active
+    id: meshscope_topology_lock_active
+    icon: mdi:lock-check
+    lambda: return meshscope_edge_topology_lock_active();
 
 sensor:
   - platform: template
@@ -99,6 +102,13 @@ sensor:
     accuracy_decimals: 0
     lambda: return meshscope_edge_free_heap();
     update_interval: 30s
+  - platform: template
+    name: Topology Lock Issues
+    id: meshscope_topology_lock_issues
+    icon: mdi:lan-disconnect
+    accuracy_decimals: 0
+    lambda: return meshscope_edge_topology_lock_issues();
+    update_interval: 10s
 
 text_sensor:
   - platform: template
@@ -118,6 +128,12 @@ text_sensor:
     id: meshscope_last_update
     icon: mdi:clock-outline
     lambda: return meshscope_edge_last_update();
+    update_interval: 10s
+  - platform: template
+    name: Topology Lock Summary
+    id: meshscope_topology_lock_summary
+    icon: mdi:lock-check
+    lambda: return meshscope_edge_topology_lock_summary();
     update_interval: 10s
 
 button:

@@ -55,6 +55,7 @@ jobs:
           node --check mesh_web/node-restart-state.js
           node --check mesh_web/refresh-state.js
           node --check mesh_web/topology-layout.js
+          node --check mesh_web/topology-lock-state.js
 
       - name: Run JavaScript tests
         run: |
@@ -62,6 +63,7 @@ jobs:
             tests/test_connection_mode.js \
             tests/test_refresh_state.js \
             tests/test_topology_layout.js \
+            tests/test_topology_lock_state.js \
             tests/test_detail_data.js \
             tests/test_node_restart_state.js \
             tests/test_linksys_normalize.js
