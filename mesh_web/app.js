@@ -5,6 +5,7 @@ const state = {
   visibleRows: 18,
   refreshTimer: null,
   countdownTimer: null,
+  topologyLockTimer: null,
   refreshInterval: MeshRefreshState.normalizeInterval(
     localStorage.getItem("meshscopeRefreshInterval") ?? MeshRefreshState.DEFAULT_INTERVAL,
   ),
@@ -13,6 +14,16 @@ const state = {
   refreshError: null,
   refreshing: false,
   topologyAnimationFrame: null,
+  topologyLock: MeshTopologyLock.normalize(null),
+  topologyLockReceivedAt: Date.now(),
+  topologyLockEditing: false,
+  topologyLockDraft: {},
+  topologyLockDraftError: "",
+  topologyLockAcknowledged: false,
+  topologyLockSelectedNodeId: null,
+  topologyLockBusy: false,
+  draggedNodeId: null,
+  suppressNodeClickUntil: 0,
   detailToken: 0,
   detailSelection: null,
   nodeRestarts: new Map(),
@@ -90,9 +101,26 @@ async function api(path, options = {}) {
     payload = { error: "The local service returned an unrecognized response." };
   }
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed (${response.status})`);
+    const error = new Error(payload.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.code = payload.code;
+    if (response.status === 401 && path !== "/api/login") showDashboardLogin();
+    throw error;
   }
   return window.MeshLinksysNormalize?.normalizeEnvelope(payload) ?? payload;
+}
+
+function showDashboardLogin(message = "") {
+  $("#connectModal").classList.add("hidden");
+  $("#authError").textContent = message;
+  $("#authModal").classList.remove("hidden");
+  requestAnimationFrame(() => $("#dashboardPasswordInput").focus());
+}
+
+function hideDashboardLogin() {
+  $("#authModal").classList.add("hidden");
+  $("#authError").textContent = "";
+  $("#dashboardPasswordInput").value = "";
 }
 
 function openConnectModal() {
@@ -157,6 +185,7 @@ function updateRefreshLabel() {
     : state.topology?.meta?.demo
       ? `Demo · ${status.text}`
       : status.text;
+  updateTopologyLockCountdown();
 }
 
 function scheduleAutoRefresh() {
@@ -252,7 +281,7 @@ function renderSummary(data) {
   $("#steeringDescription").textContent = network.manualParentSelectionAvailable
     ? "The firmware reports manual parent selection support."
     : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
-      ? "The exact-parent data path is confirmed inside MX4200/WHW03 firmware, but current Web/JNAP interfaces expose no supported transport. MeshScope remains read-only."
+      ? "The exact-parent data path is confirmed inside MX4200/WHW03 firmware, but current Web/JNAP interfaces expose no supported transport. Topology Lock uses guarded node restarts as recovery; it does not send an exact-parent command."
       : "The firmware automatically selects the strongest signal and self-heals. No supported interface was found for pinning a child node to a specific parent.";
   $("#steeringMode").textContent = network.manualParentSelectionAvailable
     ? "MANUAL AVAILABLE"
@@ -303,8 +332,265 @@ function renderSummary(data) {
     .join("");
 }
 
+function topologyLockRemaining() {
+  return MeshTopologyLock.remainingSeconds(
+    state.topologyLock,
+    state.topologyLockReceivedAt,
+  );
+}
+
+function updateTopologyLockCountdown() {
+  const remaining = topologyLockRemaining();
+  $$("[data-topology-lock-countdown]").forEach((element) => {
+    element.textContent = remaining > 0
+      ? `Restart in ${MeshTopologyLock.duration(remaining)}`
+      : "Restart on next confirmed refresh";
+  });
+  const countdown = $("#topologyLockCountdown");
+  if (countdown) {
+    const hasMismatch = Number(state.topologyLock.summary?.mismatch || 0) > 0;
+    countdown.textContent = !hasMismatch
+      ? "No action queued"
+      : remaining > 0
+        ? `Next action ${MeshTopologyLock.duration(remaining)}`
+        : "Action window open";
+  }
+  const chip = $("#topologyRecoveryChip");
+  if (chip && state.topologyLock.enabled && Number(state.topologyLock.summary?.mismatch || 0) > 0) {
+    chip.textContent = "Recovery: Monitoring · " +
+      (remaining ? MeshTopologyLock.duration(remaining) : "Action ready");
+  }
+}
+
+function setTopologyLock(value) {
+  state.topologyLock = MeshTopologyLock.normalize(value);
+  state.topologyLockReceivedAt = Date.now();
+  if (state.topology?.meta) state.topology.meta.topologyLock = state.topologyLock;
+}
+
+function topologyLockNodeOptions() {
+  return (state.topology?.nodes || []).filter((node) => node.online);
+}
+
+function renderTopologyLockEditor() {
+  const online = topologyLockNodeOptions();
+  const children = online.filter((node) => !node.isAuthority);
+  if (!children.length) return;
+  if (!children.some((node) => node.id === state.topologyLockSelectedNodeId)) {
+    state.topologyLockSelectedNodeId = children[0].id;
+  }
+  const child = children.find((node) => node.id === state.topologyLockSelectedNodeId);
+  const nodeSelect = $("#topologyLockNodeSelect");
+  const parentSelect = $("#topologyLockParentSelect");
+  nodeSelect.innerHTML = children
+    .map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)}</option>`)
+    .join("");
+  nodeSelect.value = child.id;
+  parentSelect.innerHTML = online
+    .filter((node) => node.id !== child.id)
+    .map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)}${node.isAuthority ? " · Gateway" : ""}</option>`)
+    .join("");
+  parentSelect.value = state.topologyLockDraft[child.id] || "";
+  const valid = MeshTopologyLock.validate(state.topology.nodes, state.topologyLockDraft);
+  $("#topologyLockValidation").textContent = state.topologyLockDraftError || (valid.valid ? "" : valid.error);
+  $("#applyTopologyLockButton").disabled =
+    !valid.valid || !state.topologyLockAcknowledged || state.topologyLockBusy;
+}
+
+function renderTopologyLock() {
+  const panel = $("#topologyLockPanel");
+  if (!panel || !state.topology) return;
+  const lock = state.topologyLock;
+  const recoveryChip = $("#topologyRecoveryChip");
+  const supported = lock.supported && state.topology.meta?.edgeHosted === true;
+  const editing = supported && state.topologyLockEditing;
+  panel.className = `topology-lock-panel ${lock.enabled ? "enabled" : ""} ${editing ? "editing" : ""}`;
+  $("#topologyLockEditor").hidden = !editing;
+  $("#editTopologyLockButton").hidden = !supported || editing;
+  $("#unlockTopologyButton").hidden = !supported || !lock.enabled || editing;
+  $("#topologyLockHistory").hidden = !supported || !lock.history.length || editing;
+  $("#topologyLockStats").hidden = !supported || !lock.enabled || editing;
+  if (!supported) {
+    recoveryChip.textContent = "Recovery: ESP32 required";
+    recoveryChip.className = "topology-recovery-chip unavailable";
+    $("#topologyLockIcon").textContent = "◇";
+    $("#topologyLockTitle").textContent = "Topology lock requires ESP32 hosting";
+    $("#topologyLockMode").textContent = "UNAVAILABLE";
+    $("#topologyLockDescription").textContent = "Open the page hosted by a supported MeshScope ESP32 to save and enforce parent relationships.";
+    return;
+  }
+  if (editing) {
+    recoveryChip.textContent = "Recovery: Draft · Review warning";
+    recoveryChip.className = "topology-recovery-chip editing";
+    $("#topologyLockIcon").textContent = "✣";
+    $("#topologyLockTitle").textContent = "Editing desired topology";
+    $("#topologyLockMode").textContent = "DRAFT";
+    $("#topologyLockDescription").textContent = "Drag child nodes onto a desired parent. Current backhaul details remain visible while the map previews the desired structure.";
+    renderTopologyLockEditor();
+    return;
+  }
+  if (!lock.enabled) {
+    recoveryChip.textContent = "Recovery: Off · Set up";
+    recoveryChip.className = "topology-recovery-chip";
+    $("#topologyLockIcon").textContent = "◇";
+    $("#topologyLockTitle").textContent = "Topology lock is off";
+    $("#topologyLockMode").textContent = "UNLOCKED";
+    $("#topologyLockDescription").textContent = "Save the current parent structure or edit it by dragging nodes before enabling continuous monitoring.";
+    $("#editTopologyLockButton").textContent = "Edit & lock topology";
+    return;
+  }
+  const summary = lock.summary;
+  const attention = Number(summary.mismatch || 0) + Number(summary.blocked || 0) + Number(summary.offline || 0);
+  const remaining = topologyLockRemaining();
+  recoveryChip.textContent = summary.mismatch
+    ? "Recovery: Monitoring · " + (remaining ? MeshTopologyLock.duration(remaining) : "Action ready")
+    : attention
+      ? "Recovery: Monitoring · " + attention + " issue" + (attention === 1 ? "" : "s")
+      : "Recovery: Monitoring · All parents match";
+  recoveryChip.className = "topology-recovery-chip active " + (attention ? "attention" : "correct");
+  $("#topologyLockIcon").textContent = attention ? "!" : "◆";
+  $("#topologyLockTitle").textContent = attention
+    ? `Restart-based recovery is monitoring ${attention} node${attention === 1 ? "" : "s"}`
+    : "All monitored nodes match the saved parent map";
+  $("#topologyLockMode").textContent = "MONITORING";
+  $("#topologyLockDescription").textContent = summary.blocked
+    ? "At least one desired parent is offline, so affected restarts are blocked until that parent returns."
+    : summary.mismatch
+      ? "Parent differences are being confirmed. Eligible child nodes may restart one at a time under the five-minute global limit."
+      : "Every monitored online node currently has the desired parent.";
+  $("#editTopologyLockButton").textContent = "Edit desired topology";
+  $("#topologyLockStats").innerHTML = `
+    <span class="correct"><strong>${summary.correct}</strong> correct</span>
+    <span class="mismatch"><strong>${summary.mismatch}</strong> mismatch</span>
+    <span class="blocked"><strong>${summary.blocked}</strong> blocked</span>
+    <span class="offline"><strong>${summary.offline}</strong> offline</span>
+    <span id="topologyLockCountdown"><strong>↻</strong> ${summary.mismatch ? (topologyLockRemaining() ? `Next action ${MeshTopologyLock.duration(topologyLockRemaining())}` : "Action window open") : "No action queued"}</span>`;
+  $("#topologyLockHistory").innerHTML = `
+    <strong>Recent automatic actions</strong>
+    ${lock.history.slice(0, 3).map((action) => `
+      <span><i class="${action.accepted ? "accepted" : "failed"}"></i><b>${escapeHtml(action.name)}</b> · ${escapeHtml(formatTime(action.requestedAt))} · ${action.accepted ? "restart accepted" : "not acknowledged"} · ${escapeHtml(action.currentParentName || action.currentParentId || "unknown")} → ${escapeHtml(action.expectedParentName || action.expectedParentId)}</span>`).join("")}`;
+  updateTopologyLockCountdown();
+}
+
+function beginTopologyLockEdit() {
+  if (!state.topologyLock.supported || state.topologyLockBusy) return;
+  state.topologyLockDraft = MeshTopologyLock.draftFrom(
+    state.topology.nodes,
+    state.topologyLock,
+  );
+  state.topologyLockDraftError = "";
+  state.topologyLockAcknowledged = false;
+  $("#topologyLockAcknowledgement").checked = false;
+  state.topologyLockEditing = true;
+  state.topologyLockSelectedNodeId = Object.keys(state.topologyLockDraft)[0] || null;
+  $("#topologyLockDraftStatus").textContent = state.topologyLock.enabled
+    ? "Saved structure"
+    : "Current live structure";
+  $("#cancelTopologyLockButton").textContent = state.topologyLock.enabled
+    ? "Cancel"
+    : "Keep recovery off";
+  renderTopologyLock();
+  renderTopology(state.topology);
+}
+
+function cancelTopologyLockEdit() {
+  state.topologyLockEditing = false;
+  state.topologyLockDraft = {};
+  state.topologyLockDraftError = "";
+  state.topologyLockAcknowledged = false;
+  state.topologyLockSelectedNodeId = null;
+  renderTopologyLock();
+  renderTopology(state.topology);
+}
+
+function moveTopologyLockDraft(nodeId, parentId) {
+  const result = MeshTopologyLock.move(
+    state.topology.nodes,
+    state.topologyLockDraft,
+    nodeId,
+    parentId,
+  );
+  if (!result.valid) {
+    state.topologyLockDraftError = result.error;
+    $("#topologyLockDraftStatus").textContent = "Invalid change · draft unchanged";
+    toast(result.error);
+    renderTopologyLockEditor();
+    return false;
+  }
+  state.topologyLockDraft = result.draft;
+  state.topologyLockDraftError = "";
+  state.topologyLockSelectedNodeId = nodeId;
+  $("#topologyLockDraftStatus").textContent = "Desired structure changed";
+  renderTopologyLock();
+  renderTopology(state.topology);
+  return true;
+}
+
+async function applyTopologyLock() {
+  const result = MeshTopologyLock.validate(
+    state.topology.nodes,
+    state.topologyLockDraft,
+  );
+  if (!result.valid || !state.topologyLockAcknowledged || state.topologyLockBusy) {
+    $("#topologyLockValidation").textContent = result.error ||
+      "Acknowledge the restart behavior before enabling automatic recovery.";
+    return;
+  }
+  state.topologyLockBusy = true;
+  $("#applyTopologyLockButton").disabled = true;
+  $("#applyTopologyLockButton").textContent = "Enabling recovery…";
+  try {
+    const lock = await api("/api/topology-lock", {
+      method: "POST",
+      body: JSON.stringify({
+        enabled: true,
+        nodes: MeshTopologyLock.mappings(state.topologyLockDraft),
+      }),
+    });
+    setTopologyLock(lock);
+    state.topologyLockEditing = false;
+    state.topologyLockDraft = {};
+    state.topologyLockDraftError = "";
+    toast("Restart-based recovery enabled · Monitoring starts with the next refresh");
+    renderTopologyLock();
+    renderTopology(state.topology);
+  } catch (error) {
+    $("#topologyLockValidation").textContent = error.message;
+    toast(error.message);
+  } finally {
+    state.topologyLockBusy = false;
+    const button = $("#applyTopologyLockButton");
+    button.textContent = "Enable restart-based recovery";
+    renderTopologyLockEditor();
+  }
+}
+
+async function disableTopologyLock() {
+  if (state.topologyLockBusy) return;
+  state.topologyLockBusy = true;
+  $("#unlockTopologyButton").disabled = true;
+  try {
+    setTopologyLock(await api("/api/topology-lock", {
+      method: "POST",
+      body: JSON.stringify({ enabled: false }),
+    }));
+    toast("Topology lock disabled · Automatic restarts stopped");
+    renderTopologyLock();
+    renderTopology(state.topology);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.topologyLockBusy = false;
+    $("#unlockTopologyButton").disabled = false;
+  }
+}
+
 function layoutNodes(nodes) {
-  return MeshTopologyLayout.compute(nodes);
+  const expanded = state.topologyLockEditing || state.topologyLock.enabled;
+  return MeshTopologyLayout.compute(nodes, {
+    nodeHeight: expanded ? 184 : 124,
+    rowGap: expanded ? 38 : 30,
+  });
 }
 
 function renderTopology(data) {
@@ -313,7 +599,10 @@ function renderTopology(data) {
     cancelAnimationFrame(state.topologyAnimationFrame);
     state.topologyAnimationFrame = null;
   }
-  const layout = layoutNodes(data.nodes);
+  const displayNodes = state.topologyLockEditing
+    ? MeshTopologyLock.applyDraft(data.nodes, state.topologyLockDraft)
+    : data.nodes;
+  const layout = layoutNodes(displayNodes);
   const { positions, edges, root, nodeWidth, nodeHeight } = layout;
   const offline = data.nodes.filter((node) => !node.online);
   if (!positions.length || !root) return;
@@ -328,40 +617,82 @@ function renderTopology(data) {
     speedMbps: null,
     tone: "wan",
   };
+  const positionById = new Map(positions.map((node) => [node.id, node]));
+  const currentPreviewEdges = [];
+  if (state.topologyLockEditing) {
+    for (const edge of edges) {
+      const actualParentId = edge.target.actualParentId;
+      if (!actualParentId || actualParentId === edge.target.parentId) continue;
+      edge.kind = "desired";
+      const actualSource = positionById.get(actualParentId);
+      if (actualSource) {
+        currentPreviewEdges.push({
+          ...edge,
+          id: `${actualParentId}->${edge.target.id}:current`,
+          source: actualSource,
+          kind: "current",
+        });
+      }
+    }
+  }
   let html = `<canvas class="topology-canvas" id="topologyCanvas" aria-hidden="true"></canvas>`;
   html += `<div class="map-internet" style="left:34px;top:${internetY}px"><span>⌁</span><small>INTERNET</small></div>`;
   html += edgeLabelHtml(wanEdge);
   for (const edge of edges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
+  for (const edge of currentPreviewEdges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
   for (const node of positions) {
     const tone = node.quality?.tone || "";
     const restart = state.nodeRestarts.get(node.id);
+    const lockItem = state.topologyLockEditing
+      ? null
+      : MeshTopologyLock.statusForNode(state.topologyLock, node.id);
+    const lockPresentation = MeshTopologyLock.presentation(
+      lockItem,
+      topologyLockRemaining(),
+      state.topologyLock.confirmationsRequired,
+    );
+    const currentParentName = node.actualParentName || node.parentName || "Main";
+    const desiredParentName = node.parentName || "Main";
+    const draggable = state.topologyLockEditing && !node.isAuthority;
     html += `
-      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""}"
-        style="left:${node.x}px;top:${node.y}px" data-node-id="${escapeHtml(node.id)}" type="button">
+      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""}"
+        style="left:${node.x}px;top:${node.y}px" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
         <div class="node-title">
           <strong>${escapeHtml(node.name)}</strong>
           <span class="node-role">${node.isAuthority ? "GATEWAY" : "NODE"}</span>
         </div>
         <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "No IP")}</div>
-        ${node.isAuthority ? "" : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`}
+        ${node.isAuthority ? "" : state.topologyLockEditing
+          ? `<div class="node-parent desired">Desired ↳ ${escapeHtml(desiredParentName)}</div><div class="node-parent current">Current ↳ ${escapeHtml(currentParentName)} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`
+          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`}
         <div class="node-stats">
           <div><span>Clients</span><strong>${node.clientCount}</strong></div>
           <div><span>${node.isAuthority ? "Status" : "Backhaul"}</span><strong>${node.isAuthority ? "Online" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
           <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
+        ${lockPresentation ? `<div class="node-lock-status ${escapeHtml(lockPresentation.tone)}"><i aria-hidden="true">${lockItem.status === "correct" ? "◆" : lockItem.status === "parent-offline" ? "◇" : "↻"}</i><span><strong ${lockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(lockPresentation.label)}</strong><small>${escapeHtml(lockPresentation.detail)}</small></span></div>` : ""}
+        ${draggable ? `<div class="node-drag-hint">Drag onto desired parent</div>` : ""}
         ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
       </button>`;
   }
   if (offline.length) {
     html += `<div class="offline-strip"><strong>${offline.length} offline nodes</strong>${offline
       .slice(0, 5)
-      .map((node) => `<button class="offline-node-chip text-button" data-node-id="${escapeHtml(node.id)}" type="button">${escapeHtml(node.name)}</button>`)
+      .map((node) => {
+        const lockItem = MeshTopologyLock.statusForNode(state.topologyLock, node.id);
+        const lockView = MeshTopologyLock.presentation(
+          lockItem,
+          topologyLockRemaining(),
+          state.topologyLock.confirmationsRequired,
+        );
+        return `<button class="offline-node-chip text-button ${lockView?.tone || ""}" data-node-id="${escapeHtml(node.id)}" type="button"><b>${escapeHtml(node.name)}</b>${lockView ? `<small>${escapeHtml(lockView.label)}</small>` : ""}</button>`;
+      })
       .join("")}${offline.length > 5 ? `<span>${offline.length - 5} more</span>` : ""}</div>`;
   }
   map.innerHTML = html;
   const canvasEdges = [
     wanEdge,
-    ...edges.map((edge) => ({
+    ...[...currentPreviewEdges, ...edges].map((edge) => ({
       ...edge,
       sourcePoint: {
         x: edge.source.x + nodeWidth,
@@ -376,8 +707,49 @@ function renderTopology(data) {
   requestAnimationFrame(() => startTopologyCanvas(canvasEdges, layout.width, layout.height));
   $$("[data-node-id]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (Date.now() < state.suppressNodeClickUntil) return;
       const node = data.nodes.find((item) => item.id === button.dataset.nodeId);
       if (node) openDetail(node, "node");
+    });
+  });
+  if (state.topologyLockEditing) wireTopologyLockDragDrop(data);
+  updateTopologyLockCountdown();
+}
+
+function wireTopologyLockDragDrop(data) {
+  $$(".mesh-node").forEach((card) => {
+    const nodeId = card.dataset.nodeId;
+    const node = data.nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+    if (!node.isAuthority) {
+      card.addEventListener("dragstart", (event) => {
+        state.draggedNodeId = nodeId;
+        state.topologyLockSelectedNodeId = nodeId;
+        card.classList.add("dragging");
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", nodeId);
+      });
+      card.addEventListener("dragend", () => {
+        state.draggedNodeId = null;
+        card.classList.remove("dragging");
+        $$(".mesh-node.drop-target").forEach((item) => item.classList.remove("drop-target"));
+      });
+    }
+    card.addEventListener("dragover", (event) => {
+      const dragged = state.draggedNodeId;
+      if (!dragged || dragged === nodeId) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      card.classList.add("drop-target");
+    });
+    card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
+    card.addEventListener("drop", (event) => {
+      event.preventDefault();
+      card.classList.remove("drop-target");
+      const dragged = state.draggedNodeId || event.dataTransfer.getData("text/plain");
+      if (!dragged || dragged === nodeId) return;
+      state.suppressNodeClickUntil = Date.now() + 500;
+      moveTopologyLockDraft(dragged, nodeId);
     });
   });
 }
@@ -393,12 +765,17 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
   };
   const midX = (from.x + to.x) / 2;
   const midY = (from.y + to.y) / 2;
-  const details = edge.band === "WAN"
+  const displayBand = edge.kind === "desired" ? "LOCK" : edge.band;
+  const details = edge.kind === "desired"
+    ? `Desired → ${edge.source.name}`
+    : edge.kind === "current"
+      ? `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"} · CURRENT`
+      : edge.band === "WAN"
     ? "UPLINK"
     : `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"}${edge.rssi !== null && edge.rssi !== undefined ? ` · ${edge.rssi}dBm` : ""}`;
   return `
-    <span class="edge-label band-${escapeHtml(String(edge.band).toLowerCase())}" style="left:${midX - 42}px;top:${midY - 20}px">
-      <strong>${escapeHtml(edge.band)}</strong><small>${escapeHtml(details)}</small>
+    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" style="left:${midX - 42}px;top:${midY - 20}px">
+      <strong>${escapeHtml(displayBand)}</strong><small>${escapeHtml(details)}</small>
     </span>`;
 }
 
@@ -417,6 +794,7 @@ function startTopologyCanvas(edges, width, height) {
     "5GL": { line: "#3d856d", glow: "rgba(61,133,109,.17)" },
     "WAN": { line: "#7a9b90", glow: "rgba(122,155,144,.14)" },
     "Ethernet": { line: "#b9772b", glow: "rgba(185,119,43,.15)" },
+    "LOCK": { line: "#6f55b5", glow: "rgba(111,85,181,.2)" },
   };
   context.scale(ratio, ratio);
 
@@ -439,8 +817,11 @@ function startTopologyCanvas(edges, width, height) {
       const from = edge.sourcePoint;
       const to = edge.targetPoint;
       const control = Math.max(42, (to.x - from.x) * 0.48);
-      const palette = palettes[edge.band] || palettes.WAN;
+      const palette = edge.kind === "desired"
+        ? palettes.LOCK
+        : palettes[edge.band] || palettes.WAN;
       context.save();
+      if (edge.kind === "current") context.setLineDash([7, 6]);
       context.beginPath();
       context.moveTo(from.x, from.y);
       context.bezierCurveTo(from.x + control, from.y, to.x - control, to.y, to.x, to.y);
@@ -456,7 +837,7 @@ function startTopologyCanvas(edges, width, height) {
         context.fillStyle = palette.line;
         context.fill();
       }
-      if (!reduceMotion) {
+      if (!reduceMotion && edge.kind !== "current") {
         const progress = ((timestamp / 4200) + edgeIndex * 0.173) % 1;
         const packet = pointOnCurve(from, to, progress);
         context.beginPath();
@@ -563,6 +944,14 @@ function openDetail(item, kind) {
   const capabilityReport = isNode
     ? MeshDetailData.nodeCapabilityReport(state.topology, item)
     : null;
+  const topologyLockItem = isNode
+    ? MeshTopologyLock.statusForNode(state.topologyLock, item.id)
+    : null;
+  const topologyLockPresentation = MeshTopologyLock.presentation(
+    topologyLockItem,
+    topologyLockRemaining(),
+    state.topologyLock.confirmationsRequired,
+  );
   const parentNode = isNode ? null : MeshDetailData.nodeForClient(state.topology, item);
   const nodeRows = isNode ? MeshDetailData.nodeDetailRows(item, compactNumber) : null;
   const metrics = isNode
@@ -602,6 +991,7 @@ function openDetail(item, kind) {
       .filter(([, value]) => value !== null && value !== undefined && value !== "")
       .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
       .join("")}</div>
+    ${topologyLockPresentation ? `<section class="node-lock-detail ${escapeHtml(topologyLockPresentation.tone)}"><span aria-hidden="true">◆</span><div><small>TOPOLOGY LOCK</small><strong ${topologyLockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(topologyLockPresentation.label)}</strong><p>${escapeHtml(topologyLockPresentation.detail)}</p></div></section>` : ""}
     ${isNode ? `
       <section class="node-feasibility" aria-labelledby="nodeFeasibilityTitle">
         <div class="node-feasibility-heading">
@@ -768,8 +1158,10 @@ function render(data) {
   const detailScrollTop = $("#detailDrawer").scrollTop;
   reconcileNodeRestarts(data);
   state.topology = data;
+  setTopologyLock(data.meta?.topologyLock);
   setConnectionStatus(data.meta?.routerConnected !== false);
   renderSummary(data);
+  renderTopologyLock();
   renderTopology(data);
   renderClients();
   if (detailSelection && $("#detailDrawer").classList.contains("open")) {
@@ -816,26 +1208,54 @@ async function refresh(silent = false) {
   }
 }
 
+async function loadInitialData() {
+  const status = await api("/api/status");
+  hideDashboardLogin();
+  configureConnectionMode(status);
+  $("#hostInput").value = status.router || "192.168.1.1";
+  if (status.connected || status.snapshotReady) {
+    render(await api("/api/topology"));
+  } else {
+    openConnectModal();
+  }
+}
+
 async function initialize() {
   wireEvents();
+  state.topologyLockTimer = setInterval(updateTopologyLockCountdown, 1000);
   try {
-    const status = await api("/api/status");
-    configureConnectionMode(status);
-    $("#hostInput").value = status.router || "192.168.1.1";
-    if (status.connected || status.snapshotReady) {
-      render(await api("/api/topology"));
-    } else {
+    await loadInitialData();
+  } catch (error) {
+    if (error.status === 401) showDashboardLogin();
+    else {
+      $("#connectError").textContent = error.message;
       openConnectModal();
     }
-  } catch (error) {
-    $("#connectError").textContent = error.message;
-    openConnectModal();
   }
   $("#refreshInterval").value = String(state.refreshInterval);
   scheduleAutoRefresh();
 }
 
 function wireEvents() {
+  $("#authForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = $("#authButton");
+    button.disabled = true;
+    $("#authError").textContent = "";
+    try {
+      await api("/api/login", {
+        method: "POST",
+        body: JSON.stringify({ password: $("#dashboardPasswordInput").value }),
+      });
+      await loadInitialData();
+      toast("Dashboard unlocked");
+    } catch (error) {
+      $("#authError").textContent = error.message;
+      $("#dashboardPasswordInput").focus();
+    } finally {
+      button.disabled = false;
+    }
+  });
   $("#connectForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = $("#connectButton");
@@ -866,8 +1286,37 @@ function wireEvents() {
     }
   });
   $("#settingsButton").addEventListener("click", openConnectModal);
+  $("#signOutButton").addEventListener("click", async () => {
+    try {
+      await api("/api/logout", { method: "POST", body: "{}" });
+    } finally {
+      window.location.reload();
+    }
+  });
   $("#connectClose").addEventListener("click", closeConnectModal);
   $("#refreshButton").addEventListener("click", () => refresh(false));
+  $("#editTopologyLockButton").addEventListener("click", beginTopologyLockEdit);
+  $("#cancelTopologyLockButton").addEventListener("click", cancelTopologyLockEdit);
+  $("#applyTopologyLockButton").addEventListener("click", applyTopologyLock);
+  $("#unlockTopologyButton").addEventListener("click", disableTopologyLock);
+  $("#topologyRecoveryChip").addEventListener("click", () => {
+    $("#topologyLockPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+  $("#topologyLockAcknowledgement").addEventListener("change", (event) => {
+    state.topologyLockAcknowledged = event.target.checked;
+    renderTopologyLockEditor();
+  });
+  $("#topologyLockNodeSelect").addEventListener("change", (event) => {
+    state.topologyLockSelectedNodeId = event.target.value;
+    state.topologyLockDraftError = "";
+    renderTopologyLockEditor();
+  });
+  $("#topologyLockParentSelect").addEventListener("change", (event) => {
+    moveTopologyLockDraft(
+      state.topologyLockSelectedNodeId,
+      event.target.value,
+    );
+  });
   $("#refreshInterval").addEventListener("change", (event) => {
     state.refreshInterval = MeshRefreshState.normalizeInterval(event.target.value);
     state.refreshError = null;
@@ -892,6 +1341,16 @@ function wireEvents() {
     const visible = input.type === "text";
     input.type = visible ? "password" : "text";
     $("#togglePassword").textContent = visible ? "Show" : "Hide";
+  });
+  $("#toggleDashboardPassword").addEventListener("click", () => {
+    const input = $("#dashboardPasswordInput");
+    const visible = input.type === "text";
+    input.type = visible ? "password" : "text";
+    $("#toggleDashboardPassword").textContent = visible ? "Show" : "Hide";
+    $("#toggleDashboardPassword").setAttribute(
+      "aria-label",
+      visible ? "Show dashboard password" : "Hide dashboard password",
+    );
   });
   $$(".segmented button").forEach((button) => {
     button.addEventListener("click", () => {

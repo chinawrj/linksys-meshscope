@@ -92,6 +92,7 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
     edgeAddress: "10.0.0.50",
     routerConnected: false,
     clientDetails: "nodes-only",
+    topologyLock: { supported: true, enabled: true },
   });
   const child = result.nodes.find((item) => item.id === "child");
   const client = result.clients.find((item) => item.id === "client");
@@ -100,6 +101,7 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
   assert.equal(result.meta.edgeAddress, "10.0.0.50");
   assert.equal(result.meta.routerConnected, false);
   assert.equal(result.meta.clientDetails, "nodes-only");
+  assert.equal(result.meta.topologyLock.enabled, true);
   assert.equal(result.summary.nodesOnline, 2);
   assert.equal(result.summary.clientsOnline, 1);
   assert.equal(result.summary.clientsKnown, 2);

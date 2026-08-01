@@ -14,7 +14,9 @@
 #include "esp_http_client.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #if defined(CONFIG_SPIRAM)
 #include "esp_psram.h"
 #endif
@@ -42,6 +44,10 @@ static constexpr size_t COMPRESSION_WINDOW = 8 * 1024;
 static constexpr size_t COMPRESSION_HASH_SIZE = 2048;
 static constexpr uint32_t REFRESH_INTERVAL_MS = 10000;
 static constexpr uint32_t RESTART_COOLDOWN_MS = 90000;
+static constexpr uint32_t TOPOLOGY_LOCK_ACTION_COOLDOWN_MS = 5 * 60 * 1000;
+static constexpr uint8_t TOPOLOGY_LOCK_CONFIRMATIONS = 3;
+static constexpr size_t TOPOLOGY_LOCK_MAX_NODES = 32;
+static constexpr size_t TOPOLOGY_LOCK_HISTORY_LIMIT = 8;
 static constexpr uint32_t REFRESH_WAIT_MS = 20000;
 
 struct RawEntry {
@@ -58,15 +64,31 @@ struct MeshStats {
   float backhaul_mbps = NAN;
 };
 
+struct BackhaulObservation {
+  std::string ip;
+  std::string parent_ip;
+};
+
 struct StatsAccumulator {
   std::set<std::string> backhaul_ids;
   std::set<std::string> live_macs;
+  std::map<std::string, BackhaulObservation> backhauls;
   float backhaul_sum = 0;
   int weak = 0;
 };
 
+struct NodeObservation {
+  std::string id;
+  std::string name;
+  std::string ip;
+  std::string parent_id;
+  bool authority = false;
+  bool online = false;
+};
+
 struct Snapshot {
   std::vector<RawEntry> entries;
+  std::vector<NodeObservation> nodes;
   uint32_t generation = 0;
   std::string updated_at;
   MeshStats stats;
@@ -93,6 +115,28 @@ struct NodeInfo {
   bool online = false;
 };
 
+struct LockedParent {
+  std::string node_id;
+  std::string parent_id;
+};
+
+struct TopologyLockAction {
+  std::string node_id;
+  std::string node_name;
+  std::string expected_parent_id;
+  std::string expected_parent_name;
+  std::string current_parent_id;
+  std::string current_parent_name;
+  std::string requested_at;
+  uint32_t uptime_ms = 0;
+  bool accepted = false;
+};
+
+struct WebSession {
+  std::string token;
+  uint32_t last_seen_ms = 0;
+};
+
 enum class ClientDetailsMode {
   AUTO,
   FULL,
@@ -102,19 +146,37 @@ enum class ClientDetailsMode {
 static std::string router_host;
 static std::string router_password;
 static std::string authorization;
-static std::string web_authorization;
+static std::string dashboard_password;
 static Snapshot snapshot;
 static SemaphoreHandle_t snapshot_mutex = nullptr;
 static SemaphoreHandle_t jnap_mutex = nullptr;
 static SemaphoreHandle_t memory_mutex = nullptr;
+static SemaphoreHandle_t topology_lock_mutex = nullptr;
+static SemaphoreHandle_t web_session_mutex = nullptr;
 static TaskHandle_t collector_task_handle = nullptr;
 static httpd_handle_t server = nullptr;
 static std::atomic<bool> force_refresh{false};
 static std::atomic<bool> router_connected{false};
 static std::map<std::string, uint32_t> restart_cooldowns;
+static bool topology_lock_enabled = false;
+static std::string topology_lock_saved_at;
+static std::vector<LockedParent> topology_lock_mappings;
+static std::map<std::string, uint8_t> topology_lock_mismatch_counts;
+static std::vector<TopologyLockAction> topology_lock_history;
+static std::string topology_lock_last_selected_node_id;
+static uint64_t topology_lock_last_action_epoch = 0;
+static bool topology_lock_last_action_unknown_time = false;
+static uint32_t topology_lock_last_action_uptime_ms = 0;
+static bool topology_lock_action_seen_this_boot = false;
+static constexpr const char *TOPOLOGY_LOCK_NVS_NAMESPACE = "meshscope_lock";
+static constexpr const char *TOPOLOGY_LOCK_NVS_KEY = "config";
 static ClientDetailsMode requested_client_details = ClientDetailsMode::AUTO;
 static ClientDetailsMode active_client_details = ClientDetailsMode::FULL;
 static bool client_details_resolved = false;
+static std::vector<WebSession> web_sessions;
+static constexpr size_t WEB_SESSION_LIMIT = 4;
+static constexpr uint32_t WEB_SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
+static constexpr const char *WEB_SESSION_COOKIE = "meshscope_session";
 
 static const char *const READ_ACTIONS[] = {
     "core/GetDeviceInfo",
@@ -169,6 +231,8 @@ static ClientDetailsMode parse_client_details(const char *value) {
 }
 
 static size_t external_memory_size();
+static bool private_ipv4(const std::string &value);
+static void request_refresh();
 
 static void resolve_client_details_mode() {
   if (client_details_resolved) return;
@@ -287,24 +351,132 @@ static bool base64_decode_string(
   return true;
 }
 
-static bool authorize_web_request(httpd_req_t *request) {
-  const size_t length = httpd_req_get_hdr_value_len(request, "Authorization");
+static bool constant_time_equal(
+    const std::string &left,
+    const std::string &right) {
+  if (left.size() != right.size()) return false;
+  unsigned char difference = 0;
+  for (size_t index = 0; index < left.size(); index++) {
+    difference |= static_cast<unsigned char>(left[index]) ^
+                  static_cast<unsigned char>(right[index]);
+  }
+  return difference == 0;
+}
+
+static std::string request_session_token(httpd_req_t *request) {
+  const size_t length = httpd_req_get_hdr_value_len(request, "Cookie");
+  if (length == 0 || length > 1024) return {};
   std::vector<char> header(length + 1);
-  const bool authorized =
-      length > 0 &&
-      httpd_req_get_hdr_value_str(
+  if (httpd_req_get_hdr_value_str(
           request,
-          "Authorization",
+          "Cookie",
           header.data(),
-          header.size()) == ESP_OK &&
-      web_authorization == header.data();
-  if (authorized) return true;
+          header.size()) != ESP_OK) {
+    return {};
+  }
+  const std::string cookies(header.data());
+  const std::string prefix = std::string(WEB_SESSION_COOKIE) + "=";
+  size_t offset = 0;
+  while (offset < cookies.size()) {
+    while (offset < cookies.size() &&
+           (cookies[offset] == ' ' || cookies[offset] == ';')) {
+      offset++;
+    }
+    const size_t end = cookies.find(';', offset);
+    const size_t size =
+        (end == std::string::npos ? cookies.size() : end) - offset;
+    if (size > prefix.size() &&
+        cookies.compare(offset, prefix.size(), prefix) == 0) {
+      return cookies.substr(offset + prefix.size(), size - prefix.size());
+    }
+    if (end == std::string::npos) break;
+    offset = end + 1;
+  }
+  return {};
+}
+
+static void prune_web_sessions_locked(uint32_t now) {
+  web_sessions.erase(
+      std::remove_if(
+          web_sessions.begin(),
+          web_sessions.end(),
+          [now](const WebSession &session) {
+            return now - session.last_seen_ms >= WEB_SESSION_IDLE_MS;
+          }),
+      web_sessions.end());
+}
+
+static bool request_has_web_session(httpd_req_t *request) {
+  const std::string token = request_session_token(request);
+  if (token.empty() || web_session_mutex == nullptr ||
+      xSemaphoreTake(web_session_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    return false;
+  }
+  const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+  prune_web_sessions_locked(now);
+  bool authorized = false;
+  for (auto &session : web_sessions) {
+    if (constant_time_equal(session.token, token)) {
+      session.last_seen_ms = now;
+      authorized = true;
+      break;
+    }
+  }
+  xSemaphoreGive(web_session_mutex);
+  return authorized;
+}
+
+static std::string create_web_session() {
+  unsigned char bytes[32] = {};
+  esp_fill_random(bytes, sizeof(bytes));
+  static constexpr char HEX[] = "0123456789abcdef";
+  std::string token(sizeof(bytes) * 2, '0');
+  for (size_t index = 0; index < sizeof(bytes); index++) {
+    token[index * 2] = HEX[bytes[index] >> 4];
+    token[index * 2 + 1] = HEX[bytes[index] & 0x0f];
+  }
+  if (web_session_mutex == nullptr ||
+      xSemaphoreTake(web_session_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return {};
+  }
+  const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+  prune_web_sessions_locked(now);
+  if (web_sessions.size() >= WEB_SESSION_LIMIT) {
+    web_sessions.erase(web_sessions.begin());
+  }
+  web_sessions.push_back({token, now});
+  xSemaphoreGive(web_session_mutex);
+  return token;
+}
+
+static void remove_web_session(httpd_req_t *request) {
+  const std::string token = request_session_token(request);
+  if (token.empty() || web_session_mutex == nullptr ||
+      xSemaphoreTake(web_session_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    return;
+  }
+  web_sessions.erase(
+      std::remove_if(
+          web_sessions.begin(),
+          web_sessions.end(),
+          [&token](const WebSession &session) {
+            return constant_time_equal(session.token, token);
+          }),
+      web_sessions.end());
+  xSemaphoreGive(web_session_mutex);
+}
+
+static bool authorize_web_request(httpd_req_t *request) {
+  if (request_has_web_session(request)) return true;
   httpd_resp_set_status(request, "401 Unauthorized");
-  httpd_resp_set_type(request, "text/plain; charset=utf-8");
-  httpd_resp_set_hdr(request, "WWW-Authenticate", "Basic realm=\"MeshScope\"");
+  httpd_resp_set_type(request, "application/json; charset=utf-8");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
   httpd_resp_set_hdr(request, "Connection", "close");
-  httpd_resp_send(request, "MeshScope login required.", HTTPD_RESP_USE_STRLEN);
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  httpd_resp_send(
+      request,
+      "{\"error\":\"MeshScope dashboard login required.\",\"code\":\"authentication_required\"}",
+      HTTPD_RESP_USE_STRLEN);
   return false;
 }
 
@@ -1038,7 +1210,12 @@ static bool accumulate_backhaul(
   const cJSON *item = nullptr;
   cJSON_ArrayForEach(item, backhauls) {
     const char *id = json_string(item, "deviceUUID");
-    if (id != nullptr) accumulator.backhaul_ids.insert(id);
+    if (id != nullptr) {
+      accumulator.backhaul_ids.insert(id);
+      BackhaulObservation &observed = accumulator.backhauls[id];
+      observed.ip = json_string(item, "ipAddress") ?: "";
+      observed.parent_ip = json_string(item, "parentIPAddress") ?: "";
+    }
     const cJSON *speed =
         cJSON_GetObjectItemCaseSensitive(item, "speedMbps");
     if (cJSON_IsNumber(speed)) {
@@ -1067,11 +1244,12 @@ static bool accumulate_backhaul(
 static bool calculate_device_stats(
     const std::string &response,
     const StatsAccumulator &accumulator,
-    MeshStats &stats) {
+    MeshStats &stats,
+    std::vector<NodeObservation> &observed_nodes) {
   std::set<std::string> node_ids;
-  int authority_count = 0;
   int client_total = 0;
   int client_online = 0;
+  observed_nodes.clear();
   const bool devices_ok = for_each_json_object_in_array(
       response,
       "devices",
@@ -1083,7 +1261,32 @@ static bool calculate_device_stats(
             (authority || node_type != nullptr ||
              accumulator.backhaul_ids.count(id) != 0)) {
           node_ids.insert(id);
-          if (authority) authority_count++;
+          NodeObservation observed;
+          observed.id = id;
+          observed.name = device_name(device);
+          observed.authority = authority;
+          observed.online = authority || accumulator.backhaul_ids.count(id) != 0;
+          const cJSON *connections =
+              cJSON_GetObjectItemCaseSensitive(device, "connections");
+          if (cJSON_IsArray(connections)) {
+            const cJSON *connection = nullptr;
+            cJSON_ArrayForEach(connection, connections) {
+              const char *ip = json_string(connection, "ipAddress");
+              if (ip != nullptr && private_ipv4(ip)) {
+                observed.ip = ip;
+                break;
+              }
+            }
+          }
+          const auto backhaul = accumulator.backhauls.find(id);
+          if (backhaul != accumulator.backhauls.end() &&
+              private_ipv4(backhaul->second.ip)) {
+            observed.ip = backhaul->second.ip;
+          }
+          if (authority && observed.ip.empty() && private_ipv4(router_host)) {
+            observed.ip = router_host;
+          }
+          observed_nodes.push_back(std::move(observed));
           return true;
         }
         client_total++;
@@ -1106,9 +1309,22 @@ static bool calculate_device_stats(
       });
   if (!devices_ok) return false;
 
+  std::map<std::string, std::string> node_by_ip;
+  for (const auto &node : observed_nodes) {
+    if (!node.ip.empty()) node_by_ip[node.ip] = node.id;
+  }
+  int online_nodes = 0;
+  for (auto &node : observed_nodes) {
+    if (node.online) online_nodes++;
+    if (node.authority) continue;
+    const auto backhaul = accumulator.backhauls.find(node.id);
+    if (backhaul == accumulator.backhauls.end()) continue;
+    const auto parent = node_by_ip.find(backhaul->second.parent_ip);
+    if (parent != node_by_ip.end()) node.parent_id = parent->second;
+  }
+
   stats.nodes_total = static_cast<float>(node_ids.size());
-  stats.nodes_online = static_cast<float>(
-      authority_count + accumulator.backhaul_ids.size());
+  stats.nodes_online = static_cast<float>(online_nodes);
   stats.clients_online = static_cast<float>(client_online);
   stats.weak_nodes = static_cast<float>(accumulator.weak);
   stats.backhaul_mbps = accumulator.backhaul_sum;
@@ -1122,6 +1338,519 @@ static bool calculate_device_stats(
       accumulator.weak,
       accumulator.backhaul_sum);
   return true;
+}
+
+static uint32_t uptime_ms() {
+  return static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+}
+
+static uint64_t wall_clock_epoch() {
+  const time_t now = ::time(nullptr);
+  return now >= 1700000000 ? static_cast<uint64_t>(now) : 0;
+}
+
+static const NodeObservation *find_observed_node(
+    const std::vector<NodeObservation> &nodes,
+    const std::string &id) {
+  for (const auto &node : nodes) {
+    if (node.id == id) return &node;
+  }
+  return nullptr;
+}
+
+static uint32_t topology_lock_remaining_ms_locked() {
+  if (topology_lock_action_seen_this_boot) {
+    const uint32_t elapsed = uptime_ms() - topology_lock_last_action_uptime_ms;
+    return elapsed >= TOPOLOGY_LOCK_ACTION_COOLDOWN_MS
+               ? 0
+               : TOPOLOGY_LOCK_ACTION_COOLDOWN_MS - elapsed;
+  }
+  if (topology_lock_last_action_epoch == 0) return 0;
+  const uint64_t now = wall_clock_epoch();
+  if (now == 0) return TOPOLOGY_LOCK_ACTION_COOLDOWN_MS;
+  const uint64_t elapsed_seconds =
+      now >= topology_lock_last_action_epoch
+          ? now - topology_lock_last_action_epoch
+          : 0;
+  const uint64_t cooldown_seconds = TOPOLOGY_LOCK_ACTION_COOLDOWN_MS / 1000;
+  return elapsed_seconds >= cooldown_seconds
+             ? 0
+             : static_cast<uint32_t>(
+                   (cooldown_seconds - elapsed_seconds) * 1000ULL);
+}
+
+static bool persist_topology_lock_locked() {
+  cJSON *root = cJSON_CreateObject();
+  if (root == nullptr) return false;
+  cJSON_AddNumberToObject(root, "version", 1);
+  cJSON_AddBoolToObject(root, "enabled", topology_lock_enabled);
+  cJSON_AddStringToObject(root, "lockedAt", topology_lock_saved_at.c_str());
+  cJSON_AddNumberToObject(
+      root,
+      "lastActionEpoch",
+      static_cast<double>(topology_lock_last_action_epoch));
+  cJSON_AddBoolToObject(
+      root,
+      "lastActionUnknownTime",
+      topology_lock_last_action_unknown_time);
+  cJSON *nodes = cJSON_AddArrayToObject(root, "nodes");
+  for (const auto &mapping : topology_lock_mappings) {
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "nodeId", mapping.node_id.c_str());
+    cJSON_AddStringToObject(item, "parentId", mapping.parent_id.c_str());
+    cJSON_AddItemToArray(nodes, item);
+  }
+  char *serialized = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (serialized == nullptr) return false;
+  nvs_handle_t handle = 0;
+  esp_err_t result = nvs_open(
+      TOPOLOGY_LOCK_NVS_NAMESPACE,
+      NVS_READWRITE,
+      &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_str(handle, TOPOLOGY_LOCK_NVS_KEY, serialized);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  cJSON_free(serialized);
+  if (result != ESP_OK) {
+    ESP_LOGW(TAG, "Unable to persist topology lock: %s", esp_err_to_name(result));
+    return false;
+  }
+  return true;
+}
+
+static void load_topology_lock() {
+  nvs_handle_t handle = 0;
+  if (nvs_open(
+          TOPOLOGY_LOCK_NVS_NAMESPACE,
+          NVS_READONLY,
+          &handle) != ESP_OK) {
+    return;
+  }
+  size_t length = 0;
+  esp_err_t result = nvs_get_str(
+      handle,
+      TOPOLOGY_LOCK_NVS_KEY,
+      nullptr,
+      &length);
+  if (result != ESP_OK || length < 3 || length > 8192) {
+    nvs_close(handle);
+    return;
+  }
+  std::vector<char> data(length);
+  result = nvs_get_str(
+      handle,
+      TOPOLOGY_LOCK_NVS_KEY,
+      data.data(),
+      &length);
+  nvs_close(handle);
+  if (result != ESP_OK) return;
+  cJSON *root = cJSON_Parse(data.data());
+  if (root == nullptr) return;
+  std::vector<LockedParent> loaded;
+  const cJSON *nodes = cJSON_GetObjectItemCaseSensitive(root, "nodes");
+  const cJSON *item = nullptr;
+  if (cJSON_IsArray(nodes)) {
+    cJSON_ArrayForEach(item, nodes) {
+      const char *node_id = json_string(item, "nodeId");
+      const char *parent_id = json_string(item, "parentId");
+      if (node_id == nullptr || parent_id == nullptr ||
+          node_id[0] == '\0' || parent_id[0] == '\0' ||
+          strlen(node_id) > 128 || strlen(parent_id) > 128 ||
+          loaded.size() >= TOPOLOGY_LOCK_MAX_NODES) {
+        loaded.clear();
+        break;
+      }
+      loaded.push_back({node_id, parent_id});
+    }
+  }
+  topology_lock_mappings = std::move(loaded);
+  topology_lock_enabled =
+      json_bool(root, "enabled") && !topology_lock_mappings.empty();
+  topology_lock_saved_at = json_string(root, "lockedAt") ?: "";
+  const cJSON *last_action =
+      cJSON_GetObjectItemCaseSensitive(root, "lastActionEpoch");
+  if (cJSON_IsNumber(last_action) && last_action->valuedouble > 0) {
+    topology_lock_last_action_epoch =
+        static_cast<uint64_t>(last_action->valuedouble);
+  }
+  topology_lock_last_action_unknown_time =
+      json_bool(root, "lastActionUnknownTime");
+  if (topology_lock_last_action_unknown_time) {
+    topology_lock_action_seen_this_boot = true;
+    topology_lock_last_action_uptime_ms = uptime_ms();
+  }
+  cJSON_Delete(root);
+  ESP_LOGI(
+      TAG,
+      "Topology lock restored: enabled=%s nodes=%u",
+      topology_lock_enabled ? "true" : "false",
+      static_cast<unsigned>(topology_lock_mappings.size()));
+}
+
+static bool validate_topology_lock_mappings(
+    const std::vector<NodeObservation> &nodes,
+    const std::vector<LockedParent> &mappings,
+    std::string &error) {
+  std::map<std::string, const NodeObservation *> online;
+  std::string authority_id;
+  size_t expected_children = 0;
+  for (const auto &node : nodes) {
+    if (!node.online) continue;
+    online[node.id] = &node;
+    if (node.authority) {
+      authority_id = node.id;
+    } else {
+      expected_children++;
+    }
+  }
+  if (authority_id.empty()) {
+    error = "The online gateway is unavailable.";
+    return false;
+  }
+  if (mappings.empty() || mappings.size() != expected_children ||
+      mappings.size() > TOPOLOGY_LOCK_MAX_NODES) {
+    error = "The lock must define one parent for every online child node.";
+    return false;
+  }
+  std::map<std::string, std::string> parents;
+  for (const auto &mapping : mappings) {
+    const auto child = online.find(mapping.node_id);
+    const auto parent = online.find(mapping.parent_id);
+    if (child == online.end() || parent == online.end()) {
+      error = "Every locked node and parent must be online when the lock is applied.";
+      return false;
+    }
+    if (child->second->authority) {
+      error = "The gateway cannot be assigned a parent.";
+      return false;
+    }
+    if (mapping.node_id == mapping.parent_id) {
+      error = "A node cannot be its own parent.";
+      return false;
+    }
+    if (!parents.emplace(mapping.node_id, mapping.parent_id).second) {
+      error = "A node has more than one desired parent.";
+      return false;
+    }
+  }
+  for (const auto &node : online) {
+    if (node.second->authority) continue;
+    if (parents.count(node.first) == 0) {
+      error = "The lock is missing an online child node.";
+      return false;
+    }
+  }
+  for (const auto &mapping : mappings) {
+    std::set<std::string> seen{mapping.node_id};
+    std::string cursor = mapping.parent_id;
+    while (cursor != authority_id) {
+      if (!seen.insert(cursor).second) {
+        error = "The desired parent relationships contain a cycle.";
+        return false;
+      }
+      const auto next = parents.find(cursor);
+      if (next == parents.end()) {
+        error = "Every desired parent path must lead to the gateway.";
+        return false;
+      }
+      cursor = next->second;
+    }
+  }
+  return true;
+}
+
+static void add_topology_lock_history_locked(TopologyLockAction action) {
+  topology_lock_history.insert(
+      topology_lock_history.begin(),
+      std::move(action));
+  if (topology_lock_history.size() > TOPOLOGY_LOCK_HISTORY_LIMIT) {
+    topology_lock_history.resize(TOPOLOGY_LOCK_HISTORY_LIMIT);
+  }
+}
+
+static cJSON *topology_lock_json(
+    const std::vector<NodeObservation> &nodes) {
+  cJSON *root = cJSON_CreateObject();
+  if (root == nullptr) return nullptr;
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    cJSON_AddBoolToObject(root, "enabled", false);
+    cJSON_AddStringToObject(root, "state", "busy");
+    return root;
+  }
+  const uint32_t remaining_ms = topology_lock_remaining_ms_locked();
+  cJSON_AddBoolToObject(root, "supported", true);
+  cJSON_AddBoolToObject(root, "enabled", topology_lock_enabled);
+  cJSON_AddStringToObject(
+      root,
+      "state",
+      topology_lock_enabled ? "monitoring" : "unlocked");
+  cJSON_AddStringToObject(root, "lockedAt", topology_lock_saved_at.c_str());
+  cJSON_AddNumberToObject(
+      root,
+      "cooldownSeconds",
+      TOPOLOGY_LOCK_ACTION_COOLDOWN_MS / 1000);
+  cJSON_AddNumberToObject(
+      root,
+      "nextActionInSeconds",
+      (remaining_ms + 999) / 1000);
+  cJSON_AddNumberToObject(
+      root,
+      "confirmationsRequired",
+      TOPOLOGY_LOCK_CONFIRMATIONS);
+  cJSON_AddNumberToObject(
+      root,
+      "monitorIntervalSeconds",
+      REFRESH_INTERVAL_MS / 1000);
+  cJSON *summary = cJSON_AddObjectToObject(root, "summary");
+  int correct = 0;
+  int mismatch = 0;
+  int blocked = 0;
+  int offline = 0;
+  cJSON *items = cJSON_AddArrayToObject(root, "nodes");
+  for (const auto &mapping : topology_lock_mappings) {
+    const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
+    const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
+    const uint8_t confirmations =
+        topology_lock_mismatch_counts.count(mapping.node_id)
+            ? topology_lock_mismatch_counts[mapping.node_id]
+            : 0;
+    const bool recovering =
+        !topology_lock_history.empty() &&
+        topology_lock_history.front().node_id == mapping.node_id &&
+        topology_lock_history.front().accepted &&
+        uptime_ms() - topology_lock_history.front().uptime_ms < RESTART_COOLDOWN_MS;
+    const char *status = "correct";
+    if (node == nullptr || !node->online) {
+      status = recovering ? "recovering" : "node-offline";
+      offline++;
+    } else if (parent == nullptr || !parent->online) {
+      status = "parent-offline";
+      blocked++;
+    } else if (node->parent_id == mapping.parent_id) {
+      correct++;
+    } else if (confirmations < TOPOLOGY_LOCK_CONFIRMATIONS) {
+      status = "confirming";
+      mismatch++;
+    } else if (remaining_ms > 0) {
+      status = "cooldown";
+      mismatch++;
+    } else {
+      status = "restart-ready";
+      mismatch++;
+    }
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "nodeId", mapping.node_id.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "name",
+        node != nullptr ? node->name.c_str() : mapping.node_id.c_str());
+    cJSON_AddStringToObject(item, "expectedParentId", mapping.parent_id.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "expectedParentName",
+        parent != nullptr ? parent->name.c_str() : mapping.parent_id.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "currentParentId",
+        node != nullptr ? node->parent_id.c_str() : "");
+    const NodeObservation *current_parent =
+        node != nullptr ? find_observed_node(nodes, node->parent_id) : nullptr;
+    cJSON_AddStringToObject(
+        item,
+        "currentParentName",
+        current_parent != nullptr ? current_parent->name.c_str() : "");
+    cJSON_AddBoolToObject(item, "nodeOnline", node != nullptr && node->online);
+    cJSON_AddBoolToObject(
+        item,
+        "expectedParentOnline",
+        parent != nullptr && parent->online);
+    cJSON_AddStringToObject(item, "status", status);
+    cJSON_AddNumberToObject(item, "confirmations", confirmations);
+    cJSON_AddNumberToObject(
+        item,
+        "actionInSeconds",
+        strcmp(status, "cooldown") == 0 ? (remaining_ms + 999) / 1000 : 0);
+    cJSON_AddItemToArray(items, item);
+  }
+  cJSON_AddNumberToObject(summary, "total", topology_lock_mappings.size());
+  cJSON_AddNumberToObject(summary, "correct", correct);
+  cJSON_AddNumberToObject(summary, "mismatch", mismatch);
+  cJSON_AddNumberToObject(summary, "blocked", blocked);
+  cJSON_AddNumberToObject(summary, "offline", offline);
+  cJSON *history = cJSON_AddArrayToObject(root, "history");
+  for (const auto &action : topology_lock_history) {
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "nodeId", action.node_id.c_str());
+    cJSON_AddStringToObject(item, "name", action.node_name.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "expectedParentId",
+        action.expected_parent_id.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "expectedParentName",
+        action.expected_parent_name.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "currentParentId",
+        action.current_parent_id.c_str());
+    cJSON_AddStringToObject(
+        item,
+        "currentParentName",
+        action.current_parent_name.c_str());
+    cJSON_AddStringToObject(item, "requestedAt", action.requested_at.c_str());
+    cJSON_AddBoolToObject(item, "accepted", action.accepted);
+    cJSON_AddItemToArray(history, item);
+  }
+  xSemaphoreGive(topology_lock_mutex);
+  return root;
+}
+
+static void evaluate_topology_lock(
+    const std::vector<NodeObservation> &nodes) {
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return;
+  }
+  if (!topology_lock_enabled) {
+    xSemaphoreGive(topology_lock_mutex);
+    return;
+  }
+  LockedParent selected;
+  NodeObservation selected_node;
+  NodeObservation selected_parent;
+  const uint32_t remaining_ms = topology_lock_remaining_ms_locked();
+  for (const auto &mapping : topology_lock_mappings) {
+    const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
+    const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
+    if (node == nullptr || parent == nullptr || !node->online ||
+        !parent->online || node->authority || node->ip.empty() ||
+        node->parent_id == mapping.parent_id) {
+      topology_lock_mismatch_counts[mapping.node_id] = 0;
+      continue;
+    }
+    uint8_t &count = topology_lock_mismatch_counts[mapping.node_id];
+    if (count < TOPOLOGY_LOCK_CONFIRMATIONS) count++;
+  }
+  if (remaining_ms == 0 && !topology_lock_mappings.empty()) {
+    size_t start = 0;
+    for (size_t index = 0; index < topology_lock_mappings.size(); index++) {
+      if (topology_lock_mappings[index].node_id ==
+          topology_lock_last_selected_node_id) {
+        start = (index + 1) % topology_lock_mappings.size();
+        break;
+      }
+    }
+    for (size_t offset = 0; offset < topology_lock_mappings.size(); offset++) {
+      const LockedParent &mapping =
+          topology_lock_mappings[
+              (start + offset) % topology_lock_mappings.size()];
+      const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
+      const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
+      if (node == nullptr || parent == nullptr || !node->online ||
+          !parent->online || node->authority || node->ip.empty() ||
+          node->parent_id == mapping.parent_id ||
+          topology_lock_mismatch_counts[mapping.node_id] <
+              TOPOLOGY_LOCK_CONFIRMATIONS) {
+        continue;
+      }
+      const auto manual_restart = restart_cooldowns.find(mapping.node_id);
+      if (manual_restart != restart_cooldowns.end() &&
+          uptime_ms() - manual_restart->second < RESTART_COOLDOWN_MS) {
+        continue;
+      }
+      selected = mapping;
+      selected_node = *node;
+      selected_parent = *parent;
+      topology_lock_last_selected_node_id = mapping.node_id;
+      break;
+    }
+  }
+  xSemaphoreGive(topology_lock_mutex);
+  if (selected.node_id.empty()) return;
+
+  if (memory_mutex == nullptr ||
+      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    ESP_LOGW(TAG, "Topology lock could not reserve the restart workspace");
+    return;
+  }
+  if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    xSemaphoreGive(memory_mutex);
+    return;
+  }
+  bool still_armed = topology_lock_enabled &&
+                     topology_lock_remaining_ms_locked() == 0;
+  if (still_armed) {
+    still_armed = false;
+    for (const auto &mapping : topology_lock_mappings) {
+      if (mapping.node_id == selected.node_id &&
+          mapping.parent_id == selected.parent_id) {
+        still_armed = true;
+        break;
+      }
+    }
+  }
+  const auto manual_restart = restart_cooldowns.find(selected.node_id);
+  if (still_armed && manual_restart != restart_cooldowns.end() &&
+      uptime_ms() - manual_restart->second < RESTART_COOLDOWN_MS) {
+    still_armed = false;
+  }
+  if (!still_armed) {
+    xSemaphoreGive(topology_lock_mutex);
+    xSemaphoreGive(memory_mutex);
+    return;
+  }
+  topology_lock_action_seen_this_boot = true;
+  topology_lock_last_action_uptime_ms = uptime_ms();
+  topology_lock_last_action_epoch = wall_clock_epoch();
+  topology_lock_last_action_unknown_time =
+      topology_lock_last_action_epoch == 0;
+  persist_topology_lock_locked();
+  xSemaphoreGive(topology_lock_mutex);
+
+  ESP_LOGW(
+      TAG,
+      "Topology lock restarting %s: current parent=%s expected parent=%s",
+      selected_node.name.c_str(),
+      selected_node.parent_id.c_str(),
+      selected.parent_id.c_str());
+  const JnapResult reboot = jnap_request(
+      selected_node.ip,
+      "core/Reboot",
+      "{}",
+      nullptr,
+      1024);
+  xSemaphoreGive(memory_mutex);
+  const bool accepted = reboot.transport_ok && reboot.status == 200 &&
+                        response_is_ok(reboot.body);
+  if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    TopologyLockAction action;
+    action.node_id = selected_node.id;
+    action.node_name = selected_node.name;
+    action.expected_parent_id = selected.parent_id;
+    action.expected_parent_name = selected_parent.name;
+    action.current_parent_id = selected_node.parent_id;
+    const NodeObservation *current_parent =
+        find_observed_node(nodes, selected_node.parent_id);
+    action.current_parent_name =
+        current_parent != nullptr ? current_parent->name : selected_node.parent_id;
+    action.requested_at = iso_timestamp();
+    action.uptime_ms = topology_lock_last_action_uptime_ms;
+    action.accepted = accepted;
+    add_topology_lock_history_locked(std::move(action));
+    restart_cooldowns[selected_node.id] = topology_lock_last_action_uptime_ms;
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  if (accepted) {
+    ESP_LOGI(TAG, "Topology lock restart accepted by %s", selected_node.name.c_str());
+    request_refresh();
+  } else {
+    ESP_LOGW(TAG, "Topology lock restart was not acknowledged by %s", selected_node.name.c_str());
+  }
 }
 
 static bool collect_snapshot(
@@ -1211,7 +1940,8 @@ static bool collect_snapshot(
           calculate_device_stats(
               response,
               stats_accumulator,
-              candidate.stats) &&
+              candidate.stats,
+              candidate.nodes) &&
           stats_ok;
       if (active_client_details == ClientDetailsMode::NODES_ONLY) {
         candidate.stats.clients_online = NAN;
@@ -1270,6 +2000,8 @@ static void collector_task(void *) {
   std::string device_receive_workspace;
   std::string standard_receive_workspace;
   while (true) {
+    std::vector<NodeObservation> lock_observations;
+    bool snapshot_updated = false;
     if (!wifi_connected()) {
       router_connected.store(false, std::memory_order_release);
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
@@ -1288,8 +2020,10 @@ static void collector_task(void *) {
                    standard_receive_workspace)) {
       candidate.generation = ++generation;
       if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        lock_observations = candidate.nodes;
         snapshot = std::move(candidate);
         xSemaphoreGive(snapshot_mutex);
+        snapshot_updated = true;
         router_connected.store(true, std::memory_order_release);
         ESP_LOGI(
             TAG,
@@ -1303,6 +2037,7 @@ static void collector_task(void *) {
       router_connected.store(false, std::memory_order_release);
     }
     if (memory_locked) xSemaphoreGive(memory_mutex);
+    if (snapshot_updated) evaluate_topology_lock(lock_observations);
     force_refresh.store(false, std::memory_order_release);
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(REFRESH_INTERVAL_MS));
   }
@@ -1331,7 +2066,6 @@ static esp_err_t send_error_json(
 }
 
 static esp_err_t asset_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   const auto *asset = static_cast<const meshscope_web_assets::Asset *>(request->user_ctx);
   if (asset == nullptr) return ESP_FAIL;
   httpd_resp_set_type(request, asset->content_type);
@@ -1339,6 +2073,12 @@ static esp_err_t asset_handler(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Cache-Control", "no-cache");
   httpd_resp_set_hdr(request, "Connection", "close");
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  httpd_resp_set_hdr(request, "X-Frame-Options", "DENY");
+  httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer");
+  httpd_resp_set_hdr(
+      request,
+      "Content-Security-Policy",
+      "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   return httpd_resp_send(
       request,
       reinterpret_cast<const char *>(asset->data),
@@ -1376,6 +2116,15 @@ static esp_err_t status_handler(httpd_req_t *request) {
       root,
       "clientDetailsRequested",
       client_details_name(requested_client_details));
+  if (topology_lock_mutex != nullptr &&
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+    cJSON_AddBoolToObject(root, "topologyLockEnabled", topology_lock_enabled);
+    cJSON_AddNumberToObject(
+        root,
+        "topologyLockNextActionInSeconds",
+        (topology_lock_remaining_ms_locked() + 999) / 1000);
+    xSemaphoreGive(topology_lock_mutex);
+  }
   char *body = cJSON_PrintUnformatted(root);
   const esp_err_t result = send_json(request, body ?: "{}");
   cJSON_free(body);
@@ -1406,6 +2155,9 @@ static esp_err_t topology_handler(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Connection", "close");
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
   const std::string ip = edge_ip();
+  cJSON *lock = topology_lock_json(snapshot.nodes);
+  char *serialized_lock = cJSON_PrintUnformatted(lock);
+  cJSON_Delete(lock);
   std::string prefix =
       "{\"router\":\"" + router_host +
       "\",\"meta\":{\"updatedAt\":\"" + snapshot.updated_at +
@@ -1415,8 +2167,10 @@ static esp_err_t topology_handler(httpd_req_t *request) {
       ",\"generation\":" + std::to_string(snapshot.generation) +
       ",\"clientDetails\":\"" +
       client_details_name(active_client_details) +
-      "\"" +
+      "\",\"topologyLock\":" +
+      (serialized_lock != nullptr ? serialized_lock : "{\"supported\":true,\"enabled\":false}") +
       "},\"rawJnap\":{";
+  cJSON_free(serialized_lock);
   esp_err_t result = httpd_resp_send_chunk(request, prefix.c_str(), prefix.size());
   bool first = true;
   for (const auto &entry : snapshot.entries) {
@@ -1750,6 +2504,221 @@ static bool read_request_json(httpd_req_t *request, std::string &body, size_t ma
   return true;
 }
 
+static esp_err_t login_handler(httpd_req_t *request) {
+  std::string body;
+  if (!read_request_json(request, body, 512)) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "Enter the MeshScope dashboard password.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const char *password =
+      payload != nullptr ? json_string(payload, "password") : nullptr;
+  const bool accepted =
+      password != nullptr &&
+      constant_time_equal(dashboard_password, std::string(password));
+  cJSON_Delete(payload);
+  if (!accepted) {
+    return send_error_json(
+        request,
+        "401 Unauthorized",
+        "That dashboard password was not accepted. Check the value in your local ESPHome YAML.");
+  }
+  const std::string token = create_web_session();
+  if (token.empty()) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The dashboard session store is temporarily unavailable.");
+  }
+  const std::string cookie =
+      std::string(WEB_SESSION_COOKIE) + "=" + token +
+      "; Path=/; HttpOnly; SameSite=Strict";
+  httpd_resp_set_hdr(request, "Set-Cookie", cookie.c_str());
+  return send_json(request, "{\"authenticated\":true}");
+}
+
+static esp_err_t logout_handler(httpd_req_t *request) {
+  remove_web_session(request);
+  httpd_resp_set_hdr(
+      request,
+      "Set-Cookie",
+      "meshscope_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+  return send_json(request, "{\"authenticated\":false}");
+}
+
+static std::vector<NodeObservation> current_node_observations() {
+  std::vector<NodeObservation> nodes;
+  if (snapshot_mutex != nullptr &&
+      xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+    if (snapshot.ready) nodes = snapshot.nodes;
+    xSemaphoreGive(snapshot_mutex);
+  }
+  return nodes;
+}
+
+static esp_err_t send_cjson(httpd_req_t *request, cJSON *root) {
+  char *body = cJSON_PrintUnformatted(root);
+  const esp_err_t result = send_json(request, body ?: "{}");
+  cJSON_free(body);
+  cJSON_Delete(root);
+  return result;
+}
+
+static esp_err_t topology_lock_get_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  return send_cjson(
+      request,
+      topology_lock_json(current_node_observations()));
+}
+
+static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  const size_t content_type_length =
+      httpd_req_get_hdr_value_len(request, "Content-Type");
+  std::vector<char> content_type(content_type_length + 1);
+  if (content_type_length == 0 ||
+      httpd_req_get_hdr_value_str(
+          request,
+          "Content-Type",
+          content_type.data(),
+          content_type.size()) != ESP_OK ||
+      strstr(content_type.data(), "application/json") == nullptr) {
+    return send_error_json(
+        request,
+        "415 Unsupported Media Type",
+        "The request must use JSON.");
+  }
+  std::string body;
+  if (!read_request_json(request, body, 8192)) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "The topology lock request is invalid.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const cJSON *enabled =
+      payload != nullptr
+          ? cJSON_GetObjectItemCaseSensitive(payload, "enabled")
+          : nullptr;
+  if (!cJSON_IsBool(enabled)) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "The enabled flag is required.");
+  }
+
+  const std::vector<NodeObservation> observations = current_node_observations();
+  if (cJSON_IsFalse(enabled)) {
+    if (topology_lock_mutex == nullptr ||
+        xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      cJSON_Delete(payload);
+      return send_error_json(
+          request,
+          "503 Service Unavailable",
+          "The topology lock is temporarily busy.");
+    }
+    const bool previous_enabled = topology_lock_enabled;
+    const std::string previous_saved_at = topology_lock_saved_at;
+    const std::vector<LockedParent> previous_mappings =
+        topology_lock_mappings;
+    topology_lock_enabled = false;
+    topology_lock_saved_at.clear();
+    topology_lock_mappings.clear();
+    topology_lock_mismatch_counts.clear();
+    const bool saved = persist_topology_lock_locked();
+    if (!saved) {
+      topology_lock_enabled = previous_enabled;
+      topology_lock_saved_at = previous_saved_at;
+      topology_lock_mappings = previous_mappings;
+    }
+    xSemaphoreGive(topology_lock_mutex);
+    cJSON_Delete(payload);
+    if (!saved) {
+      return send_error_json(
+          request,
+          "500 Internal Server Error",
+          "The topology lock could not be saved.");
+    }
+    App.wake_loop_threadsafe();
+    return send_cjson(request, topology_lock_json(observations));
+  }
+
+  const cJSON *nodes = cJSON_GetObjectItemCaseSensitive(payload, "nodes");
+  if (!cJSON_IsArray(nodes) ||
+      cJSON_GetArraySize(nodes) > TOPOLOGY_LOCK_MAX_NODES) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "A bounded node-to-parent list is required.");
+  }
+  std::vector<LockedParent> mappings;
+  const cJSON *item = nullptr;
+  cJSON_ArrayForEach(item, nodes) {
+    const char *node_id = json_string(item, "nodeId");
+    const char *parent_id = json_string(item, "parentId");
+    if (node_id == nullptr || parent_id == nullptr ||
+        node_id[0] == '\0' || parent_id[0] == '\0' ||
+        strlen(node_id) > 128 || strlen(parent_id) > 128) {
+      cJSON_Delete(payload);
+      return send_error_json(
+          request,
+          "400 Bad Request",
+          "Each lock entry needs a valid node and parent ID.");
+    }
+    mappings.push_back({node_id, parent_id});
+  }
+  cJSON_Delete(payload);
+  std::string validation_error;
+  if (!validate_topology_lock_mappings(
+          observations,
+          mappings,
+          validation_error)) {
+    return send_error_json(
+        request,
+        "409 Conflict",
+        validation_error.c_str());
+  }
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The topology lock is temporarily busy.");
+  }
+  const bool previous_enabled = topology_lock_enabled;
+  const std::string previous_saved_at = topology_lock_saved_at;
+  const std::vector<LockedParent> previous_mappings =
+      topology_lock_mappings;
+  topology_lock_enabled = true;
+  topology_lock_saved_at = iso_timestamp();
+  topology_lock_mappings = std::move(mappings);
+  const size_t applied_count = topology_lock_mappings.size();
+  topology_lock_mismatch_counts.clear();
+  const bool saved = persist_topology_lock_locked();
+  if (!saved) {
+    topology_lock_enabled = previous_enabled;
+    topology_lock_saved_at = previous_saved_at;
+    topology_lock_mappings = previous_mappings;
+  }
+  xSemaphoreGive(topology_lock_mutex);
+  if (!saved) {
+    return send_error_json(
+        request,
+        "500 Internal Server Error",
+        "The topology lock could not be saved.");
+  }
+  App.wake_loop_threadsafe();
+  ESP_LOGI(
+      TAG,
+      "Topology lock applied to %u child nodes",
+      static_cast<unsigned>(applied_count));
+  return send_cjson(request, topology_lock_json(observations));
+}
+
 static esp_err_t restart_handler(httpd_req_t *request) {
   if (!authorize_web_request(request)) return ESP_OK;
   const size_t content_type_length =
@@ -1777,15 +2746,33 @@ static esp_err_t restart_handler(httpd_req_t *request) {
     return send_error_json(request, "400 Bad Request", "The node is offline or absent from the current topology.");
   }
   const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-  const auto cooldown = restart_cooldowns.find(node.id);
-  if (cooldown != restart_cooldowns.end() && now - cooldown->second < RESTART_COOLDOWN_MS) {
+  bool restart_blocked = false;
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The restart scheduler is temporarily busy.");
+  } else {
+    const auto cooldown = restart_cooldowns.find(node.id);
+    restart_blocked =
+        cooldown != restart_cooldowns.end() &&
+        now - cooldown->second < RESTART_COOLDOWN_MS;
+    if (!restart_blocked) restart_cooldowns[node.id] = now;
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  if (restart_blocked) {
     cJSON_Delete(payload);
     return send_error_json(request, "409 Conflict", "The node is already restarting. Wait for it to recover.");
   }
-  restart_cooldowns[node.id] = now;
   if (memory_mutex == nullptr ||
       xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
-    restart_cooldowns.erase(node.id);
+    if (topology_lock_mutex != nullptr &&
+        xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      restart_cooldowns.erase(node.id);
+      xSemaphoreGive(topology_lock_mutex);
+    }
     cJSON_Delete(payload);
     return send_error_json(
         request,
@@ -1800,7 +2787,11 @@ static esp_err_t restart_handler(httpd_req_t *request) {
       1024);
   xSemaphoreGive(memory_mutex);
   if (!reboot.transport_ok || reboot.status != 200 || !response_is_ok(reboot.body)) {
-    restart_cooldowns.erase(node.id);
+    if (topology_lock_mutex != nullptr &&
+        xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      restart_cooldowns.erase(node.id);
+      xSemaphoreGive(topology_lock_mutex);
+    }
     cJSON_Delete(payload);
     return send_error_json(request, "502 Bad Gateway", "The node did not accept the restart request.");
   }
@@ -1823,7 +2814,6 @@ static esp_err_t restart_handler(httpd_req_t *request) {
 }
 
 static esp_err_t not_found_handler(httpd_req_t *request, httpd_err_code_t) {
-  if (!authorize_web_request(request)) return ESP_OK;
   return send_error_json(request, "404 Not Found", "Endpoint not found.");
 }
 
@@ -1844,7 +2834,7 @@ static void start_server() {
   if (server != nullptr) return;
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
-  config.max_uri_handlers = 20;
+  config.max_uri_handlers = 24;
   config.max_open_sockets = 4;
   config.backlog_conn = 4;
   config.stack_size = 16384;
@@ -1864,12 +2854,16 @@ static void start_server() {
         asset_handler,
         const_cast<meshscope_web_assets::Asset *>(&asset));
   }
+  register_handler("/api/login", HTTP_POST, login_handler);
+  register_handler("/api/logout", HTTP_POST, logout_handler);
   register_handler("/api/status", HTTP_GET, status_handler);
   register_handler("/api/topology", HTTP_GET, topology_handler);
   register_handler("/api/refresh", HTTP_POST, refresh_handler);
   register_handler("/api/connect", HTTP_POST, connect_handler);
   register_handler("/api/node-capabilities", HTTP_GET, capabilities_handler);
   register_handler("/api/restart-node", HTTP_POST, restart_handler);
+  register_handler("/api/topology-lock", HTTP_GET, topology_lock_get_handler);
+  register_handler("/api/topology-lock", HTTP_POST, topology_lock_post_handler);
   httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, not_found_handler);
   ESP_LOGI(TAG, "MeshScope HTTP server started on port 80");
 }
@@ -1877,8 +2871,7 @@ static void start_server() {
 static void setup(
     const char *host,
     const char *password_b64,
-    const char *web_username,
-    const char *web_password,
+    const char *configured_dashboard_password,
     const char *client_details) {
   router_host = host ?: "";
   requested_client_details = parse_client_details(client_details);
@@ -1888,19 +2881,17 @@ static void setup(
       encoded_password != "SET_IN_LOCAL_CONFIG" &&
       base64_decode_string(encoded_password, router_password);
   authorization = base64_basic_auth("admin", router_password);
-  web_authorization = base64_basic_auth(
-      web_username ?: "",
-      web_password ?: "");
+  dashboard_password = configured_dashboard_password ?: "";
   snapshot_mutex = xSemaphoreCreateMutex();
   jnap_mutex = xSemaphoreCreateMutex();
   memory_mutex = xSemaphoreCreateMutex();
+  topology_lock_mutex = xSemaphoreCreateMutex();
+  web_session_mutex = xSemaphoreCreateMutex();
   if (!router_password_ok || snapshot_mutex == nullptr || jnap_mutex == nullptr ||
-      memory_mutex == nullptr ||
-      authorization.empty() || web_authorization.empty() ||
-      (web_username ?: "")[0] == '\0' ||
-      (web_password ?: "")[0] == '\0' ||
-      strcmp(web_username ?: "", "SET_IN_LOCAL_CONFIG") == 0 ||
-      strcmp(web_password ?: "", "SET_IN_LOCAL_CONFIG") == 0) {
+      memory_mutex == nullptr || topology_lock_mutex == nullptr ||
+      web_session_mutex == nullptr || authorization.empty() ||
+      dashboard_password.size() < 8 ||
+      dashboard_password == "SET_IN_LOCAL_CONFIG") {
     ESP_LOGE(TAG, "MeshScope initialization failed");
     return;
   }
@@ -1910,6 +2901,7 @@ static void setup(
       static_cast<unsigned>(meshscope_web_assets::ASSET_COUNT),
       meshscope_web_assets::SOURCE_SHA256,
       static_cast<unsigned>(external_memory_size()));
+  load_topology_lock();
   start_server();
   if (xTaskCreate(
           collector_task,
@@ -1943,19 +2935,61 @@ static std::string last_update_copy() {
   return value;
 }
 
+static bool topology_lock_active_copy() {
+  bool value = false;
+  if (topology_lock_mutex != nullptr &&
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    value = topology_lock_enabled;
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  return value;
+}
+
+static int topology_lock_issue_count_copy() {
+  const std::vector<NodeObservation> nodes = current_node_observations();
+  int issues = 0;
+  if (topology_lock_mutex != nullptr &&
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (topology_lock_enabled) {
+      for (const auto &mapping : topology_lock_mappings) {
+        const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
+        const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
+        if (node == nullptr || parent == nullptr || !node->online ||
+            !parent->online || node->parent_id != mapping.parent_id) {
+          issues++;
+        }
+      }
+    }
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  return issues;
+}
+
+static std::string topology_lock_summary_copy() {
+  const int issues = topology_lock_issue_count_copy();
+  if (!topology_lock_active_copy()) return "Recovery off";
+  if (issues == 0) return "Monitoring · all parents correct";
+  char output[64];
+  snprintf(
+      output,
+      sizeof(output),
+      "Monitoring · %d issue%s",
+      issues,
+      issues == 1 ? "" : "s");
+  return output;
+}
+
 }  // namespace meshscope_edge
 
 inline void meshscope_edge_setup(
     const char *host,
     const char *password_b64,
-    const char *web_username,
-    const char *web_password,
+    const char *dashboard_password,
     const char *client_details) {
   meshscope_edge::setup(
       host,
       password_b64,
-      web_username,
-      web_password,
+      dashboard_password,
       client_details);
 }
 
@@ -2014,4 +3048,17 @@ inline std::string meshscope_edge_summary() {
 inline std::string meshscope_edge_last_update() {
   const std::string value = meshscope_edge::last_update_copy();
   return value.empty() ? std::string("Waiting for first topology") : value;
+}
+
+inline bool meshscope_edge_topology_lock_active() {
+  return meshscope_edge::topology_lock_active_copy();
+}
+
+inline float meshscope_edge_topology_lock_issues() {
+  return static_cast<float>(
+      meshscope_edge::topology_lock_issue_count_copy());
+}
+
+inline std::string meshscope_edge_topology_lock_summary() {
+  return meshscope_edge::topology_lock_summary_copy();
 }

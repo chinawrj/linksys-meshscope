@@ -260,6 +260,7 @@
         edgeAddress: edgeMeta.edgeAddress || null,
         routerConnected: edgeMeta.routerConnected !== false,
         clientDetails: edgeMeta.clientDetails || "full",
+        topologyLock: edgeMeta.topologyLock || null,
       },
       network: {
         manufacturer: deviceInfo.manufacturer || "Linksys",
