@@ -1,5 +1,6 @@
 packages:
   meshscope: !include esphome_meshscope_c5.yaml
+  wireguard: !include esphome_meshscope_wireguard.yaml
 
 substitutions:
   meshscope_wifi_ssid: "ci-check"
@@ -10,3 +11,14 @@ substitutions:
   meshscope_api_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
   meshscope_ota_password: "0123456789abcdef0123456789abcdef"
   meshscope_timezone: "UTC"
+  # Public compile-only values. These keys are never deployed to a peer.
+  meshscope_wireguard_address: "10.23.0.45"
+  meshscope_wireguard_netmask: "255.255.255.255"
+  meshscope_wireguard_private_key: "zbHm2XlBhRDQGByjDkjtabipJxaJ0wWAuPMf6SJFe2I="
+  meshscope_wireguard_peer_endpoint: "vpn.invalid"
+  meshscope_wireguard_peer_port: "51820"
+  meshscope_wireguard_peer_public_key: "U9ICRQI7Zr4fmUMn7/YJnYgt7xa+yXEFaiSUCDLgtAA="
+  meshscope_wireguard_peer_preshared_key: "aug7zmczjp3l90woZ6Ye0A105Fi185auBr/F+JPf5CU="
+  meshscope_wireguard_tunnel_network: "10.23.0.0/24"
+  meshscope_wireguard_ha_network: "192.168.50.0/24"
+  meshscope_wireguard_keepalive: "25s"
