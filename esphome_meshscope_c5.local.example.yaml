@@ -1,5 +1,8 @@
 packages:
   meshscope: !include esphome_meshscope_c5.yaml
+  # Optional remote access. Uncomment this package and fill in the WireGuard
+  # substitutions below. The same package also works with C3 and C6 targets.
+  # wireguard: !include esphome_meshscope_wireguard.yaml
 
 substitutions:
   # Copy this file to esphome_meshscope_c5.local.yaml; never commit the copy.
@@ -16,3 +19,17 @@ substitutions:
   meshscope_timezone: "Etc/UTC"
   # auto keeps full client details when memory allows; full and nodes-only override it.
   meshscope_client_details: "auto"
+  # WireGuard values are only required when the package above is enabled.
+  # Generate a dedicated device key pair; never reuse or commit private keys.
+  # meshscope_wireguard_address: "10.23.0.48"
+  # Keep /32 for inbound-only dashboard and Home Assistant access.
+  # meshscope_wireguard_netmask: "255.255.255.255"
+  # meshscope_wireguard_private_key: "YOUR_DEVICE_PRIVATE_KEY"
+  # meshscope_wireguard_peer_endpoint: "vpn.example.com"
+  # meshscope_wireguard_peer_port: "51820"
+  # meshscope_wireguard_peer_public_key: "YOUR_SERVER_PUBLIC_KEY"
+  # meshscope_wireguard_peer_preshared_key: "YOUR_PRESHARED_KEY"
+  # meshscope_wireguard_tunnel_network: "10.23.0.0/24"
+  # This remote network must not overlap the ESP32 Wi-Fi/router LAN.
+  # meshscope_wireguard_ha_network: "192.168.50.0/24"
+  # meshscope_wireguard_keepalive: "25s"

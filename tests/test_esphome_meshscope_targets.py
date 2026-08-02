@@ -9,11 +9,15 @@ COMMON = ROOT / "esphome_meshscope_common.yaml"
 C5_CONFIG = ROOT / "esphome_meshscope_c5.yaml"
 C3_CONFIG = ROOT / "esphome_meshscope_c3.yaml"
 C6_CONFIG = ROOT / "esphome_meshscope_c6.yaml"
+C5_CI_CONFIG = ROOT / "esphome_meshscope_c5.ci.yaml"
+C3_CI_CONFIG = ROOT / "esphome_meshscope_c3.ci.yaml"
+C6_CI_CONFIG = ROOT / "esphome_meshscope_c6.ci.yaml"
 EDGE = ROOT / "esphome_includes" / "meshscope_edge.h"
 GITIGNORE = ROOT / ".gitignore"
 C5_EXAMPLE = ROOT / "esphome_meshscope_c5.local.example.yaml"
 C3_EXAMPLE = ROOT / "esphome_meshscope_c3.local.example.yaml"
 C6_EXAMPLE = ROOT / "esphome_meshscope_c6.local.example.yaml"
+WIREGUARD_CONFIG = ROOT / "esphome_meshscope_wireguard.yaml"
 WEB_HTML = ROOT / "mesh_web" / "index.html"
 WEB_APP = ROOT / "mesh_web" / "app.js"
 WEB_CSS = ROOT / "mesh_web" / "styles.css"
@@ -26,7 +30,11 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         cls.c5_config = C5_CONFIG.read_text(encoding="utf-8")
         cls.c3_config = C3_CONFIG.read_text(encoding="utf-8")
         cls.c6_config = C6_CONFIG.read_text(encoding="utf-8")
+        cls.c5_ci_config = C5_CI_CONFIG.read_text(encoding="utf-8")
+        cls.c3_ci_config = C3_CI_CONFIG.read_text(encoding="utf-8")
+        cls.c6_ci_config = C6_CI_CONFIG.read_text(encoding="utf-8")
         cls.edge = EDGE.read_text(encoding="utf-8")
+        cls.wireguard_config = WIREGUARD_CONFIG.read_text(encoding="utf-8")
 
     def test_shared_configuration_preserves_home_assistant_experience(self):
         for fragment in (
@@ -161,6 +169,22 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("!state.topologyLockAcknowledged", app)
         self.assertIn("#settingsButton::after", css)
         self.assertNotIn("\n  .button-quiet::after", css)
+        self.assertNotIn(".legend {\n    display: none;", css)
+        self.assertIn("Swipe horizontally to explore the complete topology.", html)
+        self.assertIn(".map-scroll-hint", css)
+
+    def test_topology_positions_remain_compatible_with_strict_csp(self):
+        app = WEB_APP.read_text(encoding="utf-8")
+        for fragment in (
+            "function applyTopologyLayoutPositions(map)",
+            'data-layout-left="${node.x}"',
+            'data-layout-top="${node.y}"',
+            "element.style.left = `${left}px`",
+            "element.style.top = `${top}px`",
+            "applyTopologyLayoutPositions(map)",
+        ):
+            self.assertIn(fragment, app)
+        self.assertNotIn('style="left:', app)
 
     def test_topology_lock_is_persistent_observable_and_rate_limited(self):
         for fragment in (
@@ -263,6 +287,46 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 config,
             )
+
+    def test_optional_wireguard_preserves_local_routes_and_boot(self):
+        for fragment in (
+            'meshscope_wireguard_tunnel_network: "192.0.2.0/24"',
+            'meshscope_wireguard_ha_network: "198.51.100.0/24"',
+            '- "${meshscope_wireguard_tunnel_network}"',
+            '- "${meshscope_wireguard_ha_network}"',
+            'peer_persistent_keepalive: "${meshscope_wireguard_keepalive}"',
+            "require_connection_to_proceed: false",
+            "reboot_timeout: 0s",
+            "WireGuard Peer Connected",
+            "WireGuard Latest Handshake",
+            "WireGuard Address",
+            "MeshScope WireGuard URL",
+        ):
+            self.assertIn(fragment, self.wireguard_config)
+        self.assertIn('meshscope_wireguard_netmask: "255.255.255.255"', self.wireguard_config)
+        self.assertNotIn('"0.0.0.0/0"', self.wireguard_config)
+        self.assertNotIn('"::/0"', self.wireguard_config)
+        for target in (self.c5_config, self.c3_config, self.c6_config):
+            self.assertNotIn("esphome_meshscope_wireguard.yaml", target)
+        for ci_target in (self.c5_ci_config, self.c3_ci_config, self.c6_ci_config):
+            self.assertIn("esphome_meshscope_wireguard.yaml", ci_target)
+            self.assertIn('meshscope_wireguard_netmask: "255.255.255.255"', ci_target)
+            self.assertIn('meshscope_wireguard_ha_network: "192.168.50.0/24"', ci_target)
+
+    def test_c5_example_documents_optional_wireguard_without_real_keys(self):
+        example = C5_EXAMPLE.read_text(encoding="utf-8")
+        for fragment in (
+            "# wireguard: !include esphome_meshscope_wireguard.yaml",
+            "meshscope_wireguard_tunnel_network",
+            "meshscope_wireguard_ha_network",
+            "YOUR_DEVICE_PRIVATE_KEY",
+            "YOUR_SERVER_PUBLIC_KEY",
+            "YOUR_PRESHARED_KEY",
+            'meshscope_wireguard_address: "10.23.0.48"',
+            'meshscope_wireguard_netmask: "255.255.255.255"',
+            'meshscope_wireguard_ha_network: "192.168.50.0/24"',
+        ):
+            self.assertIn(fragment, example)
 
     def test_embedded_web_assets_are_current(self):
         result = subprocess.run(

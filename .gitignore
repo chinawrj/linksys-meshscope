@@ -9,6 +9,12 @@ __pycache__/
 *.pyc
 *.log
 .meshscope.pid
+.meshscope-keys/
+meshscope-private.key
+meshscope-public.key
+meshscope-preshared.key
+firmware.factory.bin
+firmware.ota.bin
 .DS_Store
 secrets.yaml
 router_credentials.json

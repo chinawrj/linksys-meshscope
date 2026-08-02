@@ -593,6 +593,19 @@ function layoutNodes(nodes) {
   });
 }
 
+function applyTopologyLayoutPositions(map) {
+  map.querySelectorAll("[data-layout-left][data-layout-top]").forEach((element) => {
+    const left = Number(element.dataset.layoutLeft);
+    const top = Number(element.dataset.layoutTop);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+    // Direct CSSOM assignment is compatible with MeshScope's strict
+    // style-src CSP. Inline style attributes inserted through innerHTML are
+    // intentionally rejected by the browser and would stack every node at 0,0.
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
+  });
+}
+
 function renderTopology(data) {
   const map = $("#meshMap");
   if (state.topologyAnimationFrame) {
@@ -636,7 +649,7 @@ function renderTopology(data) {
     }
   }
   let html = `<canvas class="topology-canvas" id="topologyCanvas" aria-hidden="true"></canvas>`;
-  html += `<div class="map-internet" style="left:34px;top:${internetY}px"><span>⌁</span><small>INTERNET</small></div>`;
+  html += `<div class="map-internet" data-layout-left="34" data-layout-top="${internetY}"><span>⌁</span><small>INTERNET</small></div>`;
   html += edgeLabelHtml(wanEdge);
   for (const edge of edges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
   for (const edge of currentPreviewEdges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
@@ -656,7 +669,7 @@ function renderTopology(data) {
     const draggable = state.topologyLockEditing && !node.isAuthority;
     html += `
       <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""}"
-        style="left:${node.x}px;top:${node.y}px" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
+        data-layout-left="${node.x}" data-layout-top="${node.y}" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
         <div class="node-title">
           <strong>${escapeHtml(node.name)}</strong>
           <span class="node-role">${node.isAuthority ? "GATEWAY" : "NODE"}</span>
@@ -690,6 +703,7 @@ function renderTopology(data) {
       .join("")}${offline.length > 5 ? `<span>${offline.length - 5} more</span>` : ""}</div>`;
   }
   map.innerHTML = html;
+  applyTopologyLayoutPositions(map);
   const canvasEdges = [
     wanEdge,
     ...[...currentPreviewEdges, ...edges].map((edge) => ({
@@ -774,7 +788,7 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
     ? "UPLINK"
     : `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"}${edge.rssi !== null && edge.rssi !== undefined ? ` · ${edge.rssi}dBm` : ""}`;
   return `
-    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" style="left:${midX - 42}px;top:${midY - 20}px">
+    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" data-layout-left="${midX - 42}" data-layout-top="${midY - 20}">
       <strong>${escapeHtml(displayBand)}</strong><small>${escapeHtml(details)}</small>
     </span>`;
 }

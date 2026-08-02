@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.4.0 — 2026-08-02
+
+### Highlights
+
+- Added an opt-in ESPHome WireGuard package for private remote dashboard access
+  and encrypted Home Assistant Native API connections without HTTP port
+  forwarding.
+- Added Home Assistant diagnostics for peer connection, enabled state, latest
+  handshake, tunnel address, and the MeshScope WireGuard URL.
+- Fixed topology nodes, the Internet marker, and `5GH`/`5GL` edge labels
+  stacking at the top-left when the strict Content Security Policy rejected
+  generated inline style attributes.
+- Kept the complete topology legend visible on mobile layouts.
+
+### Safety and routing
+
+- WireGuard is disabled unless the optional package is included in an ignored
+  local target YAML.
+- The documented `/32` netmask keeps the tunnel inbound-only for MeshScope;
+  Linksys JNAP, DNS, and normal local OTA continue over Wi-Fi.
+- Tunnel and remote-client CIDRs must not overlap the ESP32 Wi-Fi/router LAN.
+- WireGuard availability never blocks boot and never triggers a reboot.
+
+### Compatibility and validation
+
+- ESP32-C5: compiled with WireGuard and validated on a live tunnel for the web
+  login/session lifecycle, protected topology/status APIs, and Home Assistant.
+- ESP32-C3 and ESP32-C6: WireGuard configurations compile and link in CI; both
+  remain experimental hardware targets.
+- Existing v0.3.0 installations are unchanged until the package is explicitly
+  enabled. No credential migration is required.
+
+### Known limitations
+
+- The WireGuard server, peer routes, forwarding, and firewall remain external
+  infrastructure that MeshScope cannot configure.
+- HTTP is protected by the WireGuard tunnel while remote, but the local LAN URL
+  remains plain HTTP and must stay on a trusted network.
+- mDNS discovery normally does not cross WireGuard; add the ESPHome integration
+  manually with the tunnel IP.
+
 ## v0.3.0 — 2026-08-01
 
 ### Highlights

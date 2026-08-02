@@ -1,0 +1,64 @@
+substitutions:
+  meshscope_wireguard_address: "192.0.2.1"
+  meshscope_wireguard_netmask: "255.255.255.255"
+  meshscope_wireguard_private_key: "SET_IN_LOCAL_CONFIG"
+  meshscope_wireguard_peer_endpoint: "SET_IN_LOCAL_CONFIG"
+  meshscope_wireguard_peer_port: "51820"
+  meshscope_wireguard_peer_public_key: "SET_IN_LOCAL_CONFIG"
+  meshscope_wireguard_peer_preshared_key: "SET_IN_LOCAL_CONFIG"
+  # These are WireGuard allow/drop filters, not static routes. Keep the /32
+  # netmask above for inbound-only access, and never overlap these networks
+  # with the ESP32 Wi-Fi/router LAN. Override both values in ignored YAML.
+  meshscope_wireguard_tunnel_network: "192.0.2.0/24"
+  meshscope_wireguard_ha_network: "198.51.100.0/24"
+  meshscope_wireguard_keepalive: "25s"
+
+wireguard:
+  id: meshscope_wireguard
+  address: "${meshscope_wireguard_address}"
+  netmask: "${meshscope_wireguard_netmask}"
+  private_key: "${meshscope_wireguard_private_key}"
+  peer_endpoint: "${meshscope_wireguard_peer_endpoint}"
+  peer_port: "${meshscope_wireguard_peer_port}"
+  peer_public_key: "${meshscope_wireguard_peer_public_key}"
+  peer_preshared_key: "${meshscope_wireguard_peer_preshared_key}"
+  peer_allowed_ips:
+    - "${meshscope_wireguard_tunnel_network}"
+    - "${meshscope_wireguard_ha_network}"
+  peer_persistent_keepalive: "${meshscope_wireguard_keepalive}"
+  # The tunnel is an optional access path. It must never block MeshScope boot
+  # or reboot a healthy local dashboard when the remote peer is unavailable.
+  require_connection_to_proceed: false
+  reboot_timeout: 0s
+  update_interval: 10s
+
+binary_sensor:
+  - platform: wireguard
+    wireguard_id: meshscope_wireguard
+    status:
+      name: WireGuard Peer Connected
+      id: meshscope_wireguard_peer_connected
+    enabled:
+      name: WireGuard Enabled
+      id: meshscope_wireguard_enabled
+
+sensor:
+  - platform: wireguard
+    wireguard_id: meshscope_wireguard
+    latest_handshake:
+      name: WireGuard Latest Handshake
+      id: meshscope_wireguard_latest_handshake
+
+text_sensor:
+  - platform: wireguard
+    wireguard_id: meshscope_wireguard
+    address:
+      name: WireGuard Address
+      id: meshscope_wireguard_address_sensor
+  - platform: template
+    name: MeshScope WireGuard URL
+    id: meshscope_wireguard_url
+    icon: mdi:web
+    entity_category: diagnostic
+    lambda: return {"http://${meshscope_wireguard_address}/"};
+    update_interval: 60s
