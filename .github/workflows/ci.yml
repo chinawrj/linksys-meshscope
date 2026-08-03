@@ -31,7 +31,9 @@ jobs:
 
       - name: Check English-only repository text
         run: |
-          if git grep -nP '[\x{4e00}-\x{9fff}]'; then
+          # Ignore binary assets so random image bytes cannot be mistaken for
+          # CJK text; every tracked text file remains in scope.
+          if git grep -I -nP '[\x{4e00}-\x{9fff}]'; then
             echo "CJK characters found. Keep public project text in English."
             exit 1
           fi
