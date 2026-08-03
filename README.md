@@ -1,29 +1,89 @@
 # MeshScope
 
-MeshScope is a local-first Linksys Velop / Intelligent Mesh topology and
-Client/STA dashboard. It shows parent/child relationships, `5GH` and `5GL`
-backhaul links, signal quality, negotiated rates, and the clients attached to
-each node on one screen.
+**See why your Linksys mesh is slow—and keep its topology aligned with what
+you expect.**
 
-Topology collection is read-only. Router changes are deliberately limited to
-`core/Reboot`: either an immediate request for a selected online node, or the
-same request issued by the opt-in ESP32 Topology Lock recovery guard.
+Linksys mesh owners repeatedly run into two frustrating problems:
+
+1. **The network is a black box.** The normal Linksys interfaces do not put the
+   live parent/child tree, `5GH` and `5GL` backhaul, channel, negotiated rate,
+   signal, node health, and attached clients together in one useful view.
+2. **A node chooses an unexpected parent.** A child can attach through a weak
+   or distant mesh node instead of the route you expected. The Internet may be
+   healthy while Wi-Fi throughput drops and latency becomes painfully high.
+
+MeshScope is a local-first Linksys Velop / Intelligent Mesh dashboard built to
+make both problems visible. Its **Topology Lock** records the parent structure
+you want, continuously compares it with the live network, and can use a
+strictly guarded restart of a mismatched child to give Linksys another chance
+to select the expected parent. Linksys still makes the final association
+decision; MeshScope does not claim to force an exact parent.
 
 [![CI](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml/badge.svg)](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml)
 ![Linksys](https://img.shields.io/badge/Linksys-local%20JNAP-16769b)
 ![Runtime](https://img.shields.io/badge/runtime-Python%20%7C%20ESPHome-2d705b)
 ![License](https://img.shields.io/badge/license-MIT-2d705b)
 
-> **v0.4.0 preview highlight:** reach MeshScope privately without forwarding
-> its HTTP port. An optional WireGuard package adds a second dashboard and
-> encrypted Home Assistant API path while the ESP32 continues collecting
-> Linksys data directly over its local Wi-Fi connection. This release also
-> fixes topology cards and link labels stacking at the top-left under the
-> dashboard's strict Content Security Policy.
+<p align="center">
+  <a href="docs/assets/meshscope-dashboard-overview.jpg">
+    <img src="docs/assets/meshscope-dashboard-overview.jpg" alt="MeshScope live dashboard showing Linksys nodes, parent links, 5GH and 5GL backhaul, signal, rate, health, and topology recovery state" width="100%">
+  </a>
+</p>
+
+_A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
+shown with the network owner's approval. The Client/Device table and every
+client identifier are deliberately excluded from this repository image._
+
+> **v0.4.1 preview highlight:** an illustrated, problem-first guide for global
+> Linksys mesh owners, backed by privacy-reviewed live ESP32-C5 screenshots.
+> Optional WireGuard access from v0.4.0 remains available without forwarding
+> the dashboard's HTTP port.
 
 > MeshScope is an independent community project and is not affiliated with or
 > endorsed by Linksys. Use it only on networks you own or are authorized to
 > manage.
+
+## How it works
+
+1. **Connect locally.** MeshScope signs in to the primary Linksys node with the
+   local admin password you provide. It does not require a Linksys cloud
+   account.
+2. **Collect and correlate.** Allowlisted local HTTPS JNAP reads collect the
+   node inventory, live parent relationships, `5GH`/`5GL` backhaul metrics,
+   steering state, and Client/STA records. MeshScope correlates them into one
+   topology instead of making you compare several router screens.
+3. **Present locally.** The Python app or ESP32 serves the dashboard directly
+   to your browser. ESPHome additionally publishes encrypted Home Assistant
+   entities. There is no MeshScope cloud service or analytics endpoint.
+4. **Recover only when enabled.** Topology Lock compares saved and current
+   parents. After three confirmed mismatches, and only when the desired parent
+   is online and the five-minute cooldown is clear, it may send the one
+   permitted write: `core/Reboot` to the mismatched child. Linksys then makes
+   its own association decision; MeshScope does not issue an exact-parent
+   command.
+
+```mermaid
+flowchart LR
+    Linksys["Primary node and mesh"] -->|"Local HTTPS JNAP reads"| Engine["MeshScope on Python or ESP32"]
+    Engine -->|"Local dashboard"| Browser["Browser"]
+    Engine -->|"Encrypted Native API"| HA["Home Assistant"]
+    Remote["Authorized remote client"] -.->|"WireGuard to ESP32 only"| Engine
+    Engine -.->|"Optional guarded child reboot"| Linksys
+```
+
+In appliance mode, the ESP32 remains on the Linksys LAN and collects directly
+from the primary node. WireGuard changes only how an authorized browser or
+Home Assistant reaches the ESP32; it does not move Linksys collection into the
+tunnel and does not require exposing the router LAN.
+
+| I want to… | Start here |
+|---|---|
+| See the UI without a router | [Run desktop demo mode](#desktop-app-start-in-five-minutes) |
+| Inspect a live mesh from a computer | [Run the desktop local app](#desktop-app-start-in-five-minutes) |
+| Keep an always-on dashboard | [Install the ESPHome appliance](#esphome--esp32-always-on-appliance) |
+| Diagnose or recover parent drift | [Understand Topology Lock](#topology-lock-visual-guide) |
+| Reach MeshScope remotely | [Configure optional WireGuard access](#optional-wireguard-remote-access) |
+| Add sensors and controls to Home Assistant | [Add the ESPHome integration](#3-add-meshscope-to-home-assistant) |
 
 ## Choose how to run MeshScope
 
@@ -62,6 +122,58 @@ and restart-state UI without authenticating with or controlling a router.
   child/parent selectors as an equivalent input method
 - The last complete topology remains visible, clearly marked as cached, when
   the router is temporarily unreachable
+
+Runtime Client/STA details are intentionally comprehensive, but public
+documentation follows a stricter rule: **node-level topology may be shown;
+client identity must not be shown**. Repository screenshots exclude the
+Client/Device table, client names, MAC addresses, client IP addresses, UUIDs,
+and serial numbers. Use demo mode when an issue report needs a client-list
+example.
+
+## Topology Lock: visual guide
+
+### 1. See the path that traffic is really taking
+
+Each node card identifies its current parent, backhaul band, channel, rate,
+and RSSI. The map makes a distant parent or weak intermediate hop visible
+without cross-referencing multiple Linksys screens.
+
+### 2. Record or edit the parent structure you expect
+
+Select **Edit & lock topology**. Drag a child node onto its desired parent, or
+use the accessible child and parent selectors. Editing is a preview: it sends
+nothing to the router.
+
+<p align="center">
+  <a href="docs/assets/meshscope-topology-lock.jpg">
+    <img src="docs/assets/meshscope-topology-lock.jpg" alt="MeshScope Topology Lock editor showing current and desired Linksys node parents without any client device list" width="760">
+  </a>
+</p>
+
+_The live Node list is visible; the sensitive Client/Device table below the
+dashboard was excluded before capture._
+
+### 3. Monitor drift and recover only when it is useful
+
+```mermaid
+flowchart LR
+    Desired["Saved parent"] --> Compare["Compare with live topology"]
+    Current["Current parent"] --> Compare
+    Compare -->|"Match"| Healthy["Green: parent correct"]
+    Compare -->|"Mismatch"| Confirm["Confirm across 3 snapshots"]
+    Confirm --> Parent{"Desired parent online?"}
+    Parent -->|"No"| Wait["Wait; restarting cannot help"]
+    Parent -->|"Yes"| Cooldown{"5-minute cooldown clear?"}
+    Cooldown -->|"No"| Wait
+    Cooldown -->|"Yes"| Restart["Restart mismatched child"]
+    Restart --> Linksys["Linksys re-evaluates the parent"]
+    Linksys --> Compare
+```
+
+The node card changes color with compliance state and shows the next eligible
+recovery countdown directly on the topology. Recovery requires three
+confirmed snapshots, an online desired parent, and a global five-minute
+cooldown. It never restarts the desired parent or an unidentified device.
 
 ## Desktop app: start in five minutes
 
@@ -597,10 +709,9 @@ Issues and pull requests are welcome. Please:
 
 When reporting router compatibility, include the Linksys model and firmware
 version, but remove serial numbers, MAC addresses, public IPs, and personally
-identifying node or client names.
+identifying node or client names. Before attaching an image, follow the
+[privacy-safe screenshot checklist](docs/sharing-screenshots-safely.md).
 
-## License status
+## License
 
-This repository is publicly visible but does not yet contain a `LICENSE`.
-Public visibility does not grant permission to copy, modify, or redistribute
-the project until the owner selects a license.
+MeshScope is released under the [MIT License](LICENSE).

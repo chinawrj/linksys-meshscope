@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.4.1 — 2026-08-03
+
+### Highlights
+
+- Reframed the README around the two problems MeshScope solves: understanding
+  a Linksys mesh in detail and diagnosing unexpected parent selection that can
+  produce poor throughput or latency.
+- Added a live, illustrated dashboard tour and a visual Topology Lock workflow.
+- Added a four-step **How it works** section, network architecture diagram, and
+  task-oriented route to desktop, ESPHome, Home Assistant, WireGuard, and
+  recovery instructions.
+- Corrected the README license section to reference the existing MIT License.
+
+### Privacy
+
+- Captured the documentation images through the ESP32-C5 WireGuard address;
+  the workstation did not require direct access to the Linksys LAN.
+- Limited live images to node-level topology, aggregate counts, health, and
+  recovery state. Real Client/Device rows and node-detail client lists are not
+  present.
+- Added a public screenshot checklist that excludes client names, MAC and IP
+  addresses, UUIDs, serial numbers, credentials, and unrelated browser data.
+
+### Compatibility
+
+- This release changes documentation and repository images only. Firmware,
+  stored topology mappings, credentials, and installation procedures are
+  unchanged from v0.4.0.
+
 ## v0.4.0 — 2026-08-02
 
 ### Highlights
