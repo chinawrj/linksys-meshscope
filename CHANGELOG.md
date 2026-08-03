@@ -12,6 +12,8 @@
   task-oriented route to desktop, ESPHome, Home Assistant, WireGuard, and
   recovery instructions.
 - Corrected the README license section to reference the existing MIT License.
+- Kept the English-only CI gate for text while excluding binary documentation
+  images from character matching.
 
 ### Privacy
 
