@@ -394,11 +394,18 @@ def steer_parent(
     parent_id: str,
     band: str,
     state_wait: float = 20.0,
+    require_capability_probe: bool = True,
 ) -> dict[str, Any]:
     child, parent = preflight(topology, child_id, parent_id)
-    capability = probe_acl(host)
-    if not capability.get("available"):
-        raise MQTTParentError(str(capability.get("reason") or "MQTT Parent steering is unavailable"))
+    if require_capability_probe:
+        capability = probe_acl(host)
+        if not capability.get("available"):
+            raise MQTTParentError(
+                str(
+                    capability.get("reason")
+                    or "MQTT Parent steering is unavailable"
+                )
+            )
     try:
         target = radio_target(parent, band, collect_devinfo(host, seconds=state_wait))
         result = publish_parent_request(host, str(child["id"]), target)

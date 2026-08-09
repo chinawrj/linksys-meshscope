@@ -89,6 +89,7 @@ const raw = {
 test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
   const result = normalize("10.0.0.1", raw, {
     updatedAt: "2026-01-01T00:00:00Z",
+    generation: 42,
     edgeAddress: "10.0.0.50",
     routerConnected: false,
     clientDetails: "nodes-only",
@@ -98,6 +99,7 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
   const client = result.clients.find((item) => item.id === "client");
 
   assert.equal(result.meta.source, "Linksys JNAP · ESP32 MeshScope");
+  assert.equal(result.meta.generation, 42);
   assert.equal(result.meta.edgeAddress, "10.0.0.50");
   assert.equal(result.meta.routerConnected, false);
   assert.equal(result.meta.clientDetails, "nodes-only");

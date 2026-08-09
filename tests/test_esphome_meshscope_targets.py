@@ -55,6 +55,9 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "Topology Lock Active",
             "Topology Lock Issues",
             "Topology Lock Summary",
+            "MQTT Parent Steering Available",
+            "MQTT Parent Steering Mode",
+            "Last Parent Steering Result",
         ):
             self.assertIn(fragment, self.common)
 
@@ -124,6 +127,8 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"/api/node-capabilities"',
             '"/api/restart-node"',
             '"/api/topology-lock"',
+            '"/api/mqtt-parent-steering"',
+            '"/api/steer-node-parent"',
             '"/api/login"',
             '"/api/logout"',
             "authorize_web_request(request)",
@@ -141,6 +146,8 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "HttpOnly; SameSite=Strict",
             "esp_fill_random",
             "WEB_SESSION_LIMIT = 4",
+            "mqtt_steering_worker",
+            "mqtt_steering_mutex",
         ):
             self.assertIn(fragment, self.edge)
         self.assertNotIn("WWW-Authenticate", self.edge)
@@ -235,6 +242,64 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
                 example_path.read_text(encoding="utf-8"),
             )
 
+    def test_mqtt_parent_steering_is_persistent_bounded_and_backgrounded(self):
+        for fragment in (
+            'meshscope_mqtt_parent_steering: "auto"',
+            '"${meshscope_mqtt_parent_steering}"',
+            'MQTT_NVS_NAMESPACE = "meshscope_mqtt"',
+            'MQTT_NVS_MODE_KEY = "mode"',
+            "MqttSteeringMode::AUTO",
+            "MqttSteeringMode::FORCE_ON",
+            "MqttSteeringMode::FORCE_OFF",
+            "persist_mqtt_mode(",
+            "load_mqtt_mode()",
+            "MQTT_PACKET_LIMIT_INTERNAL = 16 * 1024",
+            "MQTT_PACKET_LIMIT_EXTERNAL = 32 * 1024",
+            'esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")',
+            '"network/+/DEVINFO"',
+            '"network/status_resend_all"',
+            '"network/DEVINFO/status_resend_all"',
+            '"network/BH/status_resend_all"',
+            '"/BH/config"',
+            "ascii_upper(operation.child_id)",
+            "MQTT_VERIFY_GENERATIONS = 2",
+            "MQTT_VERIFICATION_TIMEOUT_MS = 180 * 1000",
+            "mqtt_verify_operation(",
+            "mqtt_operation_active_for_node(",
+            "mqtt_radio_from_observed_child(",
+            'json_string(wireless, "apBSSID")',
+            'json_string(wireless, "radioID")',
+            '"roundTrip", mqtt_available',
+            '"testedAt", mqtt_last_probe_at.c_str()',
+            '"transport", "mqtt-1883"',
+            'mqtt_probe_requested ? "detecting"',
+            '"202 Accepted"',
+        ):
+            self.assertIn(fragment, self.common + self.edge)
+        for example_path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE):
+            self.assertIn(
+                'meshscope_mqtt_parent_steering: "auto"',
+                example_path.read_text(encoding="utf-8"),
+            )
+
+    def test_force_off_prevents_probe_and_publish_and_force_on_only_bypasses_gate(self):
+        self.assertRegex(
+            self.edge,
+            re.compile(
+                r"if \(mode == MqttSteeringMode::FORCE_OFF\) continue;",
+                re.MULTILINE,
+            ),
+        )
+        self.assertIn(
+            "mode == MqttSteeringMode::AUTO && !capability_available",
+            self.edge,
+        )
+        self.assertIn(
+            "mqtt_mode != MqttSteeringMode::FORCE_OFF",
+            self.edge,
+        )
+        self.assertNotIn("mqtt_mode == MqttSteeringMode::FORCE_ON && !mqtt_available", self.edge)
+
     def test_no_psram_collection_keeps_device_list_last_and_reuses_buffers(self):
         actions_start = self.edge.index("static const char *const READ_ACTIONS[]")
         actions_end = self.edge.index("};", actions_start)
@@ -252,7 +317,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         ):
             self.assertIn(fragment, self.edge)
 
-    def test_only_allowed_router_mutation_is_node_reboot(self):
+    def test_router_mutations_are_limited_to_reboot_and_exact_parent_mqtt(self):
         self.assertRegex(
             self.edge,
             re.compile(
@@ -263,6 +328,9 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertNotIn("FactoryReset", self.edge)
         self.assertIn("RESTART_COOLDOWN_MS = 90000", self.edge)
         self.assertIn("resolve_node(node_id, node)", self.edge)
+        self.assertEqual(self.edge.count('"/BH/config"'), 1)
+        self.assertNotIn("SetRadioSettings", self.edge)
+        self.assertNotIn("SetLANSettings", self.edge)
 
     def test_local_credentials_file_is_ignored(self):
         ignored = GITIGNORE.read_text(encoding="utf-8").splitlines()

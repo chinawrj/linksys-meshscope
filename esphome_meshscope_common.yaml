@@ -8,6 +8,9 @@ substitutions:
   meshscope_ota_password: "SET_IN_LOCAL_CONFIG"
   meshscope_timezone: "UTC"
   meshscope_client_details: "auto"
+  # auto requires a live MQTT ACL roundtrip; force-on only bypasses that
+  # capability gate, while force-off prevents all MQTT probes and publishes.
+  meshscope_mqtt_parent_steering: "auto"
 
 esphome:
   min_version: 2026.7.2
@@ -22,7 +25,8 @@ esphome:
               "${meshscope_router_host}",
               "${meshscope_router_password_b64}",
               "${meshscope_dashboard_password}",
-              "${meshscope_client_details}");
+              "${meshscope_client_details}",
+              "${meshscope_mqtt_parent_steering}");
 
 logger:
   baud_rate: 115200
@@ -61,6 +65,11 @@ binary_sensor:
     id: meshscope_topology_lock_active
     icon: mdi:lock-check
     lambda: return meshscope_edge_topology_lock_active();
+  - platform: template
+    name: MQTT Parent Steering Available
+    id: meshscope_mqtt_parent_available
+    icon: mdi:lan-connect
+    lambda: return meshscope_edge_mqtt_parent_available();
 
 sensor:
   - platform: template
@@ -134,6 +143,19 @@ text_sensor:
     id: meshscope_topology_lock_summary
     icon: mdi:lock-check
     lambda: return meshscope_edge_topology_lock_summary();
+    update_interval: 10s
+  - platform: template
+    name: MQTT Parent Steering Mode
+    id: meshscope_mqtt_parent_mode
+    icon: mdi:source-branch
+    entity_category: diagnostic
+    lambda: return meshscope_edge_mqtt_parent_mode();
+    update_interval: 30s
+  - platform: template
+    name: Last Parent Steering Result
+    id: meshscope_mqtt_parent_result
+    icon: mdi:swap-horizontal
+    lambda: return meshscope_edge_mqtt_parent_result();
     update_interval: 10s
 
 button:

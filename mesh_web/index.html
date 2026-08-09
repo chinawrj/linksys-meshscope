@@ -129,7 +129,7 @@
                 <div class="topology-lock-editor-heading">
                   <div>
                     <strong>Desired topology draft</strong>
-                    <p>Drag a child node onto its desired parent, or use the selectors below. Nothing restarts until you apply the lock.</p>
+                    <p>Drag a child node onto its desired parent, or use the selectors below. This edits the recovery target only; use Exact Parent Steering below to move a node now.</p>
                   </div>
                   <span id="topologyLockDraftStatus">Current live structure</span>
                 </div>
@@ -156,14 +156,53 @@
               </div>
               <div class="topology-lock-history" id="topologyLockHistory" hidden></div>
             </section>
-            <div class="steering-callout" id="steeringCallout">
-              <span class="steering-icon" aria-hidden="true">⌁</span>
-              <div>
-                <strong id="steeringTitle">Reading Node Steering status</strong>
-                <p id="steeringDescription">Checking the router's topology optimization capabilities.</p>
+            <section class="parent-steering-panel detecting" id="parentSteeringPanel" aria-labelledby="parentSteeringTitle">
+              <div class="parent-steering-heading">
+                <span class="steering-icon" aria-hidden="true">⌁</span>
+                <div class="parent-steering-copy">
+                  <div class="parent-steering-title-row">
+                    <strong id="parentSteeringTitle">Exact Parent Steering</strong>
+                    <span class="steering-mode" id="parentSteeringCapability">CHECKING</span>
+                  </div>
+                  <p id="parentSteeringDescription">Checking the local Linksys MQTT broker without changing the topology.</p>
+                </div>
+                <label class="parent-steering-mode-field">
+                  <span>Control mode</span>
+                  <select id="parentSteeringMode" aria-describedby="parentSteeringModeHelp">
+                    <option value="auto" selected>Auto</option>
+                    <option value="force-on">Force on</option>
+                    <option value="force-off">Force off</option>
+                  </select>
+                </label>
               </div>
-              <span class="steering-mode" id="steeringMode">READ ONLY</span>
-            </div>
+              <div class="parent-steering-detection">
+                <p id="parentSteeringModeHelp"><strong>Auto</strong> safely probes the local broker and enables steering only after a fresh infrastructure round trip.</p>
+                <span id="parentSteeringTestedAt">Not checked yet</span>
+                <button class="text-button" id="parentSteeringProbeButton" type="button">Check again</button>
+              </div>
+              <form class="parent-steering-form" id="parentSteeringForm">
+                <label>
+                  <span>Child node</span>
+                  <select id="parentSteeringChild" required></select>
+                </label>
+                <span class="parent-steering-arrow" aria-hidden="true">→</span>
+                <label>
+                  <span>Requested Parent</span>
+                  <select id="parentSteeringParent" required></select>
+                </label>
+                <label>
+                  <span>Backhaul radio</span>
+                  <select id="parentSteeringBand" required>
+                    <option value="5GH">5GH · high band</option>
+                    <option value="5GL">5GL · low band</option>
+                  </select>
+                </label>
+                <button class="button parent-steering-submit" id="parentSteeringSubmit" type="submit">Move node</button>
+              </form>
+              <p class="parent-steering-warning">The child node and its clients may disconnect briefly while its wireless backhaul reconnects. Linksys may optimize the topology again later.</p>
+              <p class="parent-steering-validation" id="parentSteeringValidation" role="alert"></p>
+              <div class="parent-steering-operation" id="parentSteeringOperation" role="status" aria-live="polite" hidden></div>
+            </section>
           </article>
 
           <aside class="panel health-panel">
@@ -317,6 +356,7 @@
     <script src="/detail-data.js" defer></script>
     <script src="/topology-layout.js" defer></script>
     <script src="/topology-lock-state.js" defer></script>
+    <script src="/mqtt-parent-steering-state.js" defer></script>
     <script src="/linksys-normalize.js" defer></script>
     <script src="/app.js" defer></script>
   </body>

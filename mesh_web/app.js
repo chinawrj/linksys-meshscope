@@ -22,6 +22,14 @@ const state = {
   topologyLockAcknowledged: false,
   topologyLockSelectedNodeId: null,
   topologyLockBusy: false,
+  parentSteering: MeshMqttParentSteering.normalize(null),
+  parentSteeringLoaded: false,
+  parentSteeringLoading: false,
+  parentSteeringBusy: false,
+  parentSteeringPollTimer: null,
+  parentSteeringSelectedChildId: null,
+  parentSteeringSelectedParentId: null,
+  parentSteeringBand: "5GH",
   draggedNodeId: null,
   suppressNodeClickUntil: 0,
   detailToken: 0,
@@ -221,6 +229,256 @@ function toast(message) {
   toast.timer = setTimeout(() => el.classList.remove("show"), 2300);
 }
 
+function parentSteeringModeHelp(mode) {
+  if (mode === "force-on") {
+    return "Force on attempts steering even when the broker capability cannot be confirmed. All topology safety checks still apply.";
+  }
+  if (mode === "force-off") {
+    return "Force off does not probe or send new MQTT Parent-steering messages. An already accepted request may still be verified.";
+  }
+  return "Auto safely probes the local broker and enables steering only after a fresh infrastructure round trip.";
+}
+
+function parentSteeringRequest() {
+  const child = state.topology?.nodes?.find(
+    (node) => MeshMqttParentSteering.sameId(node.id, state.parentSteeringSelectedChildId),
+  );
+  const parent = state.topology?.nodes?.find(
+    (node) => MeshMqttParentSteering.sameId(node.id, state.parentSteeringSelectedParentId),
+  );
+  return {
+    childId: child?.id || state.parentSteeringSelectedChildId || "",
+    childName: child?.name || "",
+    parentId: parent?.id || state.parentSteeringSelectedParentId || "",
+    parentName: parent?.name || "",
+    band: MeshMqttParentSteering.cleanBand(state.parentSteeringBand) || "5GH",
+  };
+}
+
+function renderParentSteering() {
+  const panel = $("#parentSteeringPanel");
+  if (!panel) return;
+  const report = state.parentSteering;
+  const capability = MeshMqttParentSteering.capabilityPresentation(report);
+  panel.className = `parent-steering-panel ${escapeHtml(capability.tone)}`;
+  $("#parentSteeringCapability").textContent = capability.label;
+  $("#parentSteeringDescription").textContent = capability.title + ". " + capability.detail;
+  $("#parentSteeringMode").value = report.mode;
+  $("#parentSteeringMode").disabled = state.parentSteeringBusy;
+  $("#parentSteeringModeHelp").innerHTML = `<strong>${escapeHtml(
+    report.mode === "force-on" ? "Force on" : report.mode === "force-off" ? "Force off" : "Auto",
+  )}</strong> ${escapeHtml(parentSteeringModeHelp(report.mode).replace(/^(Auto|Force on|Force off) /, ""))}`;
+  $("#parentSteeringTestedAt").textContent = report.testedAt
+    ? `Checked ${formatTime(report.testedAt)}`
+    : "Not checked yet";
+  $("#parentSteeringProbeButton").disabled =
+    report.mode === "force-off" || state.parentSteeringLoading || state.parentSteeringBusy;
+  $("#parentSteeringProbeButton").textContent = state.parentSteeringLoading
+    ? "Checking…"
+    : "Check again";
+
+  const children = MeshMqttParentSteering.eligibleChildren(state.topology?.nodes || []);
+  if (!children.some((node) => MeshMqttParentSteering.sameId(node.id, state.parentSteeringSelectedChildId))) {
+    state.parentSteeringSelectedChildId = children[0]?.id || null;
+  }
+  const child = children.find((node) =>
+    MeshMqttParentSteering.sameId(node.id, state.parentSteeringSelectedChildId));
+  const childSelect = $("#parentSteeringChild");
+  childSelect.innerHTML = children.length
+    ? children.map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)} · ${escapeHtml(node.band || "Mesh")}</option>`).join("")
+    : '<option value="">No eligible wireless child nodes</option>';
+  childSelect.value = child?.id || "";
+
+  const parents = child
+    ? MeshMqttParentSteering.eligibleParents(state.topology.nodes, child.id)
+    : [];
+  if (!parents.some((node) => MeshMqttParentSteering.sameId(node.id, state.parentSteeringSelectedParentId))) {
+    state.parentSteeringSelectedParentId = parents[0]?.id || null;
+  }
+  const parent = parents.find((node) =>
+    MeshMqttParentSteering.sameId(node.id, state.parentSteeringSelectedParentId));
+  const parentSelect = $("#parentSteeringParent");
+  parentSelect.innerHTML = parents.length
+    ? parents.map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)}${node.isAuthority ? " · Gateway" : ""}</option>`).join("")
+    : '<option value="">No eligible online Parent</option>';
+  parentSelect.value = parent?.id || "";
+
+  if (child && ["5GH", "5GL"].includes(String(child.band || "").toUpperCase()) &&
+      !state.parentSteeringBand) {
+    state.parentSteeringBand = String(child.band).toUpperCase();
+  }
+  $("#parentSteeringBand").value = state.parentSteeringBand;
+
+  const operationActive = MeshMqttParentSteering.isOperationActive(report.operation);
+  const controlsDisabled = !report.effectiveEnabled || state.parentSteeringBusy || operationActive;
+  childSelect.disabled = controlsDisabled || !children.length;
+  parentSelect.disabled = controlsDisabled || !parents.length;
+  $("#parentSteeringBand").disabled = controlsDisabled || !children.length;
+  const validation = MeshMqttParentSteering.validateRequest(
+    state.topology?.nodes || [],
+    parentSteeringRequest(),
+    state.topologyLock,
+    report,
+  );
+  $("#parentSteeringSubmit").disabled = controlsDisabled || !validation.valid;
+  $("#parentSteeringSubmit").textContent = state.parentSteeringBusy
+    ? "Sending…"
+    : operationActive
+      ? "Request in progress"
+      : "Move node";
+  $("#parentSteeringValidation").textContent =
+    report.effectiveEnabled && !operationActive && children.length ? (validation.valid ? "" : validation.error) : "";
+
+  const operationView = MeshMqttParentSteering.operationPresentation(report.operation);
+  const operationElement = $("#parentSteeringOperation");
+  operationElement.hidden = !operationView;
+  if (operationView) {
+    operationElement.className = `parent-steering-operation ${escapeHtml(operationView.tone)}`;
+    const icon = operationView.tone === "verified" ? "✓" : operationView.tone === "failed" ? "!" : "↻";
+    operationElement.innerHTML = `<i aria-hidden="true">${icon}</i><span><strong>${escapeHtml(operationView.label)}</strong><small>${escapeHtml(operationView.detail)}</small></span>`;
+  }
+
+  if ($("#manualSteering")) {
+    $("#manualSteering").textContent = report.mode === "force-off"
+      ? "MQTT · Disabled"
+      : report.available && report.roundTrip
+        ? "MQTT · Available"
+        : report.mode === "force-on"
+          ? "MQTT · Forced on"
+          : "MQTT · Not detected";
+  }
+}
+
+function scheduleParentSteeringPoll() {
+  clearTimeout(state.parentSteeringPollTimer);
+  state.parentSteeringPollTimer = null;
+  if (!state.parentSteeringLoaded ||
+      (!state.parentSteeringLoading &&
+       !MeshMqttParentSteering.isOperationActive(state.parentSteering.operation) &&
+       state.parentSteering.state !== "detecting")) return;
+  state.parentSteeringPollTimer = setTimeout(() => loadParentSteering(false), 2000);
+}
+
+async function loadParentSteering(force = false) {
+  if (state.parentSteeringLoading) return;
+  state.parentSteeringLoading = true;
+  renderParentSteering();
+  try {
+    const report = await api(`/api/mqtt-parent-steering${force ? "?refresh=1" : ""}`);
+    state.parentSteering = MeshMqttParentSteering.normalize(report, state.parentSteering);
+    state.parentSteeringLoaded = true;
+  } catch (error) {
+    state.parentSteering = MeshMqttParentSteering.normalize({
+      state: "error",
+      available: false,
+      roundTrip: false,
+      reason: error.message,
+      testedAt: new Date().toISOString(),
+    }, state.parentSteering);
+    state.parentSteeringLoaded = true;
+  } finally {
+    state.parentSteeringLoading = false;
+    renderParentSteering();
+    if (state.topology) renderTopology(state.topology);
+    scheduleParentSteeringPoll();
+  }
+}
+
+async function setParentSteeringMode(mode) {
+  if (state.parentSteeringBusy) return;
+  state.parentSteeringBusy = true;
+  $("#parentSteeringValidation").textContent = "";
+  renderParentSteering();
+  try {
+    const report = await api("/api/mqtt-parent-steering", {
+      method: "POST",
+      body: JSON.stringify({ mode: MeshMqttParentSteering.cleanMode(mode) }),
+    });
+    state.parentSteering = MeshMqttParentSteering.normalize(report, {
+      ...state.parentSteering,
+      mode: MeshMqttParentSteering.cleanMode(mode),
+    });
+    toast(`Exact Parent Steering mode set to ${state.parentSteering.mode.replace("-", " ")}`);
+  } catch (error) {
+    $("#parentSteeringValidation").textContent = error.message;
+    toast(error.message);
+  } finally {
+    state.parentSteeringBusy = false;
+    renderParentSteering();
+    scheduleParentSteeringPoll();
+  }
+}
+
+function scheduleParentSteeringRefreshes() {
+  [5000, 15000, 30000, 60000, 120000].forEach((delay) => {
+    window.setTimeout(() => {
+      if (MeshMqttParentSteering.isOperationActive(state.parentSteering.operation)) refresh(true);
+    }, delay);
+  });
+}
+
+async function submitParentSteering(event) {
+  event.preventDefault();
+  if (state.parentSteeringBusy) return;
+  const request = parentSteeringRequest();
+  const validation = MeshMqttParentSteering.validateRequest(
+    state.topology?.nodes || [],
+    request,
+    state.topologyLock,
+    state.parentSteering,
+  );
+  if (!validation.valid) {
+    $("#parentSteeringValidation").textContent = validation.error;
+    return;
+  }
+  state.parentSteeringBusy = true;
+  state.parentSteering.operation = MeshMqttParentSteering.operationFromResponse(
+    { queued: true }, request,
+  );
+  renderParentSteering();
+  renderTopology(state.topology);
+  try {
+    const result = await api("/api/steer-node-parent", {
+      method: "POST",
+      body: JSON.stringify({
+        childId: request.childId,
+        parentId: request.parentId,
+        band: request.band,
+      }),
+    });
+    state.parentSteering.operation = MeshMqttParentSteering.operationFromResponse(
+      result,
+      request,
+    );
+    const view = MeshMqttParentSteering.operationPresentation(state.parentSteering.operation);
+    toast(view?.label || "Parent steering request queued");
+    scheduleParentSteeringRefreshes();
+  } catch (error) {
+    state.parentSteering.operation = MeshMqttParentSteering.normalizeOperation({
+      state: "failed",
+      ...request,
+      requestedAt: new Date().toISOString(),
+      error: error.message,
+    });
+    $("#parentSteeringValidation").textContent = error.message;
+    toast(error.message);
+  } finally {
+    state.parentSteeringBusy = false;
+    renderParentSteering();
+    renderTopology(state.topology);
+    scheduleParentSteeringPoll();
+  }
+}
+
+function focusParentSteering(node) {
+  if (node && !node.isAuthority) state.parentSteeringSelectedChildId = node.id;
+  if (node?.isAuthority) state.parentSteeringSelectedParentId = node.id;
+  closeDetail();
+  renderParentSteering();
+  $("#parentSteeringPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+  requestAnimationFrame(() => $(node?.isAuthority ? "#parentSteeringChild" : "#parentSteeringParent").focus());
+}
+
 function healthScore(data) {
   if (!data?.summary?.nodesOnline) return 0;
   const onlineRatio = data.summary.nodesOnline / Math.max(data.summary.nodesTotal, 1);
@@ -271,23 +529,9 @@ function renderSummary(data) {
       : network.nodeSteeringEnabled === false
         ? "Automatic · Off"
         : "Not reported by firmware";
-  $("#manualSteering").textContent = network.manualParentSelectionAvailable
-    ? "Available"
-    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
-      ? "Confirmed internally · Not exposed"
-      : "No interface found";
-  $("#steeringTitle").textContent =
-    network.nodeSteeringEnabled === true ? "Automatic Node Steering is on" : "Automatic Node Steering is off";
-  $("#steeringDescription").textContent = network.manualParentSelectionAvailable
-    ? "The firmware reports manual parent selection support."
-    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
-      ? "The exact-parent data path is confirmed inside MX4200/WHW03 firmware, but current Web/JNAP interfaces expose no supported transport. Topology Lock uses guarded node restarts as recovery; it does not send an exact-parent command."
-      : "The firmware automatically selects the strongest signal and self-heals. No supported interface was found for pinning a child node to a specific parent.";
-  $("#steeringMode").textContent = network.manualParentSelectionAvailable
-    ? "MANUAL AVAILABLE"
-    : network.manualParentSelectionEvidence === "firmware-internal-confirmed"
-      ? "INTERNAL · NO TRANSPORT"
-      : "AUTO ONLY";
+  $("#manualSteering").textContent = state.parentSteeringLoaded
+    ? "MQTT · " + (state.parentSteering.effectiveEnabled ? "Available" : "Unavailable")
+    : "MQTT · Checking";
 
   const score = healthScore(data);
   $("#healthRing").style.setProperty("--score", score);
@@ -531,6 +775,21 @@ async function applyTopologyLock() {
     state.topology.nodes,
     state.topologyLockDraft,
   );
+  const activeSteering = MeshMqttParentSteering.isOperationActive(
+    state.parentSteering.operation,
+  ) ? state.parentSteering.operation : null;
+  const activeSteeringDraftParent = activeSteering
+    ? Object.entries(state.topologyLockDraft).find(([nodeId]) =>
+        MeshMqttParentSteering.sameId(nodeId, activeSteering.childId))?.[1]
+    : null;
+  if (activeSteering && !MeshMqttParentSteering.sameId(
+    activeSteeringDraftParent,
+    activeSteering.requestedParentId,
+  )) {
+    $("#topologyLockValidation").textContent =
+      `Exact Parent Steering is moving ${activeSteering.childName || "this node"} to ${activeSteering.requestedParentName || "the requested Parent"}. Match that Parent in the draft or wait for the operation to finish.`;
+    return;
+  }
   if (!result.valid || !state.topologyLockAcknowledged || state.topologyLockBusy) {
     $("#topologyLockValidation").textContent = result.error ||
       "Acknowledge the restart behavior before enabling automatic recovery.";
@@ -553,6 +812,7 @@ async function applyTopologyLock() {
     state.topologyLockDraftError = "";
     toast("Restart-based recovery enabled · Monitoring starts with the next refresh");
     renderTopologyLock();
+    renderParentSteering();
     renderTopology(state.topology);
   } catch (error) {
     $("#topologyLockValidation").textContent = error.message;
@@ -576,6 +836,7 @@ async function disableTopologyLock() {
     }));
     toast("Topology lock disabled · Automatic restarts stopped");
     renderTopologyLock();
+    renderParentSteering();
     renderTopology(state.topology);
   } catch (error) {
     toast(error.message);
@@ -586,10 +847,17 @@ async function disableTopologyLock() {
 }
 
 function layoutNodes(nodes) {
-  const expanded = state.topologyLockEditing || state.topologyLock.enabled;
+  const lockExpanded = state.topologyLockEditing || state.topologyLock.enabled;
+  const steeringExpanded = Boolean(
+    state.parentSteering.operation &&
+    nodes.some((node) => MeshMqttParentSteering.sameId(
+      node.id,
+      state.parentSteering.operation.childId,
+    )),
+  );
   return MeshTopologyLayout.compute(nodes, {
-    nodeHeight: expanded ? 184 : 124,
-    rowGap: expanded ? 38 : 30,
+    nodeHeight: lockExpanded && steeringExpanded ? 244 : lockExpanded || steeringExpanded ? 184 : 124,
+    rowGap: lockExpanded || steeringExpanded ? 38 : 30,
   });
 }
 
@@ -667,8 +935,14 @@ function renderTopology(data) {
     const currentParentName = node.actualParentName || node.parentName || "Main";
     const desiredParentName = node.parentName || "Main";
     const draggable = state.topologyLockEditing && !node.isAuthority;
+    const steeringOperation = MeshMqttParentSteering.operationForNode(
+      state.parentSteering.operation,
+      node.id,
+    );
+    const steeringPresentation = MeshMqttParentSteering.operationPresentation(steeringOperation);
+    const steeringTone = steeringPresentation?.tone || "";
     html += `
-      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""}"
+      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""}"
         data-layout-left="${node.x}" data-layout-top="${node.y}" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
         <div class="node-title">
           <strong>${escapeHtml(node.name)}</strong>
@@ -684,6 +958,7 @@ function renderTopology(data) {
           <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
         ${lockPresentation ? `<div class="node-lock-status ${escapeHtml(lockPresentation.tone)}"><i aria-hidden="true">${lockItem.status === "correct" ? "◆" : lockItem.status === "parent-offline" ? "◇" : "↻"}</i><span><strong ${lockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(lockPresentation.label)}</strong><small>${escapeHtml(lockPresentation.detail)}</small></span></div>` : ""}
+        ${steeringPresentation ? `<div class="node-parent-steering-status ${escapeHtml(steeringTone)}"><i aria-hidden="true">${steeringTone === "verified" ? "✓" : steeringTone === "failed" ? "!" : "↻"}</i><span><strong>${escapeHtml(steeringPresentation.label)}</strong><small>${escapeHtml(steeringPresentation.detail)}</small></span></div>` : ""}
         ${draggable ? `<div class="node-drag-hint">Drag onto desired parent</div>` : ""}
         ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
       </button>`;
@@ -1043,6 +1318,7 @@ function openDetail(item, kind) {
             </div>
           </article>
         </div>
+        ${item.online ? `<button class="node-parent-steering-button" id="openParentSteeringButton" type="button">${item.isAuthority ? "Use this gateway in Exact Parent Steering" : "Move this node with Exact Parent Steering"}</button>` : ""}
         <p class="node-feasibility-note">The hidden entry point is <code>https://&lt;node-ip&gt;/ca</code>; after login, the firmware opens <code>#casupport</code>. Restart requests go directly to the selected node's local endpoint.</p>
       </section>` : ""}
     ${isNode ? `
@@ -1069,6 +1345,7 @@ function openDetail(item, kind) {
     });
   });
   $("#detailBackToNode")?.addEventListener("click", () => openDetail(parentNode, "node"));
+  $("#openParentSteeringButton")?.addEventListener("click", () => focusParentSteering(item));
   $("#detailBackdrop").classList.add("open");
   $("#detailDrawer").classList.add("open");
   $("#detailDrawer").setAttribute("aria-hidden", "false");
@@ -1173,9 +1450,14 @@ function render(data) {
   reconcileNodeRestarts(data);
   state.topology = data;
   setTopologyLock(data.meta?.topologyLock);
+  state.parentSteering.operation = MeshMqttParentSteering.reconcileOperation(
+    state.parentSteering.operation,
+    data,
+  );
   setConnectionStatus(data.meta?.routerConnected !== false);
   renderSummary(data);
   renderTopologyLock();
+  renderParentSteering();
   renderTopology(data);
   renderClients();
   if (detailSelection && $("#detailDrawer").classList.contains("open")) {
@@ -1190,6 +1472,9 @@ function render(data) {
   }
   $("#connectModal").classList.add("hidden");
   scheduleAutoRefresh();
+  if (!state.parentSteeringLoaded && !state.parentSteeringLoading) {
+    void loadParentSteering(false);
+  }
 }
 
 async function refresh(silent = false) {
@@ -1330,6 +1615,30 @@ function wireEvents() {
       state.topologyLockSelectedNodeId,
       event.target.value,
     );
+  });
+  $("#parentSteeringMode").addEventListener("change", (event) => {
+    setParentSteeringMode(event.target.value);
+  });
+  $("#parentSteeringProbeButton").addEventListener("click", () => {
+    loadParentSteering(true);
+  });
+  $("#parentSteeringForm").addEventListener("submit", submitParentSteering);
+  $("#parentSteeringChild").addEventListener("change", (event) => {
+    state.parentSteeringSelectedChildId = event.target.value;
+    state.parentSteeringSelectedParentId = null;
+    const child = state.topology?.nodes?.find((node) =>
+      MeshMqttParentSteering.sameId(node.id, event.target.value));
+    const band = MeshMqttParentSteering.cleanBand(child?.band);
+    if (band) state.parentSteeringBand = band;
+    renderParentSteering();
+  });
+  $("#parentSteeringParent").addEventListener("change", (event) => {
+    state.parentSteeringSelectedParentId = event.target.value;
+    renderParentSteering();
+  });
+  $("#parentSteeringBand").addEventListener("change", (event) => {
+    state.parentSteeringBand = MeshMqttParentSteering.cleanBand(event.target.value) || "5GH";
+    renderParentSteering();
   });
   $("#refreshInterval").addEventListener("change", (event) => {
     state.refreshInterval = MeshRefreshState.normalizeInterval(event.target.value);

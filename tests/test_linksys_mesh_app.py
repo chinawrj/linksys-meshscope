@@ -230,11 +230,58 @@ class LinksysMeshAppTest(unittest.TestCase):
 
         refresh.assert_called_once_with(force=True)
         steer.assert_called_once_with(
-            "10.0.0.1", topology, "child", "parent", "5GH"
+            "10.0.0.1",
+            topology,
+            "child",
+            "parent",
+            "5GH",
+            require_capability_probe=True,
         )
         self.assertTrue(result["accepted"])
         self.assertEqual("pending", result["verification"]["status"])
         self.assertIsNone(state.cache)
+
+    def test_mqtt_parent_modes_are_configurable_and_force_on_skips_probe(self):
+        state = linksys_mesh_app.MeshState()
+        state.session = linksys_mesh_app.RouterSession(
+            host="10.0.0.1",
+            password="test-only",
+            connected_at="2026-01-01T00:00:00+00:00",
+        )
+        topology = {"nodes": []}
+        with patch(
+            "linksys_mesh_app.linksys_mqtt_parent.probe_acl",
+            return_value={"available": False, "roundTrip": False, "reason": "denied"},
+        ):
+            forced = state.set_mqtt_parent_mode("force-on")
+        self.assertEqual("force-on", forced["mode"])
+        self.assertTrue(forced["effectiveEnabled"])
+        self.assertFalse(forced["available"])
+
+        with (
+            patch.object(state, "refresh", return_value=topology),
+            patch(
+                "linksys_mesh_app.linksys_mqtt_parent.steer_parent",
+                return_value={"accepted": True},
+            ) as steer,
+        ):
+            state.steer_node_parent("child", "parent", "5gl")
+        self.assertFalse(steer.call_args.kwargs["require_capability_probe"])
+
+        disabled = state.set_mqtt_parent_mode("force-off")
+        self.assertEqual("disabled", disabled["state"])
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "forced off"):
+            state.steer_node_parent("child", "parent", "5GH")
+
+    def test_mqtt_parent_mode_rejects_unknown_value(self):
+        state = linksys_mesh_app.MeshState()
+        state.session = linksys_mesh_app.RouterSession(
+            host="10.0.0.1",
+            password="test-only",
+            connected_at="2026-01-01T00:00:00+00:00",
+        )
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "Mode must be"):
+            state.set_mqtt_parent_mode("unsafe")
 
     def test_probe_node_uses_synchronized_credentials_and_read_only_actions(self):
         state = linksys_mesh_app.MeshState()
