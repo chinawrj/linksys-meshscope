@@ -48,14 +48,17 @@ class LinksysMXRepackTests(unittest.TestCase):
                     replacement = temp / "replacement.ubi"
                     output = temp / "output.img"
                     original.write_bytes(old_body + footer)
+                    original.chmod(0o640)
                     replacement.write_bytes(new_ubi)
 
                     manifest = repack.assemble_image(
                         original, replacement, output, sku
                     )
                     result = output.read_bytes()
+                    output_mode = output.stat().st_mode & 0o7777
 
                 self.assertEqual(bytes(prefix), result[: repack.UBI_OFFSET])
+                self.assertEqual(0o640, output_mode)
                 self.assertEqual(
                     bytes(new_ubi),
                     result[

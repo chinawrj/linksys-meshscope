@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import linksys_mqtt_parent
+
 
 APP_ROOT = Path(__file__).resolve().parent
 WEB_ROOT = APP_ROOT / "mesh_web"
@@ -85,6 +87,7 @@ class MeshState:
         self.cache_at = 0.0
         self.node_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.node_restart_cooldowns: dict[str, float] = {}
+        self.mqtt_capability_cache: tuple[float, dict[str, Any]] | None = None
         self.lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
@@ -106,6 +109,7 @@ class MeshState:
             self.cache_at = time.monotonic()
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
+            self.mqtt_capability_cache = None
             return copy.deepcopy(self.cache)
 
     def connect(self, host: str, password: str) -> dict[str, Any]:
@@ -129,6 +133,7 @@ class MeshState:
             self.cache_at = 0.0
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
+            self.mqtt_capability_cache = None
         return self.refresh(force=True)
 
     def disconnect(self) -> None:
@@ -140,6 +145,7 @@ class MeshState:
             self.cache_at = 0.0
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
+            self.mqtt_capability_cache = None
 
     def refresh(self, force: bool = False) -> dict[str, Any]:
         with self.lock:
@@ -361,6 +367,68 @@ class MeshState:
             "message": "The restart request was sent only to the selected node's local endpoint.",
             "requestedAt": now_iso(),
         }
+
+    def mqtt_parent_capability(self, force: bool = False) -> dict[str, Any]:
+        """Probe the local broker without sending a topology command."""
+        with self.lock:
+            if self.demo:
+                return {
+                    "mode": "auto",
+                    "available": False,
+                    "roundTrip": False,
+                    "transport": "mqtt-1883",
+                    "reason": "Demo mode does not connect to a router broker.",
+                    "testedAt": now_iso(),
+                }
+            if not self.session.connected:
+                raise RouterError("No router is connected.")
+            if (
+                not force
+                and self.mqtt_capability_cache is not None
+                and time.monotonic() - self.mqtt_capability_cache[0] < 60
+            ):
+                return copy.deepcopy(self.mqtt_capability_cache[1])
+            host = self.session.host
+
+        report = linksys_mqtt_parent.probe_acl(host)
+        report.update(
+            {
+                "mode": "auto",
+                "transport": "mqtt-1883",
+                "testedAt": now_iso(),
+            }
+        )
+        with self.lock:
+            self.mqtt_capability_cache = (time.monotonic(), report)
+        return copy.deepcopy(report)
+
+    def steer_node_parent(self, child_id: str, parent_id: str, band: str) -> dict[str, Any]:
+        """Publish one guarded exact-Parent request through the router broker."""
+        if self.demo:
+            raise RouterError("Demo mode never sends Parent steering requests.")
+        topology = self.refresh(force=True)
+        with self.lock:
+            if not self.session.connected:
+                raise RouterError("No router is connected.")
+            host = self.session.host
+        try:
+            result = linksys_mqtt_parent.steer_parent(
+                host,
+                topology,
+                (child_id or "").strip(),
+                (parent_id or "").strip(),
+                (band or "").strip().upper(),
+            )
+        except linksys_mqtt_parent.MQTTParentError as exc:
+            raise RouterError(str(exc)) from exc
+        with self.lock:
+            self.cache = None
+            self.cache_at = 0.0
+        result["verification"] = {
+            "status": "pending",
+            "method": "Refresh topology until the requested Parent is observed twice.",
+        }
+        return result
 
 
 STATE = MeshState()
@@ -1072,6 +1140,14 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
             except RouterError as exc:
                 self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
+        if route == "/api/mqtt-parent-steering":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                force = str((query.get("refresh") or [""])[0]).lower() in ("1", "true", "yes")
+                self.send_json(STATE.mqtt_parent_capability(force=force))
+            except RouterError as exc:
+                self.send_json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         self.serve_static(route)
 
     def do_POST(self) -> None:
@@ -1092,6 +1168,16 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
             if route == "/api/restart-node":
                 body = self.read_json()
                 self.send_json(STATE.restart_node(str(body.get("nodeId") or "")))
+                return
+            if route == "/api/steer-node-parent":
+                body = self.read_json()
+                self.send_json(
+                    STATE.steer_node_parent(
+                        str(body.get("childId") or ""),
+                        str(body.get("parentId") or ""),
+                        str(body.get("band") or ""),
+                    )
+                )
                 return
             self.send_json({"error": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
         except RouterError as exc:

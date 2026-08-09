@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.5.0 — 2026-08-09
+
+### Highlights
+
+- Added a dependency-free MQTT 3.1.1 Parent-steering client, a guarded desktop
+  API, and an end-to-end CLI that verifies the resulting Parent through JNAP.
+- Added a one-command macOS/Lima builder for exact supported MX4200 and MX5300
+  official images. It provisions a pinned build environment, builds selected
+  ACL plans, re-extracts every output, and publishes verification artifacts.
+- Documented the real firmware path from `BH/config` through Linksys topology
+  management and the uppercase UUID wire-format requirement.
+
+### Boot-compatible firmware rebuild
+
+- Reproduced Linksys/QSDK's 12-byte XZ compressor-options structure for
+  MX4200 instead of upstream SquashFS's incompatible 8-byte structure.
+- Matched all 503 official streams as plain LZMA2, disabled unintended BCJ
+  filters, preserved official SquashFS/UBI/final-IMG sizes and POSIX metadata,
+  and kept the official FIT/kernel prefix unchanged.
+- Booted Plan C2 on physical MX4200 v1 hardware, verified the required MQTT
+  discovery path, and confirmed exact Parent steering in both directions.
+
+### Safety and distribution
+
+- Rejects offline/unknown nodes, steering the primary node, self-parenting,
+  descendant targets, wired children, and no-op current-Parent requests.
+- Treats MQTT PUBACK as broker acceptance only; end-to-end success requires
+  two matching JNAP topology observations.
+- Does not publish Linksys firmware or generated IMG files. Users must supply
+  an exact supported official image and retain recovery access.
+
 ## v0.4.1 — 2026-08-03
 
 ### Highlights

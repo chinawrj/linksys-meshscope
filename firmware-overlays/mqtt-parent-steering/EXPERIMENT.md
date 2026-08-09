@@ -1,7 +1,10 @@
 # Linksys MQTT Parent-steering experiment images
 
-These images are offline proof builds for owner-controlled lab testing. They
-have not been booted on physical hardware.
+These are reproducible owner-controlled lab builds. On 2026-08-09, the MX4200
+Plan C2 image based on `1.0.13.216903` booted on physical MX4200 v1 hardware;
+the broker ACL round trip and exact-Parent steering in both directions were
+then verified. MX5300 output and MX4200 Plans A/B retain offline verification
+status until each exact image is exercised on hardware.
 
 ## Critical deployment requirement
 
@@ -19,12 +22,14 @@ Slave Node.
 
 ### Plan A — recommended first
 
-The existing LAN `1883` listener keeps `strict.acl` and receives four rules:
+The existing LAN `1883` listener keeps `strict.acl` and receives six rules:
 
 ```text
 topic write network/+/BH/config
 topic read network/+/DEVINFO
 topic read network/+/BH/status
+topic write network/status_resend_all
+topic write network/DEVINFO/status_resend_all
 topic write network/BH/status_resend_all
 ```
 
@@ -33,7 +38,7 @@ Parent, BSSID, band, and channel map before steering. They do not open unrelated
 configuration Topics.
 
 This ACL was also exercised offline using the stock MX5300 ARM Mosquitto 1.6.2
-binary under QEMU. All four intended flows were delivered; unrelated
+binary under QEMU. All intended flows were delivered; unrelated
 `network/+/AC/config` writes and `network/+/AC/status` reads were blocked.
 This validates broker authorization behavior, not physical-router boot or the
 downstream steering result.
@@ -51,6 +56,32 @@ Plan B gives every LAN MQTT client access to all Topics. Use it only on an
 isolated LAN for determining whether an unexpected failure is caused by Topic
 permissions. Return to official firmware or Plan A after the test.
 
+### Plan C2 — QSDK-compatible, fixed-size all-ACL diagnostic build (MX4200)
+
+Plan C2 is a belt-and-suspenders diagnostic variant for an MX4200 that boots
+back into its stock partition after an earlier custom-image attempt. It makes all four bundled
+ACL files (`default.acl`, `open.acl`, `moderate.acl`, and `strict.acl`) grant
+`topic readwrite #`, and explicitly selects `open.acl` for the LAN listener.
+
+The MX4200 kernel expects Linksys/QSDK's 12-byte XZ compressor-options structure,
+not upstream SquashFS's 8-byte structure. Plan C2 uses the QSDK SquashFS 4.2
+tool and preserves the stock options layout. It also disables BCJ filter
+selection: all 503 XZ streams in official 1.0.13.216903 use plain LZMA2. The
+superseded Plan C build accidentally produced 33 IA64+LZMA2 and 31
+ARMTHUMB+LZMA2 streams; those filters are absent from the published MX4200
+kernel configuration and are the leading explanation for its automatic A/B
+rollback.
+
+The rebuilt SquashFS is padded with `0xFF` to the official SquashFS volume
+length before UBI generation. The resulting MX4200 UBI retains the official
+PEB count and the final IMG is exactly the same byte length as the official
+source. The Plan C2 image is additionally scanned to confirm all 503 embedded
+XZ streams use only LZMA2. This removes the two identified repacking
+incompatibilities. The resulting Plan C2 image booted on a physical MX4200 v1
+and did not A/B roll back during the steering test. A custom firmware image is
+never risk-free, and this result does not certify a different model, revision,
+input hash, or NAND state.
+
 ## Recommended MX5300 order
 
 1. Confirm the test router is MX5300 v1 and currently runs `1.1.12.210066`.
@@ -59,7 +90,7 @@ permissions. Return to official firmware or Plan A after the test.
 3. Install Plan A first.
 4. Confirm TCP `1883` is reachable on the Master LAN address.
 5. Subscribe to `network/+/DEVINFO` and `network/+/BH/status`.
-6. Publish to `network/BH/status_resend_all`, collect the refreshed records,
+6. Publish the three documented status-refresh Topics, collect the refreshed records,
    and resolve the selected Parent's `5GL` or `5GH` BSSID/channel.
 7. Publish only to `network/<child UUID>/BH/config`, initially using the
    child's current Parent tuple as a no-op.
