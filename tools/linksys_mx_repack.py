@@ -139,6 +139,7 @@ def assemble_image(
         os.fsync(temp.fileno())
     try:
         os.replace(temp_path, output_path)
+        os.chmod(output_path, original_path.stat().st_mode & 0o7777)
     finally:
         temp_path.unlink(missing_ok=True)
 

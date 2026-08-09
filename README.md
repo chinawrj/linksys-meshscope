@@ -34,10 +34,12 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.4.1 preview highlight:** an illustrated, problem-first guide for global
-> Linksys mesh owners, backed by privacy-reviewed live ESP32-C5 screenshots.
-> Optional WireGuard access from v0.4.0 remains available without forwarding
-> the dashboard's HTTP port.
+> **v0.5.0 highlight:** exact Parent steering over the Linksys LAN MQTT path is
+> now reproducible through a guarded desktop API and one-command firmware
+> builder. The MX4200 boot-compatible rebuild preserves QSDK's 12-byte XZ
+> options, all 503 plain-LZMA2 streams, official image geometry, and filesystem
+> metadata; it booted on physical MX4200 v1 hardware and passed bidirectional
+> steering validation. Generated Linksys IMG files are never distributed.
 
 > MeshScope is an independent community project and is not affiliated with or
 > endorsed by Linksys. Use it only on networks you own or are authorized to
@@ -61,6 +63,11 @@ client identifier are deliberately excluded from this repository image._
    permitted write: `core/Reboot` to the mismatched child. Linksys then makes
    its own association decision; MeshScope does not issue an exact-parent
    command.
+5. **Optionally steer an exact Parent.** An owner-built narrow-ACL firmware
+   image can expose Linksys's existing local MQTT Parent command. The desktop
+   API discovers the target radio from fresh MQTT data and applies topology
+   safety checks before one request. This advanced path is separate from the
+   default JNAP-only dashboard.
 
 ```mermaid
 flowchart LR
@@ -69,6 +76,7 @@ flowchart LR
     Engine -->|"Encrypted Native API"| HA["Home Assistant"]
     Remote["Authorized remote client"] -.->|"WireGuard to ESP32 only"| Engine
     Engine -.->|"Optional guarded child reboot"| Linksys
+    Engine -.->|"Optional owner-enabled MQTT exact-Parent request"| Linksys
 ```
 
 In appliance mode, the ESP32 remains on the Linksys LAN and collects directly
@@ -82,6 +90,7 @@ tunnel and does not require exposing the router LAN.
 | Inspect a live mesh from a computer | [Run the desktop local app](#desktop-app-start-in-five-minutes) |
 | Keep an always-on dashboard | [Install the ESPHome appliance](#esphome--esp32-always-on-appliance) |
 | Diagnose or recover parent drift | [Understand Topology Lock](#topology-lock-visual-guide) |
+| Build and test exact Parent steering | [Use the MQTT Parent-steering path](docs/mqtt-parent-steering.md) |
 | Reach MeshScope remotely | [Configure optional WireGuard access](#optional-wireguard-remote-access) |
 | Add sensors and controls to Home Assistant | [Add the ESPHome integration](#3-add-meshscope-to-home-assistant) |
 
@@ -624,16 +633,17 @@ The desktop and ESPHome versions use different credential models:
   assumes the home LAN and gateway have not been maliciously intercepted.
 
 Read operations are restricted to an allowlist of `Get*` and `Check*` actions.
-The write allowlist contains only `core/Reboot`, and its target must resolve to
+The JNAP write allowlist contains only `core/Reboot`, and its target must resolve to
 an online node with a known private address in the live topology. Topology Lock
 adds the saved-parent-online, three-snapshot confirmation, and global
-five-minute cooldown gates before using that same action. Reset, direct parent
-steering, firmware updates, and all other mutations are rejected before a
-router request is generated.
+five-minute cooldown gates before using that same action. Reset, firmware
+updates, and all other JNAP mutations are rejected before a router request is
+generated.
 
-The MQTT, BLE, and firmware overlays in this repository are offline,
-owner-controlled research artifacts. The running dashboard cannot invoke them,
-and generated IMG files and vendor firmware inputs are not published.
+The BLE overlays remain offline, owner-controlled research artifacts. The
+desktop dashboard can invoke MQTT Parent steering only when the owner has
+installed a compatible ACL image and the capability probe succeeds. Generated
+IMG files and vendor firmware inputs are never published.
 
 ## Node support page, steering, and advanced research
 
@@ -651,10 +661,11 @@ https://<node-ip>/ca
 ```
 
 The browser will warn about the router's self-signed certificate. Public JNAP
-currently exposes automatic Client Steering and Node Steering only. Offline
-firmware analysis confirmed an internal exact-parent data path, but no
-supported transport suitable for a normal web UI has been identified.
-MeshScope therefore does not expose manual parent control.
+currently exposes automatic Client Steering and Node Steering only. Firmware
+analysis and a physical MX4200 test confirmed the local MQTT exact-Parent data
+path. MeshScope v0.5.0 exposes it through guarded desktop API endpoints; the
+normal firmware and JNAP-only dashboard remain read/restart only. See
+[Exact Parent steering over Linksys MQTT](docs/mqtt-parent-steering.md).
 
 Research notes:
 
@@ -669,6 +680,7 @@ Research notes:
 - [MX4200/MX5300 BLE and exact-parent steering](docs/linksys-ble-parent-steering.md)
 - [Offline BLE-JNAP advanced-action proof overlay](firmware-overlays/ble-parent-steering/README.md)
 - [MQTT experiment-image builder](firmware-overlays/mqtt-parent-steering/README.md)
+- [MQTT Parent-steering build, API, and verified data path](docs/mqtt-parent-steering.md)
 
 ## Testing and front-end development
 

@@ -1,4 +1,6 @@
 topic write network/+/BH/config
 topic read network/+/DEVINFO
 topic read network/+/BH/status
+topic write network/status_resend_all
+topic write network/DEVINFO/status_resend_all
 topic write network/BH/status_resend_all

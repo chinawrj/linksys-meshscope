@@ -1,0 +1,38 @@
+--- a/etc/mosquitto/conf.d/default.conf
++++ b/etc/mosquitto/conf.d/default.conf
+@@ -10,4 +10,4 @@
+ bind_address %IP%
+ port %PORT%
+ allow_anonymous true
+-acl_file %CONF_DIR%/strict.acl
++acl_file %CONF_DIR%/open.acl
+--- a/etc/mosquitto/default.acl
++++ b/etc/mosquitto/default.acl
+@@ -1,2 +1,3 @@
+ # Remove all access restrictions on the default port
++# MeshScope Plan C fixed-size isolated-lab build
+ topic readwrite #
+--- a/etc/mosquitto/open.acl
++++ b/etc/mosquitto/open.acl
+@@ -1,2 +1,3 @@
+ # Remove all access restrictions on the default port
++# MeshScope Plan C fixed-size isolated-lab build
+ topic readwrite #
+--- a/etc/mosquitto/moderate.acl
++++ b/etc/mosquitto/moderate.acl
+@@ -31,3 +31,6 @@
+
+ # Needed for secure_config
+ topic read com.linksys.olympus/service/message
++
++# MeshScope Plan C: remove all default-listener restrictions in the lab
++topic readwrite #
+--- a/etc/mosquitto/strict.acl
++++ b/etc/mosquitto/strict.acl
+@@ -24,3 +24,6 @@
+ topic read BH/+/status.parent_ip
+ topic read network/+/speed
+ topic write network/+/BH/perf
++
++# MeshScope Plan C: remove all default-listener restrictions in the lab
++topic readwrite #

@@ -187,6 +187,54 @@ class LinksysMeshAppTest(unittest.TestCase):
         self.assertTrue(report["individualRestart"]["disabledInDemo"])
         with self.assertRaisesRegex(linksys_mesh_app.RouterError, "Demo mode"):
             state.restart_node("demo-big-tree")
+        self.assertFalse(state.mqtt_parent_capability()["available"])
+        with self.assertRaisesRegex(linksys_mesh_app.RouterError, "Demo mode"):
+            state.steer_node_parent("demo-big-tree", "demo-atrium", "5GH")
+
+    def test_mqtt_parent_capability_is_probed_and_cached(self):
+        state = linksys_mesh_app.MeshState()
+        state.session = linksys_mesh_app.RouterSession(
+            host="10.0.0.1",
+            password="test-only",
+            connected_at="2026-01-01T00:00:00+00:00",
+        )
+        with patch(
+            "linksys_mesh_app.linksys_mqtt_parent.probe_acl",
+            return_value={"available": True, "roundTrip": True},
+        ) as probe:
+            first = state.mqtt_parent_capability()
+            second = state.mqtt_parent_capability()
+
+        self.assertTrue(first["available"])
+        self.assertEqual("mqtt-1883", first["transport"])
+        self.assertEqual(first, second)
+        probe.assert_called_once_with("10.0.0.1")
+
+    def test_steer_node_parent_uses_fresh_topology_and_invalidates_cache(self):
+        state = linksys_mesh_app.MeshState()
+        state.session = linksys_mesh_app.RouterSession(
+            host="10.0.0.1",
+            password="test-only",
+            connected_at="2026-01-01T00:00:00+00:00",
+        )
+        topology = {"nodes": []}
+        state.cache = topology
+        with (
+            patch.object(state, "refresh", return_value=topology) as refresh,
+            patch(
+                "linksys_mesh_app.linksys_mqtt_parent.steer_parent",
+                return_value={"accepted": True},
+            ) as steer,
+        ):
+            result = state.steer_node_parent("child", "parent", "5gh")
+
+        refresh.assert_called_once_with(force=True)
+        steer.assert_called_once_with(
+            "10.0.0.1", topology, "child", "parent", "5GH"
+        )
+        self.assertTrue(result["accepted"])
+        self.assertEqual("pending", result["verification"]["status"])
+        self.assertIsNone(state.cache)
 
     def test_probe_node_uses_synchronized_credentials_and_read_only_actions(self):
         state = linksys_mesh_app.MeshState()

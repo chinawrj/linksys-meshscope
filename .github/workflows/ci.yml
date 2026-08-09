@@ -27,7 +27,11 @@ jobs:
           node-version: "22"
 
       - name: Check Python syntax
-        run: python -m py_compile linksys_mesh_app.py
+        run: >-
+          python -m py_compile
+          linksys_mesh_app.py
+          linksys_mqtt_parent.py
+          tools/linksys_mqtt_steer.py
 
       - name: Check English-only repository text
         run: |
