@@ -34,12 +34,13 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.5.0 highlight:** exact Parent steering over the Linksys LAN MQTT path is
-> now reproducible through a guarded desktop API and one-command firmware
-> builder. The MX4200 boot-compatible rebuild preserves QSDK's 12-byte XZ
-> options, all 503 plain-LZMA2 streams, official image geometry, and filesystem
-> metadata; it booted on physical MX4200 v1 hardware and passed bidirectional
-> steering validation. Generated Linksys IMG files are never distributed.
+> **v0.6.0 highlight:** the always-on ESP32 appliance can now discover and use
+> exact MQTT Parent steering from the same topology page. **Auto** is the safe
+> default; **Force on** and **Force off** are explicit, persistent choices.
+> Broker acceptance and two-generation topology verification are shown as
+> separate states. The v0.5.0 boot-compatible firmware builder and guarded
+> desktop API remain included; generated Linksys IMG files are never
+> distributed.
 
 > MeshScope is an independent community project and is not affiliated with or
 > endorsed by Linksys. Use it only on networks you own or are authorized to
@@ -324,6 +325,8 @@ Edit the local YAML for your selected target:
 - `meshscope_timezone`: timezone used by ESPHome logs and time components, such
   as `America/New_York` or `Europe/London`
 - `meshscope_client_details`: `auto` (recommended), `full`, or `nodes-only`
+- `meshscope_mqtt_parent_steering`: `auto` (recommended), `force-on`, or
+  `force-off`; a mode saved from the page overrides this initial value
 
 `auto` selects `full` when PSRAM or the measured internal heap can safely hold
 the complete Linksys device list. The full mode preserves every Client/STA and
@@ -577,9 +580,48 @@ Summary** entities.
 
 Topology Lock is recovery by guarded node restart, not direct parent steering.
 Linksys firmware chooses the attachment again when the node returns, so the
-desired parent is not guaranteed. Use **Stop automatic recovery** to clear the saved structure
-and stop automatic actions. Locks include only nodes online at apply time; edit
-and reapply after intentionally adding, removing, or relocating mesh nodes.
+desired parent is not guaranteed. Use **Stop automatic recovery** to clear the
+saved structure and stop automatic actions. Locks include only nodes online at
+apply time; edit and reapply after intentionally adding, removing, or
+relocating mesh nodes.
+
+### Exact Parent Steering
+
+If the primary Linksys node runs a compatible owner-built MQTT ACL image, the
+**Exact Parent Steering** panel can move an online wireless child to a selected
+online Parent's current `5GH` or `5GL` radio. The operation may briefly
+disconnect the child and its clients.
+
+- **Auto** probes only the narrow discovery topics and enables the button after
+  a fresh DEVINFO round trip. This is the default.
+- **Force on** permits an attempt when detection cannot be confirmed. It does
+  not bypass offline, cycle, wired-backhaul, current-Parent, radio, or Topology
+  Lock checks.
+- **Force off** performs no new probe or Parent publish.
+
+The page distinguishes **Queued**, **Broker accepted**, **Verifying**, and
+**Parent verified**. MQTT PUBACK alone never appears as success: the requested
+Parent must be observed in two different topology generations within a
+180-second verification window. Reloading the page does not lose an
+in-progress ESP32 operation.
+
+MeshScope resolves the requested Parent radio from fresh MQTT `DEVINFO` first.
+Some Linksys primary nodes do not publish their own DEVINFO record; in that
+case the ESP32 safely falls back to the current JNAP backhaul snapshot and uses
+the Parent `apBSSID` and channel already observed by an online child on the
+requested band. It still applies the same BSSID, channel, topology, and
+Topology Lock checks before publishing.
+
+Topology Lock and exact steering have different purposes. Dragging nodes in
+the lock editor changes the saved restart-recovery target only. Use the Exact
+Parent Steering panel to move a node immediately. If an enabled lock expects a
+different Parent, MeshScope blocks the manual move so recovery cannot fight it.
+
+Home Assistant receives read-only diagnostics for Parent steering
+availability, saved mode, and the latest result. The potentially disruptive
+move remains in the password-protected dashboard.
+
+### Selected-node restart
 
 **Restart now is immediate and has no second confirmation.**
 

@@ -255,6 +255,7 @@
         source: "Linksys JNAP · ESP32 MeshScope",
         router: host,
         updatedAt: edgeMeta.updatedAt || new Date().toISOString(),
+        generation: edgeMeta.generation ?? null,
         revision: deviceOutput.revision,
         edgeHosted: true,
         edgeAddress: edgeMeta.edgeAddress || null,

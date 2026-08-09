@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
+#include <cctype>
 #include <cmath>
 #include <ctime>
 #include <map>
@@ -23,7 +25,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "lwip/inet.h"
 #include "lwip/ip4_addr.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
 #include "mbedtls/base64.h"
 
 #include "esphome/components/network/ip_address.h"
@@ -49,6 +54,14 @@ static constexpr uint8_t TOPOLOGY_LOCK_CONFIRMATIONS = 3;
 static constexpr size_t TOPOLOGY_LOCK_MAX_NODES = 32;
 static constexpr size_t TOPOLOGY_LOCK_HISTORY_LIMIT = 8;
 static constexpr uint32_t REFRESH_WAIT_MS = 20000;
+static constexpr uint16_t MQTT_PORT = 1883;
+static constexpr uint32_t MQTT_PROBE_INTERVAL_MS = 5 * 60 * 1000;
+static constexpr uint32_t MQTT_OPERATION_TIMEOUT_MS = 20000;
+static constexpr uint32_t MQTT_OPERATION_DEDUP_MS = 60 * 1000;
+static constexpr uint32_t MQTT_VERIFICATION_TIMEOUT_MS = 180 * 1000;
+static constexpr uint8_t MQTT_VERIFY_GENERATIONS = 2;
+static constexpr size_t MQTT_PACKET_LIMIT_INTERNAL = 16 * 1024;
+static constexpr size_t MQTT_PACKET_LIMIT_EXTERNAL = 32 * 1024;
 
 struct RawEntry {
   std::string action;
@@ -67,6 +80,10 @@ struct MeshStats {
 struct BackhaulObservation {
   std::string ip;
   std::string parent_ip;
+  std::string connection_type;
+  std::string band;
+  std::string parent_bssid;
+  int channel = 0;
 };
 
 struct StatsAccumulator {
@@ -82,6 +99,10 @@ struct NodeObservation {
   std::string name;
   std::string ip;
   std::string parent_id;
+  std::string connection_type;
+  std::string backhaul_band;
+  std::string parent_bssid;
+  int backhaul_channel = 0;
   bool authority = false;
   bool online = false;
 };
@@ -143,6 +164,41 @@ enum class ClientDetailsMode {
   NODES_ONLY,
 };
 
+enum class MqttSteeringMode : uint8_t {
+  AUTO = 0,
+  FORCE_ON = 1,
+  FORCE_OFF = 2,
+};
+
+struct MqttRadioTarget {
+  std::string bssid;
+  int channel = 0;
+  bool valid = false;
+  bool matched_uuid = false;
+  bool saw_bssid = false;
+  bool saw_channel = false;
+  uint16_t devinfo_records = 0;
+  std::string source;
+};
+
+struct MqttSteeringOperation {
+  uint32_t id = 0;
+  std::string child_id;
+  std::string child_name;
+  std::string parent_id;
+  std::string parent_name;
+  std::string previous_parent_id;
+  std::string band;
+  std::string state = "idle";
+  std::string detail;
+  std::string requested_at;
+  uint32_t started_ms = 0;
+  uint32_t published_generation = 0;
+  uint32_t last_verified_generation = 0;
+  uint8_t verification_generations = 0;
+  uint8_t consecutive_matches = 0;
+};
+
 static std::string router_host;
 static std::string router_password;
 static std::string authorization;
@@ -153,7 +209,9 @@ static SemaphoreHandle_t jnap_mutex = nullptr;
 static SemaphoreHandle_t memory_mutex = nullptr;
 static SemaphoreHandle_t topology_lock_mutex = nullptr;
 static SemaphoreHandle_t web_session_mutex = nullptr;
+static SemaphoreHandle_t mqtt_steering_mutex = nullptr;
 static TaskHandle_t collector_task_handle = nullptr;
+static TaskHandle_t mqtt_steering_task_handle = nullptr;
 static httpd_handle_t server = nullptr;
 static std::atomic<bool> force_refresh{false};
 static std::atomic<bool> router_connected{false};
@@ -177,6 +235,20 @@ static std::vector<WebSession> web_sessions;
 static constexpr size_t WEB_SESSION_LIMIT = 4;
 static constexpr uint32_t WEB_SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
 static constexpr const char *WEB_SESSION_COOKIE = "meshscope_session";
+static constexpr const char *MQTT_NVS_NAMESPACE = "meshscope_mqtt";
+static constexpr const char *MQTT_NVS_MODE_KEY = "mode";
+static MqttSteeringMode mqtt_default_mode = MqttSteeringMode::AUTO;
+static MqttSteeringMode mqtt_mode = MqttSteeringMode::AUTO;
+static bool mqtt_available = false;
+static std::string mqtt_capability_reason = "Waiting for the first probe";
+static std::string mqtt_capability_proof;
+static std::string mqtt_last_probe_at;
+static uint32_t mqtt_last_probe_ms = 0;
+static bool mqtt_probe_requested = false;
+static bool mqtt_operation_pending = false;
+static MqttSteeringOperation mqtt_operation;
+static std::map<std::string, uint32_t> mqtt_child_cooldowns;
+static uint32_t mqtt_next_operation_id = 0;
 
 static const char *const READ_ACTIONS[] = {
     "core/GetDeviceInfo",
@@ -230,9 +302,85 @@ static ClientDetailsMode parse_client_details(const char *value) {
   return ClientDetailsMode::AUTO;
 }
 
+static const char *mqtt_mode_name(MqttSteeringMode mode) {
+  switch (mode) {
+    case MqttSteeringMode::FORCE_ON:
+      return "force-on";
+    case MqttSteeringMode::FORCE_OFF:
+      return "force-off";
+    default:
+      return "auto";
+  }
+}
+
+static MqttSteeringMode parse_mqtt_mode(const char *value) {
+  if (strcmp(value ?: "", "force-on") == 0) {
+    return MqttSteeringMode::FORCE_ON;
+  }
+  if (strcmp(value ?: "", "force-off") == 0) {
+    return MqttSteeringMode::FORCE_OFF;
+  }
+  return MqttSteeringMode::AUTO;
+}
+
+static std::string ascii_lower(std::string value) {
+  std::transform(
+      value.begin(),
+      value.end(),
+      value.begin(),
+      [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+  return value;
+}
+
+static std::string ascii_upper(std::string value) {
+  std::transform(
+      value.begin(),
+      value.end(),
+      value.begin(),
+      [](unsigned char character) { return static_cast<char>(std::toupper(character)); });
+  return value;
+}
+
+static bool same_node_id(const std::string &left, const std::string &right) {
+  return ascii_lower(left) == ascii_lower(right);
+}
+
+static bool persist_mqtt_mode(MqttSteeringMode mode) {
+  nvs_handle_t handle = 0;
+  esp_err_t result = nvs_open(MQTT_NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u8(handle, MQTT_NVS_MODE_KEY, static_cast<uint8_t>(mode));
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result != ESP_OK) {
+    ESP_LOGW(TAG, "Unable to persist MQTT steering mode: %s", esp_err_to_name(result));
+  }
+  return result == ESP_OK;
+}
+
+static void load_mqtt_mode() {
+  mqtt_mode = mqtt_default_mode;
+  nvs_handle_t handle = 0;
+  if (nvs_open(MQTT_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) return;
+  uint8_t stored = 0;
+  const esp_err_t result = nvs_get_u8(handle, MQTT_NVS_MODE_KEY, &stored);
+  nvs_close(handle);
+  if (result == ESP_OK && stored <= static_cast<uint8_t>(MqttSteeringMode::FORCE_OFF)) {
+    mqtt_mode = static_cast<MqttSteeringMode>(stored);
+  }
+  ESP_LOGI(
+      TAG,
+      "MQTT Parent steering mode=%s default=%s",
+      mqtt_mode_name(mqtt_mode),
+      mqtt_mode_name(mqtt_default_mode));
+}
+
 static size_t external_memory_size();
 static bool private_ipv4(const std::string &value);
 static void request_refresh();
+static uint32_t uptime_ms();
+static std::vector<NodeObservation> current_node_observations();
 
 static void resolve_client_details_mode() {
   if (client_details_resolved) return;
@@ -297,6 +445,549 @@ static size_t external_memory_free() {
 #else
   return 0;
 #endif
+}
+
+struct MqttWirePacket {
+  uint8_t type = 0;
+  uint8_t flags = 0;
+  std::string body;
+};
+
+static size_t mqtt_packet_limit() {
+  return external_memory_size() > 0
+             ? MQTT_PACKET_LIMIT_EXTERNAL
+             : MQTT_PACKET_LIMIT_INTERNAL;
+}
+
+static void mqtt_append_text(std::string &output, const std::string &value) {
+  output.push_back(static_cast<char>((value.size() >> 8) & 0xff));
+  output.push_back(static_cast<char>(value.size() & 0xff));
+  output.append(value);
+}
+
+static void mqtt_append_varint(std::string &output, size_t value) {
+  do {
+    uint8_t byte = value % 128;
+    value /= 128;
+    if (value > 0) byte |= 0x80;
+    output.push_back(static_cast<char>(byte));
+  } while (value > 0);
+}
+
+static bool mqtt_send_all(int socket_fd, const char *data, size_t size) {
+  size_t offset = 0;
+  while (offset < size) {
+    const int sent = lwip_send(socket_fd, data + offset, size - offset, 0);
+    if (sent < 0 && errno == EINTR) continue;
+    if (sent <= 0) return false;
+    offset += static_cast<size_t>(sent);
+  }
+  return true;
+}
+
+static bool mqtt_recv_all(int socket_fd, char *data, size_t size) {
+  size_t offset = 0;
+  while (offset < size) {
+    const int received = lwip_recv(socket_fd, data + offset, size - offset, 0);
+    if (received < 0 && errno == EINTR) continue;
+    if (received <= 0) return false;
+    offset += static_cast<size_t>(received);
+  }
+  return true;
+}
+
+static bool mqtt_json_scalar(
+    const std::string &document,
+    size_t offset,
+    const char *key,
+    std::string &value) {
+  const std::string needle = std::string("\"") + key + "\"";
+  size_t cursor = document.find(needle, offset);
+  if (cursor == std::string::npos) return false;
+  cursor = document.find(':', cursor + needle.size());
+  if (cursor == std::string::npos) return false;
+  cursor++;
+  while (cursor < document.size() &&
+         std::isspace(static_cast<unsigned char>(document[cursor]))) {
+    cursor++;
+  }
+  if (cursor >= document.size()) return false;
+  value.clear();
+  if (document[cursor] == '"') {
+    cursor++;
+    while (cursor < document.size()) {
+      const char character = document[cursor++];
+      if (character == '"') return true;
+      if (character == '\\') {
+        if (cursor >= document.size()) return false;
+        value.push_back(document[cursor++]);
+      } else {
+        value.push_back(character);
+      }
+      if (value.size() > 160) return false;
+    }
+    return false;
+  }
+  const size_t start = cursor;
+  while (cursor < document.size() &&
+         document[cursor] != ',' && document[cursor] != '}' &&
+         !std::isspace(static_cast<unsigned char>(document[cursor]))) {
+    cursor++;
+  }
+  if (cursor == start || cursor - start > 32) return false;
+  value.assign(document, start, cursor - start);
+  return true;
+}
+
+static bool mqtt_valid_bssid(std::string &value) {
+  value = ascii_lower(value);
+  if (value.size() != 17) return false;
+  unsigned first_octet = 0;
+  for (size_t index = 0; index < value.size(); index++) {
+    if (index % 3 == 2) {
+      if (value[index] != ':') return false;
+    } else if (!std::isxdigit(static_cast<unsigned char>(value[index]))) {
+      return false;
+    }
+  }
+  if (sscanf(value.c_str(), "%2x", &first_octet) != 1 || (first_octet & 1) != 0) {
+    return false;
+  }
+  return value != "00:00:00:00:00:00";
+}
+
+static bool mqtt_devinfo_from_packet(
+    const MqttWirePacket &packet,
+    const std::string &wanted_parent_id,
+    bool &saw_devinfo,
+    MqttRadioTarget *target,
+    const std::string &band) {
+  if (packet.type != 3 || packet.body.size() < 2) return false;
+  const size_t topic_size =
+      (static_cast<uint8_t>(packet.body[0]) << 8) |
+      static_cast<uint8_t>(packet.body[1]);
+  size_t payload_offset = 2 + topic_size;
+  if (payload_offset > packet.body.size()) return false;
+  const std::string topic = packet.body.substr(2, topic_size);
+  if (topic.size() < 8 || topic.compare(topic.size() - 8, 8, "/DEVINFO") != 0) {
+    return false;
+  }
+  const uint8_t qos = (packet.flags >> 1) & 0x03;
+  if (qos > 0) {
+    if (payload_offset + 2 > packet.body.size()) return false;
+    payload_offset += 2;
+  }
+  std::string uuid;
+  if (!mqtt_json_scalar(packet.body, payload_offset, "uuid", uuid) || uuid.empty()) {
+    return false;
+  }
+  saw_devinfo = true;
+  if (target != nullptr) target->devinfo_records++;
+  if (target == nullptr || wanted_parent_id.empty() ||
+      !same_node_id(uuid, wanted_parent_id)) {
+    return true;
+  }
+  target->matched_uuid = true;
+  const std::string prefix = band == "5GL" ? "userAp5GL" : "userAp5GH";
+  std::string bssid;
+  std::string channel_text;
+  target->saw_bssid = mqtt_json_scalar(
+      packet.body,
+      payload_offset,
+      (prefix + "_bssid").c_str(),
+      bssid);
+  target->saw_channel = mqtt_json_scalar(
+      packet.body,
+      payload_offset,
+      (prefix + "_channel").c_str(),
+      channel_text);
+  if (!target->saw_bssid || !target->saw_channel || !mqtt_valid_bssid(bssid)) {
+    return true;
+  }
+  char *end = nullptr;
+  const long channel = strtol(channel_text.c_str(), &end, 10);
+  if (end == channel_text.c_str() || *end != '\0' || channel < 1 || channel > 196) {
+    return true;
+  }
+  target->bssid = bssid;
+  target->channel = static_cast<int>(channel);
+  target->valid = true;
+  target->source = "fresh Parent DEVINFO";
+  return true;
+}
+
+static bool mqtt_radio_from_observed_child(
+    const MqttSteeringOperation &operation,
+    MqttRadioTarget &target) {
+  for (const auto &node : current_node_observations()) {
+    if (!node.online || !same_node_id(node.parent_id, operation.parent_id) ||
+        node.backhaul_band != operation.band ||
+        node.backhaul_channel < 1 || node.backhaul_channel > 196) {
+      continue;
+    }
+    std::string bssid = node.parent_bssid;
+    if (!mqtt_valid_bssid(bssid)) continue;
+    target.bssid = bssid;
+    target.channel = node.backhaul_channel;
+    target.valid = true;
+    target.source = "current JNAP backhaul observation";
+    return true;
+  }
+  return false;
+}
+
+class MqttWireSession {
+ public:
+  ~MqttWireSession() { close(); }
+
+  bool connect_to_router(std::string &error) {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo *addresses = nullptr;
+    char port[8];
+    snprintf(port, sizeof(port), "%u", static_cast<unsigned>(MQTT_PORT));
+    const int resolved = getaddrinfo(router_host.c_str(), port, &hints, &addresses);
+    if (resolved != 0 || addresses == nullptr) {
+      error = "Unable to resolve the local MQTT broker";
+      if (addresses != nullptr) freeaddrinfo(addresses);
+      return false;
+    }
+    socket_fd_ = lwip_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (socket_fd_ < 0) {
+      freeaddrinfo(addresses);
+      error = "Unable to allocate an MQTT socket";
+      return false;
+    }
+    struct timeval timeout = {};
+    timeout.tv_sec = 4;
+    lwip_setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    lwip_setsockopt(socket_fd_, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    // Bind the broker connection to Wi-Fi so an optional WireGuard interface
+    // cannot steal Linksys LAN traffic when the tunnel is used for inbound UI.
+    esp_netif_t *wifi = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t wifi_info = {};
+    if (wifi != nullptr && esp_netif_get_ip_info(wifi, &wifi_info) == ESP_OK &&
+        wifi_info.ip.addr != 0) {
+      struct sockaddr_in local = {};
+      local.sin_family = AF_INET;
+      local.sin_addr.s_addr = wifi_info.ip.addr;
+      local.sin_port = 0;
+      if (lwip_bind(
+              socket_fd_,
+              reinterpret_cast<struct sockaddr *>(&local),
+              sizeof(local)) != 0) {
+        freeaddrinfo(addresses);
+        error = "Unable to bind MQTT to the Wi-Fi interface";
+        close();
+        return false;
+      }
+    }
+    const int connected = lwip_connect(
+        socket_fd_, addresses->ai_addr, addresses->ai_addrlen);
+    freeaddrinfo(addresses);
+    if (connected != 0) {
+      error = "Unable to connect to MQTT at " + router_host + ":1883";
+      close();
+      return false;
+    }
+
+    std::string body;
+    mqtt_append_text(body, "MQTT");
+    body.push_back(4);
+    body.push_back(2);
+    body.push_back(0);
+    body.push_back(30);
+    char client_id[24];
+    snprintf(
+        client_id,
+        sizeof(client_id),
+        "meshscope-%08x",
+        static_cast<unsigned>(esp_random()));
+    mqtt_append_text(body, client_id);
+    if (!send_packet(0x10, body)) {
+      error = "Unable to send MQTT CONNECT";
+      return false;
+    }
+    MqttWirePacket response;
+    if (!read_packet(response) || response.type != 2 || response.body.size() != 2 ||
+        static_cast<uint8_t>(response.body[1]) != 0) {
+      error = "The MQTT broker rejected the connection";
+      return false;
+    }
+    return true;
+  }
+
+  bool subscribe_devinfo(std::string &error) {
+    const uint16_t packet_id = next_packet_id();
+    std::string body;
+    body.push_back(static_cast<char>((packet_id >> 8) & 0xff));
+    body.push_back(static_cast<char>(packet_id & 0xff));
+    mqtt_append_text(body, "network/+/DEVINFO");
+    body.push_back(0);
+    if (!send_packet(0x82, body)) {
+      error = "Unable to send the MQTT subscription";
+      return false;
+    }
+    const uint32_t deadline = uptime_ms() + 5000;
+    while (static_cast<int32_t>(deadline - uptime_ms()) > 0) {
+      MqttWirePacket packet;
+      if (!read_packet(packet)) continue;
+      if (packet.type != 9) continue;
+      if (packet.body.size() < 3 ||
+          ((static_cast<uint8_t>(packet.body[0]) << 8) |
+           static_cast<uint8_t>(packet.body[1])) != packet_id ||
+          static_cast<uint8_t>(packet.body[2]) == 0x80) {
+        error = "The MQTT DEVINFO subscription was denied by the router ACL";
+        return false;
+      }
+      return true;
+    }
+    error = "The MQTT subscription timed out";
+    return false;
+  }
+
+  bool publish(
+      const std::string &topic,
+      const std::string &payload,
+      bool &saw_devinfo,
+      MqttRadioTarget *target,
+      const std::string &wanted_parent_id,
+      const std::string &band,
+      std::string &error) {
+    const uint16_t packet_id = next_packet_id();
+    std::string body;
+    mqtt_append_text(body, topic);
+    body.push_back(static_cast<char>((packet_id >> 8) & 0xff));
+    body.push_back(static_cast<char>(packet_id & 0xff));
+    body.append(payload);
+    if (!send_packet(0x32, body)) {
+      error = "Unable to publish to the Linksys MQTT broker";
+      return false;
+    }
+    const uint32_t deadline = uptime_ms() + 6000;
+    while (static_cast<int32_t>(deadline - uptime_ms()) > 0) {
+      MqttWirePacket packet;
+      if (!read_packet(packet)) continue;
+      if (packet.type == 3) {
+        mqtt_devinfo_from_packet(
+            packet, wanted_parent_id, saw_devinfo, target, band);
+        continue;
+      }
+      if (packet.type == 4 && packet.body.size() == 2 &&
+          (((static_cast<uint8_t>(packet.body[0]) << 8) |
+            static_cast<uint8_t>(packet.body[1])) == packet_id)) {
+        return true;
+      }
+    }
+    error = "The Linksys MQTT broker did not acknowledge the publish";
+    return false;
+  }
+
+  bool wait_for_devinfo(
+      const std::string &wanted_parent_id,
+      const std::string &band,
+      uint32_t timeout_ms,
+      bool &saw_devinfo,
+      MqttRadioTarget *target) {
+    const uint32_t deadline = uptime_ms() + timeout_ms;
+    while (static_cast<int32_t>(deadline - uptime_ms()) > 0) {
+      MqttWirePacket packet;
+      if (!read_packet(packet)) continue;
+      mqtt_devinfo_from_packet(
+          packet, wanted_parent_id, saw_devinfo, target, band);
+      if (target != nullptr ? target->valid : saw_devinfo) return true;
+    }
+    return false;
+  }
+
+ private:
+  int socket_fd_ = -1;
+  uint16_t packet_id_ = 0;
+
+  void close() {
+    if (socket_fd_ >= 0) {
+      const std::string empty;
+      send_packet(0xE0, empty);
+      lwip_close(socket_fd_);
+      socket_fd_ = -1;
+    }
+  }
+
+  uint16_t next_packet_id() {
+    packet_id_ = packet_id_ == 65535 ? 1 : packet_id_ + 1;
+    return packet_id_;
+  }
+
+  bool send_packet(uint8_t header, const std::string &body) {
+    std::string packet;
+    packet.reserve(body.size() + 5);
+    packet.push_back(static_cast<char>(header));
+    mqtt_append_varint(packet, body.size());
+    packet.append(body);
+    return mqtt_send_all(socket_fd_, packet.data(), packet.size());
+  }
+
+  bool read_packet(MqttWirePacket &packet) {
+    char first = 0;
+    if (!mqtt_recv_all(socket_fd_, &first, 1)) return false;
+    size_t remaining = 0;
+    size_t multiplier = 1;
+    for (int index = 0; index < 4; index++) {
+      char encoded = 0;
+      if (!mqtt_recv_all(socket_fd_, &encoded, 1)) return false;
+      remaining += (static_cast<uint8_t>(encoded) & 0x7f) * multiplier;
+      if ((static_cast<uint8_t>(encoded) & 0x80) == 0) break;
+      if (index == 3) return false;
+      multiplier *= 128;
+    }
+    if (remaining > mqtt_packet_limit() ||
+        remaining + 24 * 1024 > heap_caps_get_free_size(MALLOC_CAP_8BIT)) {
+      ESP_LOGW(TAG, "MQTT packet rejected at %u bytes", static_cast<unsigned>(remaining));
+      return false;
+    }
+    packet.type = static_cast<uint8_t>(first) >> 4;
+    packet.flags = static_cast<uint8_t>(first) & 0x0f;
+    packet.body.resize(remaining);
+    return remaining == 0 ||
+           mqtt_recv_all(socket_fd_, packet.body.data(), packet.body.size());
+  }
+};
+
+static bool mqtt_refresh_devinfo(
+    MqttWireSession &session,
+    const std::string &wanted_parent_id,
+    const std::string &band,
+    bool &saw_devinfo,
+    MqttRadioTarget *target,
+    std::string &error) {
+  static const char *const topics[] = {
+      "network/status_resend_all",
+      "network/DEVINFO/status_resend_all",
+      "network/BH/status_resend_all",
+  };
+  for (const char *topic : topics) {
+    if (!session.publish(
+            topic,
+            "",
+            saw_devinfo,
+            target,
+            wanted_parent_id,
+            band,
+            error)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool mqtt_probe_roundtrip(std::string &error) {
+  MqttWireSession session;
+  if (!session.connect_to_router(error) || !session.subscribe_devinfo(error)) {
+    return false;
+  }
+  bool saw_devinfo = false;
+  if (!mqtt_refresh_devinfo(session, "", "5GH", saw_devinfo, nullptr, error)) {
+    return false;
+  }
+  if (!saw_devinfo &&
+      !session.wait_for_devinfo("", "5GH", 8000, saw_devinfo, nullptr)) {
+    error = "The broker accepted the probe but returned no fresh DEVINFO";
+    return false;
+  }
+  return saw_devinfo;
+}
+
+static bool mqtt_publish_parent_request(
+    const MqttSteeringOperation &operation,
+    MqttRadioTarget &target,
+    std::string &error) {
+  MqttWireSession session;
+  if (!session.connect_to_router(error) || !session.subscribe_devinfo(error)) {
+    return false;
+  }
+  bool saw_devinfo = false;
+  if (!mqtt_refresh_devinfo(
+          session,
+          operation.parent_id,
+          operation.band,
+          saw_devinfo,
+          &target,
+          error)) {
+    return false;
+  }
+  if (!target.valid) mqtt_radio_from_observed_child(operation, target);
+  if (!target.valid) {
+    session.wait_for_devinfo(
+        operation.parent_id,
+        operation.band,
+        MQTT_OPERATION_TIMEOUT_MS,
+        saw_devinfo,
+        &target);
+  }
+  if (!target.valid) {
+    if (!target.matched_uuid) {
+      error = "No fresh DEVINFO matched the requested Parent after " +
+              std::to_string(target.devinfo_records) + " records";
+    } else {
+      error = "The requested Parent DEVINFO did not contain a valid " +
+              operation.band + " radio tuple (BSSID field " +
+              (target.saw_bssid ? "present" : "missing") +
+              ", channel field " +
+              (target.saw_channel ? "present" : "missing") + ")";
+    }
+    return false;
+  }
+  if (!target.valid) {
+    error = "The requested Parent did not report a valid " + operation.band + " radio";
+    return false;
+  }
+  bool publish_allowed = false;
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    publish_allowed = mqtt_mode != MqttSteeringMode::FORCE_OFF &&
+                      mqtt_operation.id == operation.id;
+    if (publish_allowed) {
+      mqtt_operation.state = "publishing";
+      mqtt_operation.detail = "Publishing the exact Parent request to BH/config";
+    }
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  if (!publish_allowed) {
+    error = "MQTT Parent steering was turned off before publish";
+    return false;
+  }
+  const std::string child_id = ascii_upper(operation.child_id);
+  const std::string topic = "network/" + child_id + "/BH/config";
+  cJSON *root = cJSON_CreateObject();
+  if (root == nullptr) {
+    error = "Unable to allocate the Parent steering payload";
+    return false;
+  }
+  cJSON_AddStringToObject(root, "uuid", child_id.c_str());
+  cJSON_AddStringToObject(root, "type", "set");
+  cJSON_AddStringToObject(root, "TS", iso_timestamp().c_str());
+  cJSON *data = cJSON_AddObjectToObject(root, "data");
+  cJSON_AddStringToObject(data, "band", operation.band.c_str());
+  cJSON_AddStringToObject(data, "bssid", target.bssid.c_str());
+  cJSON_AddStringToObject(data, "channel", std::to_string(target.channel).c_str());
+  char *serialized = cJSON_PrintUnformatted(root);
+  const std::string payload = serialized ?: "";
+  cJSON_free(serialized);
+  cJSON_Delete(root);
+  if (payload.empty()) {
+    error = "Unable to allocate the Parent steering payload";
+    return false;
+  }
+  return session.publish(
+      topic,
+      payload,
+      saw_devinfo,
+      nullptr,
+      "",
+      operation.band,
+      error);
 }
 
 static std::string base64_basic_auth(
@@ -1215,6 +1906,20 @@ static bool accumulate_backhaul(
       BackhaulObservation &observed = accumulator.backhauls[id];
       observed.ip = json_string(item, "ipAddress") ?: "";
       observed.parent_ip = json_string(item, "parentIPAddress") ?: "";
+      observed.connection_type = json_string(item, "connectionType") ?: "";
+      const cJSON *wireless =
+          cJSON_GetObjectItemCaseSensitive(item, "wirelessConnectionInfo");
+      if (cJSON_IsObject(wireless)) {
+        observed.band = json_string(wireless, "radioID") ?: "";
+        observed.parent_bssid = json_string(wireless, "apBSSID") ?: "";
+        const cJSON *channel =
+            cJSON_GetObjectItemCaseSensitive(wireless, "channel");
+        if (cJSON_IsNumber(channel)) {
+          observed.channel = channel->valueint;
+        } else if (cJSON_IsString(channel)) {
+          observed.channel = static_cast<int>(strtol(channel->valuestring, nullptr, 10));
+        }
+      }
     }
     const cJSON *speed =
         cJSON_GetObjectItemCaseSensitive(item, "speedMbps");
@@ -1282,6 +1987,12 @@ static bool calculate_device_stats(
           if (backhaul != accumulator.backhauls.end() &&
               private_ipv4(backhaul->second.ip)) {
             observed.ip = backhaul->second.ip;
+          }
+          if (backhaul != accumulator.backhauls.end()) {
+            observed.connection_type = backhaul->second.connection_type;
+            observed.backhaul_band = backhaul->second.band;
+            observed.parent_bssid = backhaul->second.parent_bssid;
+            observed.backhaul_channel = backhaul->second.channel;
           }
           if (authority && observed.ip.empty() && private_ipv4(router_host)) {
             observed.ip = router_host;
@@ -1356,6 +2067,90 @@ static const NodeObservation *find_observed_node(
     if (node.id == id) return &node;
   }
   return nullptr;
+}
+
+static bool mqtt_operation_is_active(const MqttSteeringOperation &operation) {
+  return operation.state == "queued" ||
+         operation.state == "probing" ||
+         operation.state == "discovering-target" ||
+         operation.state == "publishing" ||
+         operation.state == "verification-pending";
+}
+
+static bool mqtt_operation_active_for_node(const std::string &node_id) {
+  bool active = false;
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    active = mqtt_operation_is_active(mqtt_operation) &&
+             same_node_id(mqtt_operation.child_id, node_id);
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  return active;
+}
+
+static bool mqtt_topology_lock_conflict(
+    const std::string &child_id,
+    const std::string &parent_id,
+    std::string &error) {
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    error = "Topology Lock is temporarily busy";
+    return true;
+  }
+  bool conflict = false;
+  if (topology_lock_enabled) {
+    for (const auto &mapping : topology_lock_mappings) {
+      if (!same_node_id(mapping.node_id, child_id)) continue;
+      if (!same_node_id(mapping.parent_id, parent_id)) {
+        conflict = true;
+        error = "Topology Lock expects a different Parent for this Node";
+      }
+      break;
+    }
+  }
+  xSemaphoreGive(topology_lock_mutex);
+  return conflict;
+}
+
+static void mqtt_verify_operation(
+    const std::vector<NodeObservation> &nodes,
+    uint32_t generation) {
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    return;
+  }
+  if (mqtt_operation.state != "verification-pending" ||
+      generation <= mqtt_operation.published_generation ||
+      generation == mqtt_operation.last_verified_generation) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return;
+  }
+  mqtt_operation.last_verified_generation = generation;
+  mqtt_operation.verification_generations++;
+  const NodeObservation *child = nullptr;
+  for (const auto &node : nodes) {
+    if (same_node_id(node.id, mqtt_operation.child_id)) {
+      child = &node;
+      break;
+    }
+  }
+  if (child != nullptr && child->online &&
+      same_node_id(child->parent_id, mqtt_operation.parent_id)) {
+    mqtt_operation.consecutive_matches++;
+  } else {
+    mqtt_operation.consecutive_matches = 0;
+  }
+  if (mqtt_operation.consecutive_matches >= MQTT_VERIFY_GENERATIONS) {
+    mqtt_operation.state = "verified";
+    mqtt_operation.detail = "The requested Parent matched two consecutive topology generations";
+  } else if (uptime_ms() - mqtt_operation.started_ms >=
+             MQTT_VERIFICATION_TIMEOUT_MS) {
+    mqtt_operation.state = "failed";
+    mqtt_operation.detail =
+        "The requested Parent was not confirmed within 180 seconds";
+  }
+  xSemaphoreGive(mqtt_steering_mutex);
+  App.wake_loop_threadsafe();
 }
 
 static uint32_t topology_lock_remaining_ms_locked() {
@@ -1729,7 +2524,8 @@ static void evaluate_topology_lock(
     const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
     if (node == nullptr || parent == nullptr || !node->online ||
         !parent->online || node->authority || node->ip.empty() ||
-        node->parent_id == mapping.parent_id) {
+        node->parent_id == mapping.parent_id ||
+        mqtt_operation_active_for_node(mapping.node_id)) {
       topology_lock_mismatch_counts[mapping.node_id] = 0;
       continue;
     }
@@ -1754,6 +2550,7 @@ static void evaluate_topology_lock(
       if (node == nullptr || parent == nullptr || !node->online ||
           !parent->online || node->authority || node->ip.empty() ||
           node->parent_id == mapping.parent_id ||
+          mqtt_operation_active_for_node(mapping.node_id) ||
           topology_lock_mismatch_counts[mapping.node_id] <
               TOPOLOGY_LOCK_CONFIRMATIONS) {
         continue;
@@ -1992,6 +2789,164 @@ static bool collect_snapshot(
   return true;
 }
 
+static void mqtt_set_capability(bool available, const std::string &reason) {
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return;
+  }
+  mqtt_available = available;
+  mqtt_capability_reason = available ? "" : reason;
+  mqtt_capability_proof =
+      available ? "Fresh DEVINFO received after an authenticated ACL roundtrip" : "";
+  mqtt_last_probe_at = iso_timestamp();
+  mqtt_last_probe_ms = uptime_ms();
+  mqtt_probe_requested = false;
+  xSemaphoreGive(mqtt_steering_mutex);
+  App.wake_loop_threadsafe();
+}
+
+static bool mqtt_mode_allows_probe() {
+  bool allowed = false;
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    allowed = mqtt_mode != MqttSteeringMode::FORCE_OFF;
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  return allowed;
+}
+
+static void mqtt_fail_operation(
+    uint32_t operation_id,
+    const std::string &detail) {
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    if (mqtt_operation.id == operation_id) {
+      mqtt_operation.state = "failed";
+      mqtt_operation.detail = detail;
+      mqtt_operation_pending = false;
+    }
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  App.wake_loop_threadsafe();
+}
+
+static void mqtt_steering_worker(void *) {
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+    if (!wifi_connected() || !router_connected.load(std::memory_order_acquire)) {
+      continue;
+    }
+
+    MqttSteeringOperation operation;
+    MqttSteeringMode mode = MqttSteeringMode::AUTO;
+    bool run_operation = false;
+    bool run_probe = false;
+    bool capability_available = false;
+    if (mqtt_steering_mutex != nullptr &&
+        xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      mode = mqtt_mode;
+      capability_available = mqtt_available;
+      run_operation = mqtt_operation_pending;
+      if (run_operation) {
+        operation = mqtt_operation;
+        mqtt_operation_pending = false;
+      }
+      const uint32_t elapsed = uptime_ms() - mqtt_last_probe_ms;
+      run_probe = !run_operation && mode != MqttSteeringMode::FORCE_OFF &&
+                  (mqtt_probe_requested || mqtt_last_probe_ms == 0 ||
+                   elapsed >= MQTT_PROBE_INTERVAL_MS);
+      xSemaphoreGive(mqtt_steering_mutex);
+    }
+
+    if (mode == MqttSteeringMode::FORCE_OFF) continue;
+    if (run_probe) {
+      std::string error;
+      const bool available = mqtt_probe_roundtrip(error);
+      mqtt_set_capability(available, error);
+      continue;
+    }
+    if (!run_operation) continue;
+
+    std::string conflict;
+    if (mqtt_topology_lock_conflict(
+            operation.child_id, operation.parent_id, conflict)) {
+      mqtt_fail_operation(operation.id, conflict);
+      continue;
+    }
+
+    if (mode == MqttSteeringMode::AUTO && !capability_available) {
+      if (mqtt_steering_mutex != nullptr &&
+          xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        if (mqtt_operation.id == operation.id) {
+          mqtt_operation.state = "probing";
+          mqtt_operation.detail = "Confirming the router MQTT ACL before steering";
+        }
+        xSemaphoreGive(mqtt_steering_mutex);
+      }
+      std::string probe_error;
+      const bool available = mqtt_probe_roundtrip(probe_error);
+      mqtt_set_capability(available, probe_error);
+      if (!available) {
+        mqtt_fail_operation(operation.id, probe_error);
+        continue;
+      }
+    }
+
+    if (!mqtt_mode_allows_probe()) {
+      mqtt_fail_operation(operation.id, "MQTT Parent steering was turned off");
+      continue;
+    }
+    if (mqtt_steering_mutex != nullptr &&
+        xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      if (mqtt_operation.id == operation.id) {
+        mqtt_operation.state = "discovering-target";
+        mqtt_operation.detail = "Reading the requested Parent's fresh 5 GHz radio state";
+      }
+      xSemaphoreGive(mqtt_steering_mutex);
+    }
+    App.wake_loop_threadsafe();
+
+    MqttRadioTarget target;
+    std::string error;
+    const bool published = mqtt_publish_parent_request(operation, target, error);
+    if (!published) {
+      mqtt_set_capability(false, error);
+      mqtt_fail_operation(operation.id, error);
+      continue;
+    }
+
+    uint32_t generation = 0;
+    if (snapshot_mutex != nullptr &&
+        xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      generation = snapshot.generation;
+      xSemaphoreGive(snapshot_mutex);
+    }
+    if (mqtt_steering_mutex != nullptr &&
+        xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      if (mqtt_operation.id == operation.id) {
+        mqtt_operation.state = "verification-pending";
+        mqtt_operation.detail =
+            "The broker acknowledged the request; waiting for two topology generations";
+        mqtt_operation.published_generation = generation;
+        mqtt_operation.last_verified_generation = generation;
+        mqtt_operation.verification_generations = 0;
+        mqtt_operation.consecutive_matches = 0;
+        mqtt_child_cooldowns[ascii_lower(operation.child_id)] = uptime_ms();
+      }
+      mqtt_available = true;
+      mqtt_capability_reason.clear();
+      mqtt_capability_proof =
+          (target.source.empty() ? "Trusted Parent radio state" : target.source) +
+          " and BH/config PUBACK completed";
+      mqtt_last_probe_at = iso_timestamp();
+      mqtt_last_probe_ms = uptime_ms();
+      xSemaphoreGive(mqtt_steering_mutex);
+    }
+    request_refresh();
+    App.wake_loop_threadsafe();
+  }
+}
+
 static void collector_task(void *) {
   uint32_t generation = 0;
   // The no-PSRAM targets need one large, contiguous receive block for the
@@ -2002,6 +2957,7 @@ static void collector_task(void *) {
   while (true) {
     std::vector<NodeObservation> lock_observations;
     bool snapshot_updated = false;
+    uint32_t snapshot_generation = 0;
     if (!wifi_connected()) {
       router_connected.store(false, std::memory_order_release);
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
@@ -2022,6 +2978,7 @@ static void collector_task(void *) {
       if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
         lock_observations = candidate.nodes;
         snapshot = std::move(candidate);
+        snapshot_generation = snapshot.generation;
         xSemaphoreGive(snapshot_mutex);
         snapshot_updated = true;
         router_connected.store(true, std::memory_order_release);
@@ -2037,7 +2994,13 @@ static void collector_task(void *) {
       router_connected.store(false, std::memory_order_release);
     }
     if (memory_locked) xSemaphoreGive(memory_mutex);
-    if (snapshot_updated) evaluate_topology_lock(lock_observations);
+    if (snapshot_updated) {
+      mqtt_verify_operation(lock_observations, snapshot_generation);
+      evaluate_topology_lock(lock_observations);
+      if (mqtt_steering_task_handle != nullptr) {
+        xTaskNotifyGive(mqtt_steering_task_handle);
+      }
+    }
     force_refresh.store(false, std::memory_order_release);
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(REFRESH_INTERVAL_MS));
   }
@@ -2124,6 +3087,12 @@ static esp_err_t status_handler(httpd_req_t *request) {
         "topologyLockNextActionInSeconds",
         (topology_lock_remaining_ms_locked() + 999) / 1000);
     xSemaphoreGive(topology_lock_mutex);
+  }
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+    cJSON_AddStringToObject(root, "mqttParentSteeringMode", mqtt_mode_name(mqtt_mode));
+    cJSON_AddBoolToObject(root, "mqttParentSteeringAvailable", mqtt_available);
+    xSemaphoreGive(mqtt_steering_mutex);
   }
   char *body = cJSON_PrintUnformatted(root);
   const esp_err_t result = send_json(request, body ?: "{}");
@@ -2566,6 +3535,298 @@ static esp_err_t send_cjson(httpd_req_t *request, cJSON *root) {
   return result;
 }
 
+static cJSON *mqtt_parent_steering_json() {
+  cJSON *root = cJSON_CreateObject();
+  if (root == nullptr) return nullptr;
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    cJSON_AddBoolToObject(root, "supported", true);
+    cJSON_AddBoolToObject(root, "available", false);
+    cJSON_AddStringToObject(root, "state", "busy");
+    return root;
+  }
+  const bool effective_enabled =
+      mqtt_mode == MqttSteeringMode::FORCE_ON ||
+      (mqtt_mode == MqttSteeringMode::AUTO && mqtt_available);
+  uint32_t next_probe_seconds = 0;
+  if (mqtt_mode != MqttSteeringMode::FORCE_OFF && mqtt_last_probe_ms != 0) {
+    const uint32_t elapsed = uptime_ms() - mqtt_last_probe_ms;
+    if (elapsed < MQTT_PROBE_INTERVAL_MS) {
+      next_probe_seconds = (MQTT_PROBE_INTERVAL_MS - elapsed + 999) / 1000;
+    }
+  }
+  cJSON_AddBoolToObject(root, "supported", true);
+  cJSON_AddBoolToObject(root, "configurable", true);
+  cJSON_AddStringToObject(root, "mode", mqtt_mode_name(mqtt_mode));
+  cJSON_AddStringToObject(root, "defaultMode", mqtt_mode_name(mqtt_default_mode));
+  cJSON_AddBoolToObject(root, "available", mqtt_available);
+  cJSON_AddBoolToObject(root, "roundTrip", mqtt_available);
+  cJSON_AddBoolToObject(root, "effectiveEnabled", effective_enabled);
+  cJSON_AddStringToObject(
+      root,
+      "state",
+      mqtt_mode == MqttSteeringMode::FORCE_OFF
+          ? "disabled"
+          : mqtt_mode == MqttSteeringMode::FORCE_ON
+                ? (mqtt_available ? "available" : "forced")
+                : mqtt_probe_requested ? "detecting"
+                : mqtt_available ? "available"
+                                 : mqtt_last_probe_ms == 0 ? "detecting"
+                                                           : "unavailable");
+  cJSON_AddStringToObject(root, "transport", "mqtt-1883");
+  cJSON_AddStringToObject(root, "reason", mqtt_capability_reason.c_str());
+  cJSON_AddStringToObject(root, "proof", mqtt_capability_proof.c_str());
+  cJSON_AddStringToObject(root, "testedAt", mqtt_last_probe_at.c_str());
+  cJSON_AddStringToObject(root, "lastProbedAt", mqtt_last_probe_at.c_str());
+  cJSON_AddNumberToObject(root, "nextProbeInSeconds", next_probe_seconds);
+  cJSON *broker = cJSON_AddObjectToObject(root, "broker");
+  cJSON_AddStringToObject(broker, "host", router_host.c_str());
+  cJSON_AddNumberToObject(broker, "port", MQTT_PORT);
+  cJSON *operation = cJSON_AddObjectToObject(root, "operation");
+  cJSON_AddNumberToObject(operation, "id", mqtt_operation.id);
+  cJSON_AddStringToObject(operation, "state", mqtt_operation.state.c_str());
+  cJSON_AddStringToObject(operation, "detail", mqtt_operation.detail.c_str());
+  cJSON_AddStringToObject(operation, "requestedAt", mqtt_operation.requested_at.c_str());
+  cJSON_AddStringToObject(operation, "childId", mqtt_operation.child_id.c_str());
+  cJSON_AddStringToObject(operation, "childName", mqtt_operation.child_name.c_str());
+  cJSON_AddStringToObject(operation, "parentId", mqtt_operation.parent_id.c_str());
+  cJSON_AddStringToObject(operation, "parentName", mqtt_operation.parent_name.c_str());
+  cJSON_AddStringToObject(operation, "band", mqtt_operation.band.c_str());
+  cJSON_AddNumberToObject(
+      operation, "verificationGenerations", mqtt_operation.verification_generations);
+  cJSON_AddNumberToObject(
+      operation, "consecutiveMatches", mqtt_operation.consecutive_matches);
+  cJSON_AddNumberToObject(operation, "requiredMatches", MQTT_VERIFY_GENERATIONS);
+  xSemaphoreGive(mqtt_steering_mutex);
+  return root;
+}
+
+static bool mqtt_preflight(
+    const std::vector<NodeObservation> &nodes,
+    const std::string &child_id,
+    const std::string &parent_id,
+    NodeObservation &child,
+    NodeObservation &parent,
+    std::string &error) {
+  bool found_child = false;
+  bool found_parent = false;
+  for (const auto &node : nodes) {
+    if (same_node_id(node.id, child_id)) {
+      child = node;
+      found_child = true;
+    }
+    if (same_node_id(node.id, parent_id)) {
+      parent = node;
+      found_parent = true;
+    }
+  }
+  if (!found_child || !found_parent) {
+    error = "The selected Node or Parent is absent from the current topology";
+    return false;
+  }
+  if (!child.online || !parent.online) {
+    error = "Both the child Node and requested Parent must be online";
+    return false;
+  }
+  if (child.authority) {
+    error = "The primary Node cannot be steered as a child";
+    return false;
+  }
+  if (same_node_id(child.id, parent.id)) {
+    error = "A Node cannot be its own Parent";
+    return false;
+  }
+  const std::string connection = ascii_lower(child.connection_type);
+  if (connection.find("wired") != std::string::npos ||
+      connection.find("ethernet") != std::string::npos) {
+    error = "A wired-backhaul Node cannot be steered over BH/config";
+    return false;
+  }
+  if (same_node_id(child.parent_id, parent.id)) {
+    error = "The Node is already connected to the requested Parent";
+    return false;
+  }
+  std::set<std::string> descendants;
+  std::vector<std::string> pending{ascii_lower(child.id)};
+  while (!pending.empty()) {
+    const std::string current = pending.back();
+    pending.pop_back();
+    for (const auto &node : nodes) {
+      if (!same_node_id(node.parent_id, current)) continue;
+      const std::string candidate = ascii_lower(node.id);
+      if (descendants.insert(candidate).second) pending.push_back(candidate);
+    }
+  }
+  if (descendants.count(ascii_lower(parent.id)) != 0) {
+    error = "The requested Parent is a descendant of the child Node";
+    return false;
+  }
+  return !mqtt_topology_lock_conflict(child.id, parent.id, error);
+}
+
+static esp_err_t mqtt_parent_get_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string refresh;
+  if (query_value(request, "refresh", refresh) && refresh == "1" &&
+      mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+    if (mqtt_mode != MqttSteeringMode::FORCE_OFF) mqtt_probe_requested = true;
+    xSemaphoreGive(mqtt_steering_mutex);
+    if (mqtt_steering_task_handle != nullptr) {
+      xTaskNotifyGive(mqtt_steering_task_handle);
+    }
+  }
+  return send_cjson(request, mqtt_parent_steering_json());
+}
+
+static esp_err_t mqtt_parent_mode_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string body;
+  if (!read_request_json(request, body, 512)) {
+    return send_error_json(request, "400 Bad Request", "A Parent steering mode is required.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const char *mode_value = payload != nullptr ? json_string(payload, "mode") : nullptr;
+  if (mode_value == nullptr ||
+      (strcmp(mode_value, "auto") != 0 && strcmp(mode_value, "force-on") != 0 &&
+       strcmp(mode_value, "force-off") != 0)) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "Mode must be auto, force-on, or force-off.");
+  }
+  const MqttSteeringMode requested = parse_mqtt_mode(mode_value);
+  cJSON_Delete(payload);
+  if (!persist_mqtt_mode(requested)) {
+    return send_error_json(
+        request,
+        "500 Internal Server Error",
+        "The Parent steering mode could not be saved.");
+  }
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "Parent steering is temporarily busy.");
+  }
+  mqtt_mode = requested;
+  mqtt_probe_requested = requested != MqttSteeringMode::FORCE_OFF;
+  if (requested == MqttSteeringMode::FORCE_OFF) {
+    mqtt_available = false;
+    mqtt_capability_reason = "Disabled by configuration";
+    mqtt_capability_proof.clear();
+    if (mqtt_operation_pending ||
+        (mqtt_operation_is_active(mqtt_operation) &&
+         mqtt_operation.state != "verification-pending")) {
+      mqtt_operation_pending = false;
+      mqtt_operation.state = "cancelled";
+      mqtt_operation.detail = "Cancelled because MQTT Parent steering was turned off";
+    }
+  }
+  xSemaphoreGive(mqtt_steering_mutex);
+  if (mqtt_steering_task_handle != nullptr) xTaskNotifyGive(mqtt_steering_task_handle);
+  App.wake_loop_threadsafe();
+  return send_cjson(request, mqtt_parent_steering_json());
+}
+
+static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string body;
+  if (!read_request_json(request, body, 1024)) {
+    return send_error_json(request, "400 Bad Request", "The Parent steering request is invalid.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const char *child_id = payload != nullptr ? json_string(payload, "childId") : nullptr;
+  const char *parent_id = payload != nullptr ? json_string(payload, "parentId") : nullptr;
+  const char *band = payload != nullptr ? json_string(payload, "band") : nullptr;
+  if (child_id == nullptr || parent_id == nullptr || band == nullptr ||
+      (strcmp(band, "5GH") != 0 && strcmp(band, "5GL") != 0) ||
+      strlen(child_id) > 128 || strlen(parent_id) > 128) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "childId, parentId, and band (5GH or 5GL) are required.");
+  }
+  const std::string requested_child = child_id;
+  const std::string requested_parent = parent_id;
+  const std::string requested_band = band;
+  cJSON_Delete(payload);
+  NodeObservation child;
+  NodeObservation parent;
+  std::string error;
+  if (!mqtt_preflight(
+          current_node_observations(),
+          requested_child,
+          requested_parent,
+          child,
+          parent,
+          error)) {
+    return send_error_json(request, "409 Conflict", error.c_str());
+  }
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "Parent steering is temporarily busy.");
+  }
+  if (mqtt_mode == MqttSteeringMode::FORCE_OFF) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return send_error_json(request, "409 Conflict", "MQTT Parent steering is forced off.");
+  }
+  if (mqtt_mode == MqttSteeringMode::AUTO && !mqtt_available) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "Automatic detection has not confirmed the required router MQTT ACL.");
+  }
+  if (mqtt_operation_is_active(mqtt_operation) || mqtt_operation_pending) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "Another Parent steering request is still in progress.");
+  }
+  const std::string cooldown_key = ascii_lower(child.id);
+  const auto cooldown = mqtt_child_cooldowns.find(cooldown_key);
+  if (cooldown != mqtt_child_cooldowns.end() &&
+      uptime_ms() - cooldown->second < MQTT_OPERATION_DEDUP_MS) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "This Node was steered recently. Wait for topology verification.");
+  }
+  mqtt_operation = {};
+  mqtt_operation.id = ++mqtt_next_operation_id;
+  mqtt_operation.child_id = child.id;
+  mqtt_operation.child_name = child.name;
+  mqtt_operation.parent_id = parent.id;
+  mqtt_operation.parent_name = parent.name;
+  mqtt_operation.previous_parent_id = child.parent_id;
+  mqtt_operation.band = requested_band;
+  mqtt_operation.state = "queued";
+  mqtt_operation.detail = "Waiting for the background MQTT worker";
+  mqtt_operation.requested_at = iso_timestamp();
+  mqtt_operation.started_ms = uptime_ms();
+  mqtt_operation_pending = true;
+  xSemaphoreGive(mqtt_steering_mutex);
+  if (mqtt_steering_task_handle != nullptr) xTaskNotifyGive(mqtt_steering_task_handle);
+  cJSON *response = mqtt_parent_steering_json();
+  char *serialized = cJSON_PrintUnformatted(response);
+  const esp_err_t result = send_json(
+      request,
+      serialized ?: "{}",
+      "202 Accepted");
+  cJSON_free(serialized);
+  cJSON_Delete(response);
+  return result;
+}
+
 static esp_err_t topology_lock_get_handler(httpd_req_t *request) {
   if (!authorize_web_request(request)) return ESP_OK;
   return send_cjson(
@@ -2864,6 +4125,11 @@ static void start_server() {
   register_handler("/api/restart-node", HTTP_POST, restart_handler);
   register_handler("/api/topology-lock", HTTP_GET, topology_lock_get_handler);
   register_handler("/api/topology-lock", HTTP_POST, topology_lock_post_handler);
+  register_handler(
+      "/api/mqtt-parent-steering", HTTP_GET, mqtt_parent_get_handler);
+  register_handler(
+      "/api/mqtt-parent-steering", HTTP_POST, mqtt_parent_mode_handler);
+  register_handler("/api/steer-node-parent", HTTP_POST, mqtt_steer_handler);
   httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, not_found_handler);
   ESP_LOGI(TAG, "MeshScope HTTP server started on port 80");
 }
@@ -2872,9 +4138,11 @@ static void setup(
     const char *host,
     const char *password_b64,
     const char *configured_dashboard_password,
-    const char *client_details) {
+    const char *client_details,
+    const char *mqtt_parent_steering) {
   router_host = host ?: "";
   requested_client_details = parse_client_details(client_details);
+  mqtt_default_mode = parse_mqtt_mode(mqtt_parent_steering);
   client_details_resolved = false;
   const std::string encoded_password = password_b64 ?: "";
   const bool router_password_ok =
@@ -2887,9 +4155,11 @@ static void setup(
   memory_mutex = xSemaphoreCreateMutex();
   topology_lock_mutex = xSemaphoreCreateMutex();
   web_session_mutex = xSemaphoreCreateMutex();
+  mqtt_steering_mutex = xSemaphoreCreateMutex();
   if (!router_password_ok || snapshot_mutex == nullptr || jnap_mutex == nullptr ||
       memory_mutex == nullptr || topology_lock_mutex == nullptr ||
-      web_session_mutex == nullptr || authorization.empty() ||
+      web_session_mutex == nullptr || mqtt_steering_mutex == nullptr ||
+      authorization.empty() ||
       dashboard_password.size() < 8 ||
       dashboard_password == "SET_IN_LOCAL_CONFIG") {
     ESP_LOGE(TAG, "MeshScope initialization failed");
@@ -2902,6 +4172,7 @@ static void setup(
       meshscope_web_assets::SOURCE_SHA256,
       static_cast<unsigned>(external_memory_size()));
   load_topology_lock();
+  load_mqtt_mode();
   start_server();
   if (xTaskCreate(
           collector_task,
@@ -2912,6 +4183,16 @@ static void setup(
           &collector_task_handle) != pdPASS) {
     ESP_LOGE(TAG, "Unable to start topology collector task");
     collector_task_handle = nullptr;
+  }
+  if (xTaskCreate(
+          mqtt_steering_worker,
+          "meshscope_mqtt",
+          8192,
+          nullptr,
+          1,
+          &mqtt_steering_task_handle) != pdPASS) {
+    ESP_LOGE(TAG, "Unable to start MQTT Parent steering worker");
+    mqtt_steering_task_handle = nullptr;
   }
 }
 
@@ -2979,18 +4260,59 @@ static std::string topology_lock_summary_copy() {
   return output;
 }
 
+static bool mqtt_parent_available_copy() {
+  bool value = false;
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    value = mqtt_available && mqtt_mode != MqttSteeringMode::FORCE_OFF;
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  return value;
+}
+
+static std::string mqtt_parent_mode_copy() {
+  std::string value = "auto";
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    value = mqtt_mode_name(mqtt_mode);
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  return value;
+}
+
+static std::string mqtt_parent_result_copy() {
+  std::string value = "Waiting for the first MQTT capability probe";
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (mqtt_operation.id != 0) {
+      value = mqtt_operation.state;
+      if (!mqtt_operation.detail.empty()) value += " · " + mqtt_operation.detail;
+    } else if (mqtt_mode == MqttSteeringMode::FORCE_OFF) {
+      value = "Disabled";
+    } else if (mqtt_available) {
+      value = "Available · " + mqtt_capability_proof;
+    } else if (!mqtt_capability_reason.empty()) {
+      value = "Unavailable · " + mqtt_capability_reason;
+    }
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  return value;
+}
+
 }  // namespace meshscope_edge
 
 inline void meshscope_edge_setup(
     const char *host,
     const char *password_b64,
     const char *dashboard_password,
-    const char *client_details) {
+    const char *client_details,
+    const char *mqtt_parent_steering) {
   meshscope_edge::setup(
       host,
       password_b64,
       dashboard_password,
-      client_details);
+      client_details,
+      mqtt_parent_steering);
 }
 
 inline void meshscope_edge_force_refresh() {
@@ -3061,4 +4383,16 @@ inline float meshscope_edge_topology_lock_issues() {
 
 inline std::string meshscope_edge_topology_lock_summary() {
   return meshscope_edge::topology_lock_summary_copy();
+}
+
+inline bool meshscope_edge_mqtt_parent_available() {
+  return meshscope_edge::mqtt_parent_available_copy();
+}
+
+inline std::string meshscope_edge_mqtt_parent_mode() {
+  return meshscope_edge::mqtt_parent_mode_copy();
+}
+
+inline std::string meshscope_edge_mqtt_parent_result() {
+  return meshscope_edge::mqtt_parent_result_copy();
 }

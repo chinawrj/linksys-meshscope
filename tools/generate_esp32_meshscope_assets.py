@@ -20,6 +20,7 @@ SCRIPT_NAMES = (
     "detail-data.js",
     "topology-layout.js",
     "topology-lock-state.js",
+    "mqtt-parent-steering-state.js",
     "linksys-normalize.js",
     "app.js",
 )

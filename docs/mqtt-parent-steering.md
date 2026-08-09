@@ -101,6 +101,13 @@ It subscribes to `network/+/DEVINFO`, publishes the three idempotent Linksys
 status-refresh topics, and reports availability only after receiving a fresh
 DEVINFO record.
 
+For the exact target tuple, fresh Parent DEVINFO is preferred. Some primary
+nodes do not publish their own DEVINFO record. The ESP32 appliance therefore
+has a bounded fallback: it reads the requested Parent's `apBSSID`, channel, and
+band from a current JNAP `GetBackhaulInfo` child link. This is the same
+owner-visible radio state used by the end-to-end desktop steering tool; no
+Client/STA record is used to construct a steering request.
+
 To request an exact Parent:
 
 ```http
@@ -121,6 +128,11 @@ radio moved. The caller must refresh topology and observe the requested Parent
 twice before declaring success. `tools/linksys_mqtt_steer.py` provides that
 end-to-end CLI workflow and writes its sensitive operation journal only under
 the Git-ignored `firmware-analysis/work/` tree by default.
+
+The ESP32 keeps an accepted operation pending for up to 180 seconds because a
+child may remain offline for more than one normal collection interval while
+its wireless backhaul reassociates. A timeout is reported as unverified, never
+as success.
 
 ```bash
 python3 tools/linksys_mqtt_steer.py --router 192.168.1.1 probe-acl
@@ -147,3 +159,36 @@ flowchart LR
 
 The ACL modification exposes an existing firmware consumer; it does not add
 SSH, a shell, arbitrary MQTT execution, or a new radio-steering algorithm.
+
+## ESPHome appliance modes
+
+MeshScope v0.6.0 brings the same guarded path to ESP32-C3, ESP32-C5, and
+ESP32-C6. Add this substitution to a local target YAML, or keep the built-in
+default:
+
+```yaml
+substitutions:
+  meshscope_mqtt_parent_steering: "auto"
+```
+
+The dashboard can persist one of three modes in ESP32 NVS:
+
+| Mode | Detection | New Parent requests |
+|---|---|---|
+| `auto` | Periodic safe DEVINFO round trip | Enabled only when detected |
+| `force-on` | Still reports real probe state | Allowed despite an inconclusive probe; all safety gates remain |
+| `force-off` | No new probe | Rejected |
+
+The YAML value is the initial default; a value saved from the page wins after
+reboot. NVS stores only the mode, never credentials, BSSIDs, or request
+payloads.
+
+ESP32 HTTP handlers only validate and queue work. A single bounded background
+worker performs MQTT discovery and publish so browser access, Home Assistant,
+JNAP collection, and Topology Lock remain responsive. On PUBACK the worker
+requests a topology refresh, then waits for the requested Parent in two
+distinct JNAP snapshot generations before reporting `verified`.
+
+Optional WireGuard changes only how a browser or Home Assistant reaches the
+ESP32. Its peer routes must not cover the Linksys LAN; ESP32-to-router JNAP and
+MQTT traffic continue through local Wi-Fi.

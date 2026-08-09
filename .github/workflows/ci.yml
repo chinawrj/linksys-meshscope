@@ -59,6 +59,7 @@ jobs:
           node --check mesh_web/detail-data.js
           node --check mesh_web/linksys-normalize.js
           node --check mesh_web/node-restart-state.js
+          node --check mesh_web/mqtt-parent-steering-state.js
           node --check mesh_web/refresh-state.js
           node --check mesh_web/topology-layout.js
           node --check mesh_web/topology-lock-state.js
@@ -72,6 +73,7 @@ jobs:
             tests/test_topology_lock_state.js \
             tests/test_detail_data.js \
             tests/test_node_restart_state.js \
+            tests/test_mqtt_parent_steering_state.js \
             tests/test_linksys_normalize.js
 
   firmware-build:

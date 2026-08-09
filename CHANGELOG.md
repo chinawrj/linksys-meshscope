@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.6.0 — 2026-08-09
+
+### Highlights
+
+- Added exact MQTT Parent steering to the ESPHome/ESP32 appliance and the
+  shared dashboard without removing topology, `5GH`/`5GL`, Client/STA,
+  restart, or Topology Lock information.
+- Added a persistent three-state control: **Auto** safely probes the local
+  Linksys broker, **Force on** permits a controlled attempt when detection is
+  inconclusive, and **Force off** prevents probes and publishes. Auto is the
+  default.
+- Added a background MQTT worker, bounded raw MQTT 3.1.1 parser, guarded
+  child/Parent/radio validation, and Home Assistant diagnostic entities.
+
+### Correctness and safety
+
+- Keeps MQTT socket waits out of the HTTP and JNAP collector tasks so the
+  validated ESP32-C5 topology and Client/STA experience remains responsive.
+- Treats QoS-1 PUBACK only as broker acceptance. A request becomes verified
+  after the requested Parent appears in two distinct topology generations.
+- Uses fresh Parent DEVINFO when available and a current JNAP backhaul
+  observation when a primary node does not publish its own DEVINFO. Both paths
+  validate the exact band, unicast BSSID, and channel before publishing.
+- Keeps verification open for 180 seconds so a temporarily offline child is
+  not failed before backhaul reassociation completes.
+- Rejects the primary node as a child, offline/self/descendant/current Parent
+  targets, wired children, invalid bands/radios, concurrent requests, and a
+  request that conflicts with an active Topology Lock mapping.
+- Force on bypasses only capability detection; it never bypasses topology or
+  radio validation. Force off never starts a new probe or publish.
+
+### Compatibility
+
+- Preserves local Wi-Fi JNAP/MQTT routing while the dashboard and encrypted
+  Home Assistant Native API remain reachable over optional WireGuard.
+- Validates runtime behavior on the connected ESP32-C5. C3/C6 retain their
+  existing compile-compatibility target, without a new runtime or heap claim.
+- Verified a physical ESP32-C5 round trip through WireGuard: broker discovery,
+  QoS-1 acceptance, child disconnection/reassociation, and two consecutive
+  JNAP generations confirming the requested Parent.
+
 ## v0.5.0 — 2026-08-09
 
 ### Highlights

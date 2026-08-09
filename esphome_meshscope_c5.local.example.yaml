@@ -19,6 +19,9 @@ substitutions:
   meshscope_timezone: "Etc/UTC"
   # auto keeps full client details when memory allows; full and nodes-only override it.
   meshscope_client_details: "auto"
+  # auto is recommended; force-on bypasses only capability gating, and
+  # force-off disables all MQTT probes and Parent steering publishes.
+  meshscope_mqtt_parent_steering: "auto"
   # WireGuard values are only required when the package above is enabled.
   # Generate a dedicated device key pair; never reuse or commit private keys.
   # meshscope_wireguard_address: "10.23.0.48"

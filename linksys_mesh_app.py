@@ -88,6 +88,7 @@ class MeshState:
         self.node_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.node_restart_cooldowns: dict[str, float] = {}
         self.mqtt_capability_cache: tuple[float, dict[str, Any]] | None = None
+        self.mqtt_parent_mode = "auto"
         self.lock = threading.RLock()
 
     def status(self) -> dict[str, Any]:
@@ -110,6 +111,7 @@ class MeshState:
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
             self.mqtt_capability_cache = None
+            self.mqtt_parent_mode = "auto"
             return copy.deepcopy(self.cache)
 
     def connect(self, host: str, password: str) -> dict[str, Any]:
@@ -134,6 +136,7 @@ class MeshState:
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
             self.mqtt_capability_cache = None
+            self.mqtt_parent_mode = "auto"
         return self.refresh(force=True)
 
     def disconnect(self) -> None:
@@ -146,6 +149,7 @@ class MeshState:
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
             self.mqtt_capability_cache = None
+            self.mqtt_parent_mode = "auto"
 
     def refresh(self, force: bool = False) -> dict[str, Any]:
         with self.lock:
@@ -371,10 +375,15 @@ class MeshState:
     def mqtt_parent_capability(self, force: bool = False) -> dict[str, Any]:
         """Probe the local broker without sending a topology command."""
         with self.lock:
+            mode = self.mqtt_parent_mode
             if self.demo:
                 return {
-                    "mode": "auto",
+                    "supported": True,
+                    "configurable": False,
+                    "defaultMode": "auto",
+                    "mode": mode,
                     "available": False,
+                    "effectiveEnabled": False,
                     "roundTrip": False,
                     "transport": "mqtt-1883",
                     "reason": "Demo mode does not connect to a router broker.",
@@ -382,6 +391,20 @@ class MeshState:
                 }
             if not self.session.connected:
                 raise RouterError("No router is connected.")
+            if mode == "force-off":
+                return {
+                    "supported": True,
+                    "configurable": True,
+                    "defaultMode": "auto",
+                    "mode": mode,
+                    "state": "disabled",
+                    "available": False,
+                    "effectiveEnabled": False,
+                    "roundTrip": False,
+                    "transport": "mqtt-1883",
+                    "reason": "MQTT Parent steering is forced off.",
+                    "testedAt": now_iso(),
+                }
             if (
                 not force
                 and self.mqtt_capability_cache is not None
@@ -393,7 +416,12 @@ class MeshState:
         report = linksys_mqtt_parent.probe_acl(host)
         report.update(
             {
-                "mode": "auto",
+                "supported": True,
+                "configurable": True,
+                "defaultMode": "auto",
+                "mode": mode,
+                "state": "available" if report.get("available") else "unavailable",
+                "effectiveEnabled": mode == "force-on" or bool(report.get("available")),
                 "transport": "mqtt-1883",
                 "testedAt": now_iso(),
             }
@@ -402,15 +430,32 @@ class MeshState:
             self.mqtt_capability_cache = (time.monotonic(), report)
         return copy.deepcopy(report)
 
+    def set_mqtt_parent_mode(self, mode: str) -> dict[str, Any]:
+        """Set the process-lifetime desktop steering mode."""
+        clean = (mode or "").strip().lower()
+        if clean not in {"auto", "force-on", "force-off"}:
+            raise RouterError("Mode must be auto, force-on, or force-off.")
+        with self.lock:
+            if self.demo:
+                raise RouterError("Demo mode cannot enable Parent steering.")
+            if not self.session.connected:
+                raise RouterError("No router is connected.")
+            self.mqtt_parent_mode = clean
+            self.mqtt_capability_cache = None
+        return self.mqtt_parent_capability(force=clean != "force-off")
+
     def steer_node_parent(self, child_id: str, parent_id: str, band: str) -> dict[str, Any]:
         """Publish one guarded exact-Parent request through the router broker."""
         if self.demo:
             raise RouterError("Demo mode never sends Parent steering requests.")
-        topology = self.refresh(force=True)
         with self.lock:
             if not self.session.connected:
                 raise RouterError("No router is connected.")
             host = self.session.host
+            mode = self.mqtt_parent_mode
+        if mode == "force-off":
+            raise RouterError("MQTT Parent steering is forced off.")
+        topology = self.refresh(force=True)
         try:
             result = linksys_mqtt_parent.steer_parent(
                 host,
@@ -418,6 +463,7 @@ class MeshState:
                 (child_id or "").strip(),
                 (parent_id or "").strip(),
                 (band or "").strip().upper(),
+                require_capability_probe=mode != "force-on",
             )
         except linksys_mqtt_parent.MQTTParentError as exc:
             raise RouterError(str(exc)) from exc
@@ -1177,6 +1223,12 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
                         str(body.get("parentId") or ""),
                         str(body.get("band") or ""),
                     )
+                )
+                return
+            if route == "/api/mqtt-parent-steering":
+                body = self.read_json()
+                self.send_json(
+                    STATE.set_mqtt_parent_mode(str(body.get("mode") or ""))
                 )
                 return
             self.send_json({"error": "Endpoint not found."}, HTTPStatus.NOT_FOUND)
