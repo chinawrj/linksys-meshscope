@@ -26,6 +26,14 @@
   }
 
   function nodeDetailRows(node, formatNumber = (value) => String(value ?? "—")) {
+    const phyRate = Number(node.phyRateMbps);
+    const formattedPhyRate = Number.isFinite(phyRate)
+      ? phyRate >= 1000
+        ? `${formatNumber(phyRate / 1000, 2)} Gbps`
+        : `${formatNumber(phyRate)} Mbps`
+      : node.isAuthority
+        ? "Gateway"
+        : "—";
     return {
       metrics: [
         ["Current status", node.online ? "Online" : "Offline"],
@@ -37,6 +45,10 @@
             : node.isAuthority
               ? "Gateway"
               : "—",
+        ],
+        [
+          "Link PHY rate",
+          `${formattedPhyRate}${node.phyRateStale ? " · Stale sample" : ""}`,
         ],
         [
           "Backhaul signal",
@@ -52,6 +64,14 @@
         ["Parent node", node.parentName || (node.isAuthority ? "Internet / WAN" : "—")],
         ["Backhaul band", node.band],
         ["Channel", node.channel],
+        ["PHY source", node.isAuthority ? "—" : "MQTT BH/status · Child backhaul interface"],
+        ["PHY raw value", node.phyRateRaw || "—"],
+        [
+          "PHY sample age",
+          node.phyRateAgeSeconds !== null && node.phyRateAgeSeconds !== undefined
+            ? `${formatNumber(node.phyRateAgeSeconds)} seconds`
+            : "—",
+        ],
         ["Firmware version", node.firmwareVersion],
         ["Hardware version", node.hardwareVersion],
         ["Serial number", node.serialNumber],

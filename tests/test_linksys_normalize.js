@@ -94,6 +94,14 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
     routerConnected: false,
     clientDetails: "nodes-only",
     topologyLock: { supported: true, enabled: true },
+    backhaulPhyLinks: [{
+      nodeId: "CHILD",
+      rateMbps: 1729.3,
+      rawRate: "1.7293 Gb/s",
+      observedAt: "2026-01-01T00:00:01Z",
+      ageSeconds: 7,
+      stale: false,
+    }],
   });
   const child = result.nodes.find((item) => item.id === "child");
   const client = result.clients.find((item) => item.id === "client");
@@ -110,6 +118,10 @@ test("normalizes ESP32 raw JNAP into the existing MeshScope schema", () => {
   assert.equal(child.parentName, "Main");
   assert.equal(child.band, "5GH");
   assert.equal(child.speedMbps, 512.5);
+  assert.equal(child.phyRateMbps, 1729.3);
+  assert.equal(child.phyRateRaw, "1.7293 Gb/s");
+  assert.equal(child.phyRateAgeSeconds, 7);
+  assert.equal(child.phyRateStale, false);
   assert.equal(child.clientCount, 1);
   assert.equal(client.nodeName, "Atrium");
   assert.equal(client.speedMbps, 433);

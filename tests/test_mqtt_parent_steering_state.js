@@ -192,6 +192,63 @@ test("normalizes ESP32 capability and operation wire names", () => {
   assert.equal(Steering.isOperationActive(resolving), true);
 });
 
+test("normalizes per-child Parent steering health and exposes restart diagnostics", () => {
+  const report = Steering.normalize({
+    failureThreshold: 2,
+    parentRestartCooldownSeconds: 300,
+    nodeHealth: [{
+      childId: "YARD",
+      childName: "YardFront",
+      targetParentId: "TREE",
+      targetParentName: "BigTree",
+      band: "5GL",
+      state: "restart-eligible",
+      consecutiveFailures: 2,
+      totalFailures: 4,
+      successfulMoves: 1,
+      targetParentOnline: true,
+      targetParentOnlineChildren: 0,
+      lastRequestPublished: true,
+      lastCommandEchoed: true,
+      lastTargetBssid: "E8:9F:80:56:6D:90",
+      lastTargetChannel: 36,
+      lastOperationId: 17,
+    }],
+  });
+  const health = Steering.healthForNode(report, "yard");
+  assert.equal(health.failureThreshold, 2);
+  assert.equal(health.targetParentOnlineChildren, 0);
+  assert.equal(health.lastRequestPublished, true);
+  assert.equal(health.lastTargetChannel, 36);
+  const presentation = Steering.healthPresentation(health);
+  assert.equal(presentation.tone, "attention");
+  assert.match(presentation.label, /2\/2/);
+  assert.match(presentation.detail, /0 online mesh children/);
+  assert.match(presentation.detail, /published \+ echoed/);
+});
+
+test("Parent restart countdown decreases without hiding persisted statistics", () => {
+  const receivedAt = Date.parse("2026-08-10T10:00:00Z");
+  const health = Steering.normalizeHealth({
+    childId: "YARD",
+    targetParentId: "TREE",
+    targetParentName: "BigTree",
+    state: "cooldown",
+    consecutiveFailures: 0,
+    lastTriggerFailures: 2,
+    restartInSeconds: 300,
+    receivedAt,
+  });
+  assert.equal(
+    Steering.healthRestartRemaining(health, receivedAt + 125_000),
+    175,
+  );
+  const view = Steering.healthPresentation(health, receivedAt + 125_000);
+  assert.equal(view.tone, "cooldown");
+  assert.match(view.label, /175s/);
+  assert.equal(view.health.lastTriggerFailures, 2);
+});
+
 test("renders an accessible steering form without removing existing topology and client information", () => {
   const html = fs.readFileSync(path.join(WEB_ROOT, "index.html"), "utf8");
   const app = fs.readFileSync(path.join(WEB_ROOT, "app.js"), "utf8");
@@ -219,4 +276,8 @@ test("renders an accessible steering form without removing existing topology and
   assert.match(app, /MeshMqttParentSteering\.reconcileOperation/);
   assert.match(helper, /Topology Lock expects/);
   assert.match(app, /parent-steering-expanded/);
+  assert.match(app, /PARENT STEERING HEALTH/);
+  assert.match(app, /Parent online children/);
+  assert.match(app, /MQTT publish \/ echo/);
+  assert.match(app, /parent-health-expanded/);
 });

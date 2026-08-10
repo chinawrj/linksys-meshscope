@@ -39,7 +39,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
     def test_shared_configuration_preserves_home_assistant_experience(self):
         for fragment in (
             "api:",
-            "reboot_timeout: 0s",
+            "reboot_timeout: 5min",
             "encryption:",
             "ota:",
             "platform: sntp",
@@ -125,7 +125,10 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"/api/topology"',
             '"/api/refresh"',
             '"/api/node-capabilities"',
+            '"/api/node-sysinfo"',
+            '"/api/node-radio-info"',
             '"/api/restart-node"',
+            '"/api/node-steering-mode"',
             '"/api/topology-lock"',
             '"/api/mqtt-parent-steering"',
             '"/api/steer-node-parent"',
@@ -172,7 +175,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         app = WEB_APP.read_text(encoding="utf-8")
         css = WEB_CSS.read_text(encoding="utf-8")
         self.assertIn('id="topologyLockAcknowledgement"', html)
-        self.assertIn("Linksys chooses the parent after reboot", html)
+        self.assertIn("sends an exact MQTT Parent request", html)
         self.assertIn("!state.topologyLockAcknowledged", app)
         self.assertIn("#settingsButton::after", css)
         self.assertNotIn("\n  .button-quiet::after", css)
@@ -206,7 +209,10 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"expectedParentOnline"',
             '"confirmations"',
             '"parent-offline"',
-            '"restart-ready"',
+            '"steering-ready"',
+            '"recoveryTransport", "mqtt"',
+            "queue_topology_lock_mqtt_operation(",
+            'mqtt_operation.origin = "topology-lock"',
             "restart_cooldowns.find(mapping.node_id)",
         ):
             self.assertIn(fragment, self.edge)
@@ -218,6 +224,16 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
+
+    def test_topology_lock_uses_opposite_parent_backhaul_radio(self):
+        self.assertIn('parent_uplink == "5GH") return "5GL"', self.edge)
+        self.assertIn('parent_uplink == "5GL") return "5GH"', self.edge)
+        self.assertIn("parent.authority", self.edge)
+        evaluate = self.edge.split("static void evaluate_topology_lock(", 1)[1].split(
+            "static bool collect_snapshot(", 1
+        )[0]
+        self.assertIn("queue_topology_lock_mqtt_operation", evaluate)
+        self.assertNotIn('"core/Reboot"', evaluate)
 
     def test_client_details_are_adaptive_and_explicit(self):
         for fragment in (
@@ -256,11 +272,39 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "MQTT_PACKET_LIMIT_INTERNAL = 16 * 1024",
             "MQTT_PACKET_LIMIT_EXTERNAL = 32 * 1024",
             'esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")',
-            '"network/+/DEVINFO"',
+            'mqtt_append_text(body, "#")',
+            '"MQTT RX topic=%s payload_bytes=%u qos=%u"',
+            '"MQTT RX payload topic=%s offset=%u/%u data=%s"',
+            "if (received) vTaskDelay(1)",
             '"network/status_resend_all"',
             '"network/DEVINFO/status_resend_all"',
             '"network/BH/status_resend_all"',
+            "BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 1000",
+            "BACKHAUL_PHY_COLLECT_MS = 6 * 1000",
+            'mqtt_json_scalar(packet.body, payload_offset, "phyRate"',
+            'mqtt_json_scalar(packet.body, payload_offset, "phyRate_2"',
+            "mqtt_refresh_backhaul_phy(",
+            "backhaulPhyLinks",
+            '"rateMbps"',
+            '"rawRate"',
+            '"ageSeconds"',
+            '"stale"',
             '"/BH/config"',
+            '"network/master/cmd/nodes_steering_start"',
+            '"/WLAN/cmd/reconsider-backhaul"',
+            '"network/master/cmd/nodes_temporary_blacklist"',
+            'strcmp(method, "blacklist")',
+            '"resetReason"',
+            "MQTT_11V_FALLBACK_MS = 45 * 1000",
+            "MQTT_BACKHAUL_MONITOR_MS = 45 * 1000",
+            "MQTT_BLACKLIST_DURATION_SECONDS = 45",
+            '"client_bssid"',
+            '"ap_bssid"',
+            '"ap_channel"',
+            '"ap_uuid"',
+            'json_string(wireless, "stationBSSID")',
+            'strcmp(method, "11v")',
+            'strcmp(method, "reconsider")',
             "ascii_upper(operation.child_id)",
             "MQTT_VERIFY_GENERATIONS = 2",
             "MQTT_VERIFICATION_TIMEOUT_MS = 180 * 1000",
@@ -274,8 +318,26 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"transport", "mqtt-1883"',
             'mqtt_probe_requested ? "detecting"',
             '"202 Accepted"',
+            '"channelMode", mqtt_operation.channel_mode.c_str()',
+            'operation.channel_mode == "auto"',
+            'strcmp(channel_mode, "auto") != 0',
+            '"nodes/diagnostics/GetNodeNeighborInfo"',
+            'mqtt_confirm_target_from_child_neighbors(',
+            'target.source != "fresh Parent WLAN/serving_channels"',
+            'current_generation() <= previous_generation',
+            'mqtt_record_target(operation.id, target)',
+            '"targetBssid", mqtt_operation.target_bssid.c_str()',
+            '"targetChannel", mqtt_operation.target_channel',
+            '"method", mqtt_operation.method.c_str()',
+            "child_station_band = child.backhaul_band",
+            "parent_association_trackable",
+            '"requestedParentAssociationTrackable"',
         ):
             self.assertIn(fragment, self.common + self.edge)
+        self.assertNotIn("mqtt_radio_complete_from_parent_uplink", self.edge)
+        self.assertIn(
+            'if (!blacklist_sent && operation.method == "auto"', self.edge
+        )
         for example_path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE):
             self.assertIn(
                 'meshscope_mqtt_parent_steering: "auto"',
@@ -317,7 +379,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         ):
             self.assertIn(fragment, self.edge)
 
-    def test_router_mutations_are_limited_to_reboot_and_exact_parent_mqtt(self):
+    def test_router_mutations_are_limited_to_reboot_parent_mqtt_and_node_steering_gate(self):
         self.assertRegex(
             self.edge,
             re.compile(
@@ -325,12 +387,65 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
+        self.assertRegex(
+            self.edge,
+            re.compile(
+                r"jnap_request\(\s*parent\.ip,\s*\"core/Reboot\"",
+                re.MULTILINE,
+            ),
+        )
         self.assertNotIn("FactoryReset", self.edge)
         self.assertIn("RESTART_COOLDOWN_MS = 90000", self.edge)
         self.assertIn("resolve_node(node_id, node)", self.edge)
         self.assertEqual(self.edge.count('"/BH/config"'), 1)
+        self.assertEqual(
+            self.edge.count('"network/master/cmd/nodes_steering_start"'), 3
+        )
+        self.assertEqual(self.edge.count('"/WLAN/cmd/reconsider-backhaul"'), 3)
+        self.assertEqual(
+            self.edge.count('"network/master/cmd/nodes_temporary_blacklist"'), 5
+        )
+        self.assertEqual(
+            self.edge.count(
+                '"nodes/topologyoptimization/SetTopologyOptimizationSettings2"'
+            ),
+            1,
+        )
+        self.assertIn('"isClientSteeringEnabled", client_steering', self.edge)
+        self.assertIn('"isNodeSteeringEnabled", requested', self.edge)
         self.assertNotIn("SetRadioSettings", self.edge)
         self.assertNotIn("SetLANSettings", self.edge)
+
+    def test_parent_health_restart_requires_qualifying_failures_and_safe_parent(self):
+        for fragment in (
+            "PARENT_STEERING_FAILURE_THRESHOLD = 2",
+            "PARENT_HEALTH_RESTART_COOLDOWN_MS = 5 * 60 * 1000",
+            'operation.method == "bh-config"',
+            'operation.channel_mode == "exact"',
+            'command_topic.find("BH/config")',
+            "health.consecutive_failures++",
+            "health.consecutive_failures = 0",
+            "count_online_mesh_children(",
+            "parent->authority",
+            "parent_restart_request.pending = true",
+            "process_parent_restart_request()",
+            "parent_node_restart_remaining_ms_locked(",
+            '"MQTT Parent steering is forced off"',
+            '"failureThreshold"',
+            '"targetParentOnlineChildren"',
+            '"lastRequestPublished"',
+            '"restartInSeconds"',
+            'PARENT_HEALTH_NVS_NAMESPACE = "mesh_health"',
+        ):
+            self.assertIn(fragment, self.edge)
+        namespace = re.search(
+            r'PARENT_HEALTH_NVS_NAMESPACE = "([^"]+)"', self.edge
+        ).group(1)
+        self.assertLessEqual(len(namespace), 15)
+        self.assertLess(
+            self.edge.index("if (process_parent_restart_request()) continue;"),
+            self.edge.index("MqttSteeringOperation operation;", self.edge.index("static void mqtt_steering_worker")),
+        )
 
     def test_local_credentials_file_is_ignored(self):
         ignored = GITIGNORE.read_text(encoding="utf-8").splitlines()
@@ -364,7 +479,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '- "${meshscope_wireguard_ha_network}"',
             'peer_persistent_keepalive: "${meshscope_wireguard_keepalive}"',
             "require_connection_to_proceed: false",
-            "reboot_timeout: 0s",
+            "reboot_timeout: 5min",
             "WireGuard Peer Connected",
             "WireGuard Latest Handshake",
             "WireGuard Address",

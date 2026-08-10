@@ -24,6 +24,9 @@
     reason: "Checking the local Linksys MQTT broker.",
     testedAt: "",
     operation: null,
+    failureThreshold: 2,
+    parentRestartCooldownSeconds: 300,
+    nodeHealth: [],
   });
 
   function cleanMode(value) {
@@ -98,6 +101,40 @@
     };
   }
 
+  function normalizeHealth(value, defaults = {}) {
+    if (!value || typeof value !== "object") return null;
+    return {
+      ...value,
+      childId: value.childId || value.nodeId || "",
+      childName: value.childName || value.nodeName || "",
+      targetParentId: value.targetParentId || value.parentId || "",
+      targetParentName: value.targetParentName || value.parentName || "",
+      band: cleanBand(value.band),
+      state: String(value.state || "idle").trim().toLowerCase(),
+      reason: String(value.reason || ""),
+      failureThreshold: Math.max(1, Number(value.failureThreshold ?? defaults.failureThreshold ?? 2)),
+      consecutiveFailures: Math.max(0, Number(value.consecutiveFailures || 0)),
+      totalFailures: Math.max(0, Number(value.totalFailures || 0)),
+      successfulMoves: Math.max(0, Number(value.successfulMoves || 0)),
+      parentRestartCount: Math.max(0, Number(value.parentRestartCount || 0)),
+      lastTriggerFailures: Math.max(0, Number(value.lastTriggerFailures || 0)),
+      targetParentOnlineChildren: Math.max(0, Number(value.targetParentOnlineChildren || 0)),
+      targetParentOnline: value.targetParentOnline === true,
+      restartQueued: value.restartQueued === true,
+      restartInSeconds: Math.max(0, Number(value.restartInSeconds || 0)),
+      lastOperationId: value.lastOperationId || 0,
+      lastRequestPublished: value.lastRequestPublished === true,
+      lastCommandEchoed: value.lastCommandEchoed === true,
+      lastTargetBssid: value.lastTargetBssid || "",
+      lastTargetChannel: Math.max(0, Number(value.lastTargetChannel || 0)),
+      lastTargetSource: value.lastTargetSource || "",
+      lastFailureAt: value.lastFailureAt || "",
+      lastSuccessAt: value.lastSuccessAt || "",
+      lastParentRestartAt: value.lastParentRestartAt || "",
+      receivedAt: Number(value.receivedAt) || Date.now(),
+    };
+  }
+
   function effectiveEnabled(mode, available, roundTrip) {
     if (mode === "force-off") return false;
     if (mode === "force-on") return true;
@@ -125,6 +162,11 @@
     else if (available && roundTrip) state = "available";
     else if (!state) state = source.testedAt || probe.testedAt ? "unavailable" : "detecting";
     const hasOperation = Object.prototype.hasOwnProperty.call(source, "operation");
+    const failureThreshold = Math.max(1, Number(
+      source.failureThreshold ?? prior.failureThreshold ?? 2,
+    ));
+    const hasHealth = Object.prototype.hasOwnProperty.call(source, "nodeHealth");
+    const healthSource = hasHealth ? source.nodeHealth : prior.nodeHealth;
     return {
       ...DEFAULT_REPORT,
       ...prior,
@@ -138,6 +180,13 @@
       reason: source.reason || probe.reason || prior.reason || DEFAULT_REPORT.reason,
       testedAt: source.testedAt || probe.testedAt || prior.testedAt || "",
       operation: normalizeOperation(hasOperation ? source.operation : prior.operation),
+      failureThreshold,
+      parentRestartCooldownSeconds: Math.max(1, Number(
+        source.parentRestartCooldownSeconds ?? prior.parentRestartCooldownSeconds ?? 300,
+      )),
+      nodeHealth: Array.isArray(healthSource)
+        ? healthSource.map((item) => normalizeHealth(item, { failureThreshold })).filter(Boolean)
+        : [],
     };
   }
 
@@ -303,6 +352,57 @@
     return operation && sameId(operation.childId, nodeId) ? operation : null;
   }
 
+  function healthForNode(report, nodeId) {
+    const items = Array.isArray(report?.nodeHealth) ? report.nodeHealth : [];
+    return items.find((health) => sameId(health.childId, nodeId)) || null;
+  }
+
+  function healthRestartRemaining(health, now = Date.now()) {
+    if (!health) return 0;
+    const elapsed = Math.max(0, Math.floor((now - Number(health.receivedAt || now)) / 1000));
+    return Math.max(0, Number(health.restartInSeconds || 0) - elapsed);
+  }
+
+  function healthPresentation(value, now = Date.now()) {
+    const health = normalizeHealth(value);
+    if (!health) return null;
+    const target = health.targetParentName || health.targetParentId || "requested Parent";
+    const failures = `${health.consecutiveFailures}/${health.failureThreshold}`;
+    const childCount = health.targetParentOnlineChildren;
+    const remaining = healthRestartRemaining(health, now);
+    let tone = "watching";
+    let label = `Steering health · ${failures} failures`;
+    if (["restart-queued", "parent-restarting"].includes(health.state)) {
+      tone = "restarting";
+      label = health.state === "restart-queued"
+        ? `Restart queued · ${target}`
+        : `Restarting Parent · ${target}`;
+    } else if (health.state === "cooldown") {
+      tone = "cooldown";
+      label = `Parent restart cooldown · ${remaining}s`;
+    } else if (["blocked", "restart-failed"].includes(health.state)) {
+      tone = "blocked";
+      label = `Parent restart blocked · ${failures}`;
+    } else if (health.state === "recovered") {
+      tone = "healthy";
+      label = `Steering recovered · ${target}`;
+    } else if (health.consecutiveFailures >= health.failureThreshold) {
+      tone = "attention";
+      label = `Restart threshold reached · ${failures}`;
+    }
+    const published = health.lastRequestPublished
+      ? health.lastCommandEchoed ? "MQTT published + echoed" : "MQTT published"
+      : "No qualifying MQTT publish";
+    return {
+      tone,
+      label,
+      detail: `${target} · ${childCount} online mesh child${childCount === 1 ? "" : "ren"} · ${published}`,
+      reason: health.reason,
+      remaining,
+      health,
+    };
+  }
+
   function capabilityPresentation(value) {
     const report = normalize(value);
     if (report.mode === "force-off") {
@@ -357,9 +457,13 @@
     descendantIds,
     eligibleChildren,
     eligibleParents,
+    healthForNode,
+    healthPresentation,
+    healthRestartRemaining,
     isOperationActive,
     lockConflict,
     normalize,
+    normalizeHealth,
     normalizeOperation,
     operationForNode,
     operationFromResponse,

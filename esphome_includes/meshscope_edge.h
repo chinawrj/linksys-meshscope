@@ -17,6 +17,7 @@
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "nvs.h"
 #if defined(CONFIG_SPIRAM)
@@ -56,10 +57,19 @@ static constexpr size_t TOPOLOGY_LOCK_HISTORY_LIMIT = 8;
 static constexpr uint32_t REFRESH_WAIT_MS = 20000;
 static constexpr uint16_t MQTT_PORT = 1883;
 static constexpr uint32_t MQTT_PROBE_INTERVAL_MS = 5 * 60 * 1000;
+static constexpr uint32_t BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 1000;
+static constexpr uint32_t BACKHAUL_PHY_COLLECT_MS = 6 * 1000;
+static constexpr uint32_t BACKHAUL_PHY_STALE_MS = 2 * 60 * 1000;
 static constexpr uint32_t MQTT_OPERATION_TIMEOUT_MS = 20000;
 static constexpr uint32_t MQTT_OPERATION_DEDUP_MS = 60 * 1000;
 static constexpr uint32_t MQTT_VERIFICATION_TIMEOUT_MS = 180 * 1000;
+static constexpr uint32_t MQTT_BACKHAUL_MONITOR_MS = 45 * 1000;
+static constexpr uint32_t MQTT_11V_FALLBACK_MS = 45 * 1000;
+static constexpr uint32_t MQTT_BLACKLIST_DURATION_SECONDS = 45;
 static constexpr uint8_t MQTT_VERIFY_GENERATIONS = 2;
+static constexpr uint8_t PARENT_STEERING_FAILURE_THRESHOLD = 2;
+static constexpr uint32_t PARENT_HEALTH_RESTART_COOLDOWN_MS = 5 * 60 * 1000;
+static constexpr size_t PARENT_STEERING_HEALTH_LIMIT = 32;
 static constexpr size_t MQTT_PACKET_LIMIT_INTERNAL = 16 * 1024;
 static constexpr size_t MQTT_PACKET_LIMIT_EXTERNAL = 32 * 1024;
 
@@ -83,7 +93,16 @@ struct BackhaulObservation {
   std::string connection_type;
   std::string band;
   std::string parent_bssid;
+  std::string station_bssid;
   int channel = 0;
+};
+
+struct BackhaulPhyObservation {
+  std::string child_id;
+  std::string raw_rate;
+  std::string observed_at;
+  float rate_mbps = NAN;
+  uint32_t received_ms = 0;
 };
 
 struct StatsAccumulator {
@@ -102,6 +121,7 @@ struct NodeObservation {
   std::string connection_type;
   std::string backhaul_band;
   std::string parent_bssid;
+  std::string station_bssid;
   int backhaul_channel = 0;
   bool authority = false;
   bool online = false;
@@ -149,6 +169,7 @@ struct TopologyLockAction {
   std::string current_parent_id;
   std::string current_parent_name;
   std::string requested_at;
+  std::string transport = "mqtt";
   uint32_t uptime_ms = 0;
   bool accepted = false;
 };
@@ -172,13 +193,45 @@ enum class MqttSteeringMode : uint8_t {
 
 struct MqttRadioTarget {
   std::string bssid;
+  std::string observed_channel;
   int channel = 0;
   bool valid = false;
   bool matched_uuid = false;
   bool saw_bssid = false;
   bool saw_channel = false;
+  bool bssid_valid = false;
+  size_t observed_bssid_length = 0;
   uint16_t devinfo_records = 0;
   std::string source;
+};
+
+struct MqttBackhaulEvidence {
+  std::string child_id;
+  std::string requested_bssid;
+  std::string requested_parent_id;
+  std::string requested_station_bssid;
+  std::string command_topic;
+  std::string latest_topic;
+  std::string latest_uuid;
+  std::string latest_parent_ip;
+  std::string latest_ap_bssid;
+  std::string latest_sta_bssid;
+  std::string latest_band;
+  std::string latest_interface;
+  std::string latest_state;
+  std::string latest_timestamp;
+  std::string target_match_at;
+  std::string parent_subdev_status;
+  std::string parent_subdev_ap_bssid;
+  std::string parent_subdev_interface;
+  std::string parent_subdev_timestamp;
+  int latest_channel = 0;
+  uint16_t child_status_records = 0;
+  uint16_t parent_subdev_records = 0;
+  bool config_echoed = false;
+  bool target_match_seen = false;
+  bool parent_association_trackable = false;
+  bool parent_association_seen = false;
 };
 
 struct MqttSteeringOperation {
@@ -189,6 +242,14 @@ struct MqttSteeringOperation {
   std::string parent_name;
   std::string previous_parent_id;
   std::string band;
+  std::string method = "auto";
+  std::string child_station_bssid;
+  std::string child_station_band;
+  std::string channel_mode = "exact";
+  std::string target_bssid;
+  std::string target_source;
+  int target_channel = 0;
+  std::string origin = "manual";
   std::string state = "idle";
   std::string detail;
   std::string requested_at;
@@ -197,6 +258,41 @@ struct MqttSteeringOperation {
   uint32_t last_verified_generation = 0;
   uint8_t verification_generations = 0;
   uint8_t consecutive_matches = 0;
+  MqttBackhaulEvidence backhaul_evidence;
+  bool health_outcome_recorded = false;
+};
+
+struct ParentSteeringHealth {
+  std::string child_id;
+  std::string child_name;
+  std::string target_parent_id;
+  std::string target_parent_name;
+  std::string band;
+  std::string state = "idle";
+  std::string reason;
+  std::string last_failure_at;
+  std::string last_success_at;
+  std::string last_parent_restart_at;
+  std::string last_target_bssid;
+  std::string last_target_source;
+  uint32_t last_operation_id = 0;
+  uint32_t consecutive_failures = 0;
+  uint32_t total_failures = 0;
+  uint32_t successful_moves = 0;
+  uint32_t parent_restart_count = 0;
+  uint32_t last_trigger_failures = 0;
+  uint16_t target_parent_online_children = 0;
+  int last_target_channel = 0;
+  bool target_parent_online = false;
+  bool last_request_published = false;
+  bool last_command_echoed = false;
+};
+
+struct ParentRestartRequest {
+  std::string child_id;
+  std::string parent_id;
+  uint32_t source_operation_id = 0;
+  bool pending = false;
 };
 
 static std::string router_host;
@@ -210,6 +306,7 @@ static SemaphoreHandle_t memory_mutex = nullptr;
 static SemaphoreHandle_t topology_lock_mutex = nullptr;
 static SemaphoreHandle_t web_session_mutex = nullptr;
 static SemaphoreHandle_t mqtt_steering_mutex = nullptr;
+static SemaphoreHandle_t backhaul_phy_mutex = nullptr;
 static TaskHandle_t collector_task_handle = nullptr;
 static TaskHandle_t mqtt_steering_task_handle = nullptr;
 static httpd_handle_t server = nullptr;
@@ -237,6 +334,9 @@ static constexpr uint32_t WEB_SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
 static constexpr const char *WEB_SESSION_COOKIE = "meshscope_session";
 static constexpr const char *MQTT_NVS_NAMESPACE = "meshscope_mqtt";
 static constexpr const char *MQTT_NVS_MODE_KEY = "mode";
+// ESP-IDF limits NVS namespace names to 15 characters including no terminator.
+static constexpr const char *PARENT_HEALTH_NVS_NAMESPACE = "mesh_health";
+static constexpr const char *PARENT_HEALTH_NVS_KEY = "state";
 static MqttSteeringMode mqtt_default_mode = MqttSteeringMode::AUTO;
 static MqttSteeringMode mqtt_mode = MqttSteeringMode::AUTO;
 static bool mqtt_available = false;
@@ -244,17 +344,25 @@ static std::string mqtt_capability_reason = "Waiting for the first probe";
 static std::string mqtt_capability_proof;
 static std::string mqtt_last_probe_at;
 static uint32_t mqtt_last_probe_ms = 0;
+static uint32_t backhaul_phy_last_refresh_ms = 0;
 static bool mqtt_probe_requested = false;
 static bool mqtt_operation_pending = false;
 static MqttSteeringOperation mqtt_operation;
 static std::map<std::string, uint32_t> mqtt_child_cooldowns;
 static uint32_t mqtt_next_operation_id = 0;
+static std::map<std::string, ParentSteeringHealth> parent_steering_health;
+static ParentRestartRequest parent_restart_request;
+static std::map<std::string, BackhaulPhyObservation> backhaul_phy_observations;
+static uint64_t parent_health_last_restart_epoch = 0;
+static uint32_t parent_health_last_restart_uptime_ms = 0;
+static bool parent_health_restart_seen_this_boot = false;
 
 static const char *const READ_ACTIONS[] = {
     "core/GetDeviceInfo",
     "networkconnections/GetNetworkConnections2",
     "nodes/networkconnections/GetNodesWirelessNetworkConnections",
     "nodes/diagnostics/GetBackhaulInfo",
+    "nodes/diagnostics/GetNodeNeighborInfo",
     "nodes/smartmode/GetDeviceMode",
     "nodes/topologyoptimization/GetTopologyOptimizationSettings2",
     "router/GetWANStatus3",
@@ -379,8 +487,27 @@ static void load_mqtt_mode() {
 static size_t external_memory_size();
 static bool private_ipv4(const std::string &value);
 static void request_refresh();
+static uint32_t current_generation();
 static uint32_t uptime_ms();
 static std::vector<NodeObservation> current_node_observations();
+static esp_err_t send_cjson(httpd_req_t *request, cJSON *root);
+static bool mqtt_confirm_target_from_child_neighbors(
+    const MqttSteeringOperation &operation,
+    MqttRadioTarget &target,
+    bool &child_report_found,
+    uint32_t &snapshot_generation);
+static void mqtt_record_backhaul(
+    uint32_t operation_id,
+    const MqttBackhaulEvidence &evidence);
+static bool mqtt_mode_allows_probe();
+static void record_parent_steering_outcome(
+    const MqttSteeringOperation &operation,
+    bool verified,
+    const std::vector<NodeObservation> &nodes);
+static void evaluate_parent_steering_health(
+    const std::vector<NodeObservation> &nodes);
+static bool persist_parent_steering_health_locked();
+static void load_parent_steering_health();
 
 static void resolve_client_details_mode() {
   if (client_details_resolved) return;
@@ -556,12 +683,248 @@ static bool mqtt_valid_bssid(std::string &value) {
   return value != "00:00:00:00:00:00";
 }
 
+static float mqtt_rate_mbps(
+    const std::string &precise_kbps,
+    const std::string &display_rate) {
+  char *end = nullptr;
+  if (!precise_kbps.empty()) {
+    const float kbps = strtof(precise_kbps.c_str(), &end);
+    if (end != precise_kbps.c_str() && std::isfinite(kbps) && kbps > 0) {
+      const float mbps = kbps / 1000.0f;
+      if (mbps <= 100000.0f) return mbps;
+    }
+  }
+  end = nullptr;
+  const float value = strtof(display_rate.c_str(), &end);
+  if (end == display_rate.c_str() || !std::isfinite(value) || value <= 0) {
+    return NAN;
+  }
+  std::string units = ascii_lower(end ?: "");
+  float mbps = value;
+  if (units.find("gb") != std::string::npos) {
+    mbps *= 1000.0f;
+  } else if (units.find("kb") != std::string::npos) {
+    mbps /= 1000.0f;
+  }
+  return mbps <= 100000.0f ? mbps : NAN;
+}
+
+static void mqtt_backhaul_phy_from_packet(
+    const std::string &topic,
+    const MqttWirePacket &packet,
+    size_t payload_offset) {
+  static constexpr const char *PREFIX = "network/";
+  static constexpr const char *SUFFIX = "/BH/status";
+  if (topic.compare(0, strlen(PREFIX), PREFIX) != 0 ||
+      topic.size() <= strlen(PREFIX) + strlen(SUFFIX) ||
+      topic.compare(
+          topic.size() - strlen(SUFFIX),
+          strlen(SUFFIX),
+          SUFFIX) != 0) {
+    return;
+  }
+  const std::string child_id = topic.substr(
+      strlen(PREFIX),
+      topic.size() - strlen(PREFIX) - strlen(SUFFIX));
+  if (child_id.empty() || child_id == "master" || child_id == "all") return;
+
+  std::string raw_rate;
+  std::string precise_kbps;
+  mqtt_json_scalar(packet.body, payload_offset, "phyRate", raw_rate);
+  mqtt_json_scalar(packet.body, payload_offset, "phyRate_2", precise_kbps);
+  const float rate_mbps = mqtt_rate_mbps(precise_kbps, raw_rate);
+  if (!std::isfinite(rate_mbps)) return;
+
+  std::string observed_at;
+  if (!mqtt_json_scalar(packet.body, payload_offset, "TS", observed_at)) {
+    mqtt_json_scalar(packet.body, payload_offset, "timestamp", observed_at);
+  }
+  if (observed_at.empty()) observed_at = iso_timestamp();
+  if (backhaul_phy_mutex == nullptr ||
+      xSemaphoreTake(backhaul_phy_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    return;
+  }
+  BackhaulPhyObservation &observation =
+      backhaul_phy_observations[ascii_lower(child_id)];
+  observation.child_id = child_id;
+  observation.raw_rate = raw_rate.empty() ? precise_kbps : raw_rate;
+  observation.observed_at = observed_at;
+  observation.rate_mbps = rate_mbps;
+  observation.received_ms = uptime_ms();
+  xSemaphoreGive(backhaul_phy_mutex);
+  ESP_LOGI(
+      TAG,
+      "Backhaul PHY child=%s rate=%.1f Mbps raw=%s",
+      child_id.c_str(),
+      rate_mbps,
+      raw_rate.c_str());
+}
+
+static void mqtt_backhaul_from_packet(
+    const std::string &topic,
+    const MqttWirePacket &packet,
+    size_t payload_offset,
+    MqttBackhaulEvidence *evidence) {
+  if (evidence == nullptr) return;
+  if (!evidence->command_topic.empty() && topic == evidence->command_topic) {
+    evidence->config_echoed = true;
+    ESP_LOGI(
+        TAG,
+        "MQTT command echo child=%s topic=%s",
+        evidence->child_id.c_str(),
+        topic.c_str());
+  }
+  if (evidence->child_id.empty() || topic.compare(0, 8, "network/") != 0) {
+    return;
+  }
+  static constexpr const char *WLAN_SUBDEV = "/WLAN/subdev/";
+  const size_t subdev_offset = topic.find(WLAN_SUBDEV, 8);
+  if (subdev_offset != std::string::npos && subdev_offset > 8) {
+    static constexpr const char *STATUS_SUFFIX = "/status";
+    const size_t station_offset = subdev_offset + strlen(WLAN_SUBDEV);
+    const size_t status_offset = topic.find(STATUS_SUFFIX, station_offset);
+    const std::string parent_uuid = topic.substr(8, subdev_offset - 8);
+    const std::string station_bssid =
+        status_offset == std::string::npos
+            ? ""
+            : topic.substr(station_offset, status_offset - station_offset);
+    if (!evidence->requested_parent_id.empty() &&
+        !evidence->requested_station_bssid.empty() &&
+        same_node_id(parent_uuid, evidence->requested_parent_id) &&
+        same_node_id(station_bssid, evidence->requested_station_bssid)) {
+      evidence->parent_subdev_records++;
+      mqtt_json_scalar(
+          packet.body,
+          payload_offset,
+          "status",
+          evidence->parent_subdev_status);
+      mqtt_json_scalar(
+          packet.body,
+          payload_offset,
+          "ap_bssid",
+          evidence->parent_subdev_ap_bssid);
+      if (!mqtt_json_scalar(
+              packet.body,
+              payload_offset,
+              "interface",
+              evidence->parent_subdev_interface)) {
+        mqtt_json_scalar(
+            packet.body,
+            payload_offset,
+            "intf",
+            evidence->parent_subdev_interface);
+      }
+      if (!mqtt_json_scalar(
+              packet.body,
+              payload_offset,
+              "TS",
+              evidence->parent_subdev_timestamp)) {
+        mqtt_json_scalar(
+            packet.body,
+            payload_offset,
+            "timestamp",
+            evidence->parent_subdev_timestamp);
+      }
+      if (ascii_lower(evidence->parent_subdev_status) == "connected") {
+        evidence->parent_association_seen = true;
+      }
+      ESP_LOGI(
+          TAG,
+          "MQTT Parent WLAN/subdev parent=%s station=%s status=%s ap_bssid=%s interface=%s association_seen=%s",
+          parent_uuid.c_str(),
+          station_bssid.c_str(),
+          evidence->parent_subdev_status.c_str(),
+          evidence->parent_subdev_ap_bssid.c_str(),
+          evidence->parent_subdev_interface.c_str(),
+          evidence->parent_association_seen ? "true" : "false");
+    }
+    return;
+  }
+  const size_t bh_offset = topic.find("/BH/", 8);
+  if (bh_offset == std::string::npos || bh_offset <= 8) return;
+  const std::string topic_uuid = topic.substr(8, bh_offset - 8);
+  if (!same_node_id(topic_uuid, evidence->child_id)) return;
+  const std::string message = topic.substr(bh_offset + 4);
+  if (message == "config") {
+    evidence->config_echoed = true;
+    ESP_LOGI(
+        TAG,
+        "MQTT BH/config echo child=%s topic=%s",
+        evidence->child_id.c_str(),
+        topic.c_str());
+    return;
+  }
+  if (message != "status") return;
+
+  std::string uuid;
+  mqtt_json_scalar(packet.body, payload_offset, "uuid", uuid);
+  if (!uuid.empty() && !same_node_id(uuid, evidence->child_id)) return;
+  evidence->child_status_records++;
+  evidence->latest_topic = topic;
+  evidence->latest_uuid = uuid.empty() ? topic_uuid : uuid;
+  mqtt_json_scalar(
+      packet.body, payload_offset, "parent_ip", evidence->latest_parent_ip);
+  mqtt_json_scalar(
+      packet.body, payload_offset, "ap_bssid", evidence->latest_ap_bssid);
+  mqtt_json_scalar(
+      packet.body, payload_offset, "sta_bssid", evidence->latest_sta_bssid);
+  mqtt_json_scalar(packet.body, payload_offset, "band", evidence->latest_band);
+  if (!mqtt_json_scalar(
+          packet.body,
+          payload_offset,
+          "interface",
+          evidence->latest_interface)) {
+    mqtt_json_scalar(
+        packet.body, payload_offset, "intf", evidence->latest_interface);
+  }
+  mqtt_json_scalar(packet.body, payload_offset, "state", evidence->latest_state);
+  if (!mqtt_json_scalar(
+          packet.body, payload_offset, "TS", evidence->latest_timestamp)) {
+    mqtt_json_scalar(
+        packet.body, payload_offset, "timestamp", evidence->latest_timestamp);
+  }
+  std::string channel;
+  evidence->latest_channel = 0;
+  if (mqtt_json_scalar(packet.body, payload_offset, "channel", channel)) {
+    char *end = nullptr;
+    const long parsed = strtol(channel.c_str(), &end, 10);
+    if (end != channel.c_str() && *end == '\0' && parsed >= 1 && parsed <= 196) {
+      evidence->latest_channel = static_cast<int>(parsed);
+    }
+  }
+  std::string observed_bssid = evidence->latest_ap_bssid;
+  const bool valid_observed_bssid = mqtt_valid_bssid(observed_bssid);
+  if (valid_observed_bssid) evidence->latest_ap_bssid = observed_bssid;
+  if (valid_observed_bssid && !evidence->requested_bssid.empty() &&
+      ascii_lower(evidence->requested_bssid) == observed_bssid) {
+    evidence->target_match_seen = true;
+    if (evidence->target_match_at.empty()) {
+      evidence->target_match_at = iso_timestamp();
+    }
+  }
+  ESP_LOGI(
+      TAG,
+      "MQTT BH/status child=%s parent_ip=%s ap_bssid=%s sta_bssid=%s "
+      "band=%s interface=%s channel=%d state=%s TS=%s target_match=%s",
+      evidence->child_id.c_str(),
+      evidence->latest_parent_ip.c_str(),
+      evidence->latest_ap_bssid.c_str(),
+      evidence->latest_sta_bssid.c_str(),
+      evidence->latest_band.c_str(),
+      evidence->latest_interface.c_str(),
+      evidence->latest_channel,
+      evidence->latest_state.c_str(),
+      evidence->latest_timestamp.c_str(),
+      evidence->target_match_seen ? "true" : "false");
+}
+
 static bool mqtt_devinfo_from_packet(
     const MqttWirePacket &packet,
     const std::string &wanted_parent_id,
     bool &saw_devinfo,
     MqttRadioTarget *target,
-    const std::string &band) {
+    const std::string &band,
+    MqttBackhaulEvidence *backhaul_evidence = nullptr) {
   if (packet.type != 3 || packet.body.size() < 2) return false;
   const size_t topic_size =
       (static_cast<uint8_t>(packet.body[0]) << 8) |
@@ -569,20 +932,58 @@ static bool mqtt_devinfo_from_packet(
   size_t payload_offset = 2 + topic_size;
   if (payload_offset > packet.body.size()) return false;
   const std::string topic = packet.body.substr(2, topic_size);
-  if (topic.size() < 8 || topic.compare(topic.size() - 8, 8, "/DEVINFO") != 0) {
-    return false;
-  }
   const uint8_t qos = (packet.flags >> 1) & 0x03;
   if (qos > 0) {
     if (payload_offset + 2 > packet.body.size()) return false;
     payload_offset += 2;
   }
+  const size_t payload_size = packet.body.size() - payload_offset;
+  ESP_LOGI(
+      TAG,
+      "MQTT RX topic=%s payload_bytes=%u qos=%u",
+      topic.c_str(),
+      static_cast<unsigned>(payload_size),
+      static_cast<unsigned>(qos));
+  // ESP-IDF truncates individual log records. Keep each payload fragment
+  // deliberately small so the complete MQTT message survives the logger,
+  // including long network/<UUID>/... topic names.
+  static constexpr size_t MQTT_LOG_CHUNK = 160;
+  for (size_t offset = 0; offset < payload_size; offset += MQTT_LOG_CHUNK) {
+    const size_t length =
+        std::min(MQTT_LOG_CHUNK, payload_size - offset);
+    const std::string chunk = packet.body.substr(payload_offset + offset, length);
+    ESP_LOGI(
+        TAG,
+        "MQTT RX payload topic=%s offset=%u/%u data=%s",
+        topic.c_str(),
+      static_cast<unsigned>(offset),
+      static_cast<unsigned>(payload_size),
+      chunk.c_str());
+  }
+  mqtt_backhaul_phy_from_packet(topic, packet, payload_offset);
+  mqtt_backhaul_from_packet(
+      topic, packet, payload_offset, backhaul_evidence);
+  const bool is_devinfo =
+      topic.size() >= 8 && topic.compare(topic.size() - 8, 8, "/DEVINFO") == 0;
+  static constexpr const char *SERVING_CHANNELS = "/WLAN/serving_channels";
+  const size_t serving_suffix_length = strlen(SERVING_CHANNELS);
+  const bool is_serving_channels =
+      topic.size() >= serving_suffix_length &&
+      topic.compare(
+          topic.size() - serving_suffix_length,
+          serving_suffix_length,
+          SERVING_CHANNELS) == 0;
+  if (!is_devinfo && !is_serving_channels) {
+    return false;
+  }
   std::string uuid;
   if (!mqtt_json_scalar(packet.body, payload_offset, "uuid", uuid) || uuid.empty()) {
     return false;
   }
-  saw_devinfo = true;
-  if (target != nullptr) target->devinfo_records++;
+  if (is_devinfo) {
+    saw_devinfo = true;
+    if (target != nullptr) target->devinfo_records++;
+  }
   if (target == nullptr || wanted_parent_id.empty() ||
       !same_node_id(uuid, wanted_parent_id)) {
     return true;
@@ -601,7 +1002,11 @@ static bool mqtt_devinfo_from_packet(
       payload_offset,
       (prefix + "_channel").c_str(),
       channel_text);
-  if (!target->saw_bssid || !target->saw_channel || !mqtt_valid_bssid(bssid)) {
+  target->observed_bssid_length = bssid.size();
+  target->observed_channel = channel_text.substr(0, 24);
+  target->bssid_valid = target->saw_bssid && mqtt_valid_bssid(bssid);
+  if (target->bssid_valid) target->bssid = bssid;
+  if (!target->saw_bssid || !target->saw_channel || !target->bssid_valid) {
     return true;
   }
   char *end = nullptr;
@@ -609,10 +1014,11 @@ static bool mqtt_devinfo_from_packet(
   if (end == channel_text.c_str() || *end != '\0' || channel < 1 || channel > 196) {
     return true;
   }
-  target->bssid = bssid;
   target->channel = static_cast<int>(channel);
   target->valid = true;
-  target->source = "fresh Parent DEVINFO";
+  target->source = is_serving_channels
+                       ? "fresh Parent WLAN/serving_channels"
+                       : "fresh Parent DEVINFO";
   return true;
 }
 
@@ -724,7 +1130,7 @@ class MqttWireSession {
     std::string body;
     body.push_back(static_cast<char>((packet_id >> 8) & 0xff));
     body.push_back(static_cast<char>(packet_id & 0xff));
-    mqtt_append_text(body, "network/+/DEVINFO");
+    mqtt_append_text(body, "#");
     body.push_back(0);
     if (!send_packet(0x82, body)) {
       error = "Unable to send the MQTT subscription";
@@ -755,7 +1161,8 @@ class MqttWireSession {
       MqttRadioTarget *target,
       const std::string &wanted_parent_id,
       const std::string &band,
-      std::string &error) {
+      std::string &error,
+      MqttBackhaulEvidence *backhaul_evidence = nullptr) {
     const uint16_t packet_id = next_packet_id();
     std::string body;
     mqtt_append_text(body, topic);
@@ -772,7 +1179,12 @@ class MqttWireSession {
       if (!read_packet(packet)) continue;
       if (packet.type == 3) {
         mqtt_devinfo_from_packet(
-            packet, wanted_parent_id, saw_devinfo, target, band);
+            packet,
+            wanted_parent_id,
+            saw_devinfo,
+            target,
+            band,
+            backhaul_evidence);
         continue;
       }
       if (packet.type == 4 && packet.body.size() == 2 &&
@@ -800,6 +1212,29 @@ class MqttWireSession {
       if (target != nullptr ? target->valid : saw_devinfo) return true;
     }
     return false;
+  }
+
+  void wait_for_backhaul(
+      MqttBackhaulEvidence &evidence,
+      uint32_t timeout_ms) {
+    const uint32_t deadline = uptime_ms() + timeout_ms;
+    bool saw_devinfo = false;
+    while (static_cast<int32_t>(deadline - uptime_ms()) > 0) {
+      MqttWirePacket packet;
+      if (!read_packet(packet)) continue;
+      mqtt_devinfo_from_packet(
+          packet, "", saw_devinfo, nullptr, "", &evidence);
+    }
+  }
+
+  void wait_for_link_metrics(uint32_t timeout_ms) {
+    const uint32_t deadline = uptime_ms() + timeout_ms;
+    bool saw_devinfo = false;
+    while (static_cast<int32_t>(deadline - uptime_ms()) > 0) {
+      MqttWirePacket packet;
+      if (!read_packet(packet)) continue;
+      mqtt_devinfo_from_packet(packet, "", saw_devinfo, nullptr, "");
+    }
   }
 
  private:
@@ -850,8 +1285,15 @@ class MqttWireSession {
     packet.type = static_cast<uint8_t>(first) >> 4;
     packet.flags = static_cast<uint8_t>(first) & 0x0f;
     packet.body.resize(remaining);
-    return remaining == 0 ||
-           mqtt_recv_all(socket_fd_, packet.body.data(), packet.body.size());
+    const bool received =
+        remaining == 0 ||
+        mqtt_recv_all(socket_fd_, packet.body.data(), packet.body.size());
+    // A wildcard subscription can remain continuously readable while Linksys
+    // republishes infrastructure state. Yield after each complete packet so
+    // full diagnostic logging cannot starve ESPHome's main task and trip its
+    // task watchdog.
+    if (received) vTaskDelay(1);
+    return received;
   }
 };
 
@@ -899,9 +1341,30 @@ static bool mqtt_probe_roundtrip(std::string &error) {
   return saw_devinfo;
 }
 
+static bool mqtt_refresh_backhaul_phy(std::string &error) {
+  MqttWireSession session;
+  if (!session.connect_to_router(error) || !session.subscribe_devinfo(error)) {
+    return false;
+  }
+  bool saw_devinfo = false;
+  if (!session.publish(
+          "network/BH/status_resend_all",
+          "",
+          saw_devinfo,
+          nullptr,
+          "",
+          "",
+          error)) {
+    return false;
+  }
+  session.wait_for_link_metrics(BACKHAUL_PHY_COLLECT_MS);
+  return true;
+}
+
 static bool mqtt_publish_parent_request(
     const MqttSteeringOperation &operation,
     MqttRadioTarget &target,
+    MqttBackhaulEvidence &backhaul_evidence,
     std::string &error) {
   MqttWireSession session;
   if (!session.connect_to_router(error) || !session.subscribe_devinfo(error)) {
@@ -926,6 +1389,7 @@ static bool mqtt_publish_parent_request(
         saw_devinfo,
         &target);
   }
+  if (!target.valid) mqtt_radio_from_observed_child(operation, target);
   if (!target.valid) {
     if (!target.matched_uuid) {
       error = "No fresh DEVINFO matched the requested Parent after " +
@@ -934,14 +1398,85 @@ static bool mqtt_publish_parent_request(
       error = "The requested Parent DEVINFO did not contain a valid " +
               operation.band + " radio tuple (BSSID field " +
               (target.saw_bssid ? "present" : "missing") +
+              ", BSSID format " +
+              (target.bssid_valid ? "valid" : "invalid") +
+              ", BSSID length " +
+              std::to_string(target.observed_bssid_length) +
               ", channel field " +
-              (target.saw_channel ? "present" : "missing") + ")";
+              (target.saw_channel ? "present" : "missing") +
+              ", channel value '" + target.observed_channel + "')";
     }
     return false;
   }
+  bool target_visible = false;
+  bool child_report_found = false;
+  uint32_t checked_generation = 0;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    child_report_found = false;
+    target_visible = mqtt_confirm_target_from_child_neighbors(
+        operation, target, child_report_found, checked_generation);
+    if (target_visible || !child_report_found) break;
+    if (attempt >= 2) break;
+
+    ESP_LOGW(
+        TAG,
+        "MQTT Parent target %s was absent from cached child scan generation %u; refreshing before rejecting",
+        target.bssid.c_str(),
+        static_cast<unsigned>(checked_generation));
+    const uint32_t previous_generation = checked_generation;
+    request_refresh();
+    const uint32_t wait_started = uptime_ms();
+    while (current_generation() <= previous_generation &&
+           uptime_ms() - wait_started < 10000) {
+      vTaskDelay(pdMS_TO_TICKS(250));
+    }
+  }
+  if (!target_visible && child_report_found &&
+      target.source != "fresh Parent WLAN/serving_channels") {
+    error = "The Parent radio BSSID from DEVINFO is not visible in the child " +
+            operation.child_name + " neighbor scan on " + operation.band;
+    return false;
+  }
+  if (!target_visible && child_report_found) {
+    ESP_LOGW(
+        TAG,
+        "MQTT Parent target %s was not visible in child scan generation %u after refresh; proceeding because fresh Parent serving_channels supplied the complete tuple",
+        target.bssid.c_str(),
+        static_cast<unsigned>(checked_generation));
+  }
+  ESP_LOGI(
+      TAG,
+      "MQTT Parent target child=%s parent=%s band=%s channel=%d bssid=%s source=%s",
+      operation.child_name.c_str(),
+      operation.parent_name.c_str(),
+      operation.band.c_str(),
+      target.channel,
+      target.bssid.c_str(),
+      target.source.c_str());
   if (!target.valid) {
     error = "The requested Parent did not report a valid " + operation.band + " radio";
     return false;
+  }
+  std::string client_station_bssid = operation.child_station_bssid;
+  const bool station_bssid_valid = mqtt_valid_bssid(client_station_bssid);
+  const bool requested_11v = operation.method == "11v";
+  const bool requested_blacklist = operation.method == "blacklist";
+  const bool requested_reconsider = operation.method == "reconsider";
+  const bool use_11v =
+      !requested_blacklist && !requested_reconsider &&
+      (requested_11v || (operation.method == "auto" && station_bssid_valid));
+  if ((requested_11v || requested_blacklist) && !station_bssid_valid) {
+    error = "The child Node did not report a valid current backhaul station BSSID";
+    return false;
+  }
+  backhaul_evidence.child_id = operation.child_id;
+  backhaul_evidence.requested_bssid = target.bssid;
+  backhaul_evidence.requested_parent_id = operation.parent_id;
+  backhaul_evidence.parent_association_trackable =
+      station_bssid_valid &&
+      ascii_upper(operation.child_station_band) == ascii_upper(operation.band);
+  if (backhaul_evidence.parent_association_trackable) {
+    backhaul_evidence.requested_station_bssid = client_station_bssid;
   }
   bool publish_allowed = false;
   if (mqtt_steering_mutex != nullptr &&
@@ -950,7 +1485,11 @@ static bool mqtt_publish_parent_request(
                       mqtt_operation.id == operation.id;
     if (publish_allowed) {
       mqtt_operation.state = "publishing";
-      mqtt_operation.detail = "Publishing the exact Parent request to BH/config";
+      mqtt_operation.detail = requested_blacklist
+                                  ? "Publishing Linksys' temporary Parent blacklist over MQTT"
+                              : use_11v
+                                  ? "Publishing an 802.11v Parent request over MQTT"
+                                  : "Publishing the exact Parent request to BH/config";
     }
     xSemaphoreGive(mqtt_steering_mutex);
   }
@@ -958,20 +1497,89 @@ static bool mqtt_publish_parent_request(
     error = "MQTT Parent steering was turned off before publish";
     return false;
   }
+  if (!use_11v && !requested_blacklist && !requested_reconsider &&
+      station_bssid_valid) {
+    bool refresh_saw_devinfo = false;
+    std::string refresh_error;
+    if (session.publish(
+            "network/all/WLAN/cmd/send-all-subdev",
+            iso_timestamp(),
+            refresh_saw_devinfo,
+            nullptr,
+            "",
+            operation.band,
+            refresh_error,
+            &backhaul_evidence)) {
+      session.wait_for_backhaul(backhaul_evidence, 2500);
+    } else {
+      ESP_LOGW(
+          TAG,
+          "MQTT pre-steering WLAN/subdev refresh was not acknowledged: %s",
+          refresh_error.c_str());
+    }
+  }
   const std::string child_id = ascii_upper(operation.child_id);
-  const std::string topic = "network/" + child_id + "/BH/config";
+  std::string root_uuid = child_id;
+  if (use_11v || requested_blacklist || requested_reconsider) {
+    for (const auto &node : current_node_observations()) {
+      if (node.authority && !node.id.empty()) {
+        root_uuid = ascii_upper(node.id);
+        break;
+      }
+    }
+  }
+  const std::string topic = requested_blacklist
+                                ? "network/master/cmd/nodes_temporary_blacklist"
+                            : requested_reconsider
+                                ? "network/" + child_id +
+                                      "/WLAN/cmd/reconsider-backhaul"
+                            : use_11v
+                                ? "network/master/cmd/nodes_steering_start"
+                                : "network/" + child_id + "/BH/config";
   cJSON *root = cJSON_CreateObject();
   if (root == nullptr) {
     error = "Unable to allocate the Parent steering payload";
     return false;
   }
-  cJSON_AddStringToObject(root, "uuid", child_id.c_str());
-  cJSON_AddStringToObject(root, "type", "set");
+  cJSON_AddStringToObject(root, "uuid", root_uuid.c_str());
+  cJSON_AddStringToObject(
+      root,
+      "type",
+      (use_11v || requested_blacklist || requested_reconsider) ? "cmd" : "set");
   cJSON_AddStringToObject(root, "TS", iso_timestamp().c_str());
   cJSON *data = cJSON_AddObjectToObject(root, "data");
-  cJSON_AddStringToObject(data, "band", operation.band.c_str());
-  cJSON_AddStringToObject(data, "bssid", target.bssid.c_str());
-  cJSON_AddStringToObject(data, "channel", std::to_string(target.channel).c_str());
+  if (requested_reconsider) {
+    cJSON_AddStringToObject(
+        data, "context_id", std::to_string(operation.id).c_str());
+  } else if (requested_blacklist) {
+    cJSON_AddStringToObject(data, "client", client_station_bssid.c_str());
+    cJSON_AddStringToObject(
+        data,
+        "duration",
+        std::to_string(MQTT_BLACKLIST_DURATION_SECONDS).c_str());
+    cJSON_AddStringToObject(data, "action", "start");
+    cJSON *exclude = cJSON_AddArrayToObject(data, "exclude");
+    cJSON_AddItemToArray(
+        exclude,
+        cJSON_CreateString(ascii_upper(operation.parent_id).c_str()));
+  } else if (use_11v) {
+    cJSON_AddStringToObject(
+        data, "client_bssid", client_station_bssid.c_str());
+    cJSON_AddStringToObject(data, "ap_bssid", target.bssid.c_str());
+    cJSON_AddStringToObject(
+        data, "ap_channel", std::to_string(target.channel).c_str());
+    cJSON_AddStringToObject(
+        data, "ap_uuid", ascii_upper(operation.parent_id).c_str());
+  } else {
+    cJSON_AddStringToObject(data, "band", operation.band.c_str());
+    cJSON_AddStringToObject(data, "bssid", target.bssid.c_str());
+    cJSON_AddStringToObject(
+        data,
+        "channel",
+        operation.channel_mode == "auto"
+            ? "auto"
+            : std::to_string(target.channel).c_str());
+  }
   char *serialized = cJSON_PrintUnformatted(root);
   const std::string payload = serialized ?: "";
   cJSON_free(serialized);
@@ -980,14 +1588,290 @@ static bool mqtt_publish_parent_request(
     error = "Unable to allocate the Parent steering payload";
     return false;
   }
-  return session.publish(
+  backhaul_evidence.command_topic = topic;
+  const bool acknowledged = session.publish(
       topic,
       payload,
       saw_devinfo,
       nullptr,
       "",
       operation.band,
-      error);
+      error,
+      &backhaul_evidence);
+  if (acknowledged) {
+    // The broker may deliver our subscribed BH/config echo just after PUBACK.
+    // Keep the original session alive briefly so that evidence is not lost.
+    session.wait_for_backhaul(backhaul_evidence, 2000);
+  }
+  return acknowledged;
+}
+
+static void mqtt_monitor_backhaul(
+    const MqttSteeringOperation &operation,
+    const MqttRadioTarget &target,
+    MqttBackhaulEvidence &evidence) {
+  evidence.child_id = operation.child_id;
+  evidence.requested_bssid = target.bssid;
+  std::string error;
+  MqttWireSession session;
+  if (!session.connect_to_router(error) || !session.subscribe_devinfo(error)) {
+    ESP_LOGW(TAG, "MQTT BH/status monitor unavailable: %s", error.c_str());
+    mqtt_record_backhaul(operation.id, evidence);
+    return;
+  }
+  ESP_LOGI(
+      TAG,
+      "MQTT BH/status monitor started child=%s requested_parent=%s "
+      "requested_bssid=%s duration=%us",
+      operation.child_name.c_str(),
+      operation.parent_name.c_str(),
+      target.bssid.c_str(),
+      static_cast<unsigned>(MQTT_BACKHAUL_MONITOR_MS / 1000));
+  const uint32_t monitor_started = uptime_ms();
+  const uint32_t deadline = uptime_ms() + MQTT_BACKHAUL_MONITOR_MS;
+  bool blacklist_sent = operation.method == "blacklist";
+  bool blacklist_cancelled = false;
+  uint32_t blacklist_started_ms = blacklist_sent ? monitor_started : 0;
+  auto publish_blacklist_control = [&](const char *action,
+                                       bool exclude_parent,
+                                       std::string &publish_error) {
+    std::string authority_id = ascii_upper(operation.child_id);
+    for (const auto &node : current_node_observations()) {
+      if (node.authority && !node.id.empty()) {
+        authority_id = ascii_upper(node.id);
+        break;
+      }
+    }
+    cJSON *root = cJSON_CreateObject();
+    if (root == nullptr) {
+      publish_error = "Unable to allocate the MQTT blacklist control payload";
+      return false;
+    }
+    cJSON_AddStringToObject(root, "uuid", authority_id.c_str());
+    cJSON_AddStringToObject(root, "type", "cmd");
+    cJSON_AddStringToObject(root, "TS", iso_timestamp().c_str());
+    cJSON *data = cJSON_AddObjectToObject(root, "data");
+    cJSON_AddStringToObject(
+        data, "client", operation.child_station_bssid.c_str());
+    cJSON_AddStringToObject(
+        data,
+        "duration",
+        exclude_parent
+            ? std::to_string(MQTT_BLACKLIST_DURATION_SECONDS).c_str()
+            : "0");
+    cJSON_AddStringToObject(data, "action", action);
+    if (exclude_parent) {
+      cJSON *exclude = cJSON_AddArrayToObject(data, "exclude");
+      cJSON_AddItemToArray(
+          exclude,
+          cJSON_CreateString(ascii_upper(operation.parent_id).c_str()));
+    }
+    char *serialized = cJSON_PrintUnformatted(root);
+    const std::string payload = serialized ?: "";
+    cJSON_free(serialized);
+    cJSON_Delete(root);
+    if (payload.empty()) {
+      publish_error = "Unable to allocate the MQTT blacklist control payload";
+      return false;
+    }
+    bool saw_devinfo = false;
+    evidence.command_topic =
+        "network/master/cmd/nodes_temporary_blacklist";
+    return session.publish(
+        evidence.command_topic,
+        payload,
+        saw_devinfo,
+        nullptr,
+        "",
+        operation.band,
+        publish_error,
+        &evidence);
+  };
+  while (static_cast<int32_t>(deadline - uptime_ms()) > 0) {
+    if (blacklist_sent && !blacklist_cancelled &&
+        uptime_ms() - blacklist_started_ms >=
+            MQTT_BLACKLIST_DURATION_SECONDS * 1000) {
+      std::string cancel_error;
+      blacklist_cancelled =
+          publish_blacklist_control("cancel", false, cancel_error);
+      if (blacklist_cancelled) {
+        ESP_LOGI(
+            TAG,
+            "MQTT temporary blacklist explicitly cancelled child=%s station_bssid=%s",
+            operation.child_name.c_str(),
+            operation.child_station_bssid.c_str());
+        request_refresh();
+      } else {
+        ESP_LOGW(
+            TAG,
+            "MQTT temporary blacklist cancel failed: %s",
+            cancel_error.c_str());
+      }
+    }
+    bool saw_devinfo = false;
+    std::string refresh_error;
+    if (!session.publish(
+            "network/BH/status_resend_all",
+            "",
+            saw_devinfo,
+            nullptr,
+            "",
+            operation.band,
+            refresh_error,
+            &evidence)) {
+      ESP_LOGW(
+          TAG,
+          "MQTT BH/status refresh was not acknowledged: %s",
+          refresh_error.c_str());
+    }
+    if (!operation.child_station_bssid.empty()) {
+      bool wlan_saw_devinfo = false;
+      std::string wlan_refresh_error;
+      if (!session.publish(
+              "network/all/WLAN/cmd/send-all-subdev",
+              iso_timestamp(),
+              wlan_saw_devinfo,
+              nullptr,
+              "",
+              operation.band,
+              wlan_refresh_error,
+              &evidence)) {
+        ESP_LOGW(
+            TAG,
+            "MQTT WLAN/subdev refresh was not acknowledged: %s",
+            wlan_refresh_error.c_str());
+      }
+    }
+    session.wait_for_backhaul(evidence, 8000);
+    mqtt_record_backhaul(operation.id, evidence);
+    if (!blacklist_sent && operation.method == "auto" &&
+        uptime_ms() - monitor_started >= MQTT_11V_FALLBACK_MS &&
+        !evidence.target_match_seen) {
+      bool still_waiting = false;
+      if (mqtt_steering_mutex != nullptr &&
+          xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        still_waiting = mqtt_operation.id == operation.id &&
+                        mqtt_operation.state == "verification-pending" &&
+                        mqtt_operation.consecutive_matches == 0 &&
+                        mqtt_mode != MqttSteeringMode::FORCE_OFF;
+        xSemaphoreGive(mqtt_steering_mutex);
+      }
+      if (still_waiting) {
+        std::string station_bssid = operation.child_station_bssid;
+        if (mqtt_valid_bssid(station_bssid)) {
+          std::string stale_cancel_error;
+          if (publish_blacklist_control(
+                  "cancel", false, stale_cancel_error)) {
+            ESP_LOGI(
+                TAG,
+                "MQTT cleared stale temporary blacklists before steering child=%s",
+                operation.child_name.c_str());
+            vTaskDelay(pdMS_TO_TICKS(500));
+          } else {
+            ESP_LOGW(
+                TAG,
+                "MQTT stale blacklist cleanup failed before steering: %s",
+                stale_cancel_error.c_str());
+          }
+          std::string authority_id = ascii_upper(operation.child_id);
+          for (const auto &node : current_node_observations()) {
+            if (node.authority && !node.id.empty()) {
+              authority_id = ascii_upper(node.id);
+              break;
+            }
+          }
+          cJSON *root = cJSON_CreateObject();
+          if (root == nullptr) {
+            ESP_LOGW(TAG, "Unable to allocate the MQTT blacklist payload");
+            blacklist_sent = true;
+            mqtt_record_backhaul(operation.id, evidence);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+          }
+          cJSON_AddStringToObject(root, "uuid", authority_id.c_str());
+          cJSON_AddStringToObject(root, "type", "cmd");
+          cJSON_AddStringToObject(root, "TS", iso_timestamp().c_str());
+          cJSON *data = cJSON_AddObjectToObject(root, "data");
+          cJSON_AddStringToObject(data, "client", station_bssid.c_str());
+          cJSON_AddStringToObject(
+              data,
+              "duration",
+              std::to_string(MQTT_BLACKLIST_DURATION_SECONDS).c_str());
+          cJSON_AddStringToObject(data, "action", "start");
+          cJSON *exclude = cJSON_AddArrayToObject(data, "exclude");
+          cJSON_AddItemToArray(
+              exclude,
+              cJSON_CreateString(ascii_upper(operation.parent_id).c_str()));
+          char *serialized = cJSON_PrintUnformatted(root);
+          const std::string payload = serialized ?: "";
+          cJSON_free(serialized);
+          cJSON_Delete(root);
+          bool saw_devinfo = false;
+          std::string publish_error;
+          // This is the exact topic used by Linksys' pub_nodes_temporary_blacklist
+          // utility and tess_steer. Publishing it directly also works on nodes
+          // whose topology_management compatibility service is absent/disabled.
+          evidence.command_topic =
+              "network/master/cmd/nodes_temporary_blacklist";
+          blacklist_sent = session.publish(
+              evidence.command_topic,
+              payload,
+              saw_devinfo,
+              nullptr,
+              "",
+              operation.band,
+              publish_error,
+              &evidence);
+          if (blacklist_sent) {
+            blacklist_started_ms = uptime_ms();
+            blacklist_cancelled = false;
+            ESP_LOGI(
+                TAG,
+                "MQTT 11v fallback published temporary blacklist child=%s "
+                "station_bssid=%s excluded_parent=%s duration=%us",
+                operation.child_name.c_str(),
+                station_bssid.c_str(),
+                operation.parent_name.c_str(),
+                static_cast<unsigned>(MQTT_BLACKLIST_DURATION_SECONDS));
+            if (mqtt_steering_mutex != nullptr &&
+                xSemaphoreTake(
+                    mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+              if (mqtt_operation.id == operation.id &&
+                  mqtt_operation.state == "verification-pending") {
+                mqtt_operation.method = "11v+temporary-blacklist";
+                mqtt_operation.detail =
+                    "11v was not observed; MQTT temporary blacklist is forcing "
+                    "the requested Parent";
+              }
+              xSemaphoreGive(mqtt_steering_mutex);
+            }
+            request_refresh();
+            App.wake_loop_threadsafe();
+          } else {
+            ESP_LOGW(
+                TAG,
+                "MQTT 11v fallback publish failed: %s",
+                publish_error.c_str());
+          }
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+  ESP_LOGI(
+      TAG,
+      "MQTT BH/status monitor finished child=%s records=%u "
+      "config_echoed=%s target_match_seen=%s latest_parent_ip=%s "
+      "latest_ap_bssid=%s latest_channel=%d latest_state=%s",
+      operation.child_name.c_str(),
+      static_cast<unsigned>(evidence.child_status_records),
+      evidence.config_echoed ? "true" : "false",
+      evidence.target_match_seen ? "true" : "false",
+      evidence.latest_parent_ip.c_str(),
+      evidence.latest_ap_bssid.c_str(),
+      evidence.latest_channel,
+      evidence.latest_state.c_str());
+  mqtt_record_backhaul(operation.id, evidence);
 }
 
 static std::string base64_basic_auth(
@@ -1679,6 +2563,72 @@ static const char *json_string(const cJSON *object, const char *name) {
   return cJSON_IsString(value) && value->valuestring != nullptr ? value->valuestring : nullptr;
 }
 
+static bool mqtt_confirm_target_from_child_neighbors(
+    const MqttSteeringOperation &operation,
+    MqttRadioTarget &target,
+    bool &child_report_found,
+    uint32_t &snapshot_generation) {
+  child_report_found = false;
+  snapshot_generation = 0;
+  if (memory_mutex == nullptr || snapshot_mutex == nullptr ||
+      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    return true;
+  }
+  if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    xSemaphoreGive(memory_mutex);
+    return true;
+  }
+  snapshot_generation = snapshot.generation;
+  cJSON *root = parse_response_root(
+      snapshot, "nodes/diagnostics/GetNodeNeighborInfo");
+  const cJSON *output = response_output(root);
+  const cJSON *devices = output != nullptr
+                             ? cJSON_GetObjectItemCaseSensitive(
+                                   output, "nodeNeighborDevices")
+                             : nullptr;
+  bool matched = false;
+  if (cJSON_IsArray(devices)) {
+    cJSON *device = nullptr;
+    cJSON_ArrayForEach(device, devices) {
+      if (!same_node_id(
+              json_string(device, "deviceUUID") ?: "",
+              operation.child_id)) {
+        continue;
+      }
+      child_report_found = true;
+      const cJSON *neighbors =
+          cJSON_GetObjectItemCaseSensitive(device, "neighborNodes");
+      if (!cJSON_IsArray(neighbors)) break;
+      cJSON *neighbor = nullptr;
+      cJSON_ArrayForEach(neighbor, neighbors) {
+        std::string bssid = json_string(neighbor, "macAddress") ?: "";
+        if (!mqtt_valid_bssid(bssid) || !same_node_id(bssid, target.bssid)) {
+          continue;
+        }
+        const cJSON *channel_value =
+            cJSON_GetObjectItemCaseSensitive(neighbor, "channel");
+        if (!cJSON_IsNumber(channel_value)) continue;
+        const int channel = channel_value->valueint;
+        const bool matching_band =
+            operation.band == "5GL"
+                ? channel >= 36 && channel < 100
+                : channel >= 100 && channel <= 196;
+        if (!matching_band) continue;
+        target.channel = channel;
+        target.valid = true;
+        target.source = "fresh Parent DEVINFO + child JNAP neighbor scan";
+        matched = true;
+        break;
+      }
+      break;
+    }
+  }
+  cJSON_Delete(root);
+  xSemaphoreGive(snapshot_mutex);
+  xSemaphoreGive(memory_mutex);
+  return matched || !child_report_found;
+}
+
 static std::string build_node_device_filter(
     const StatsAccumulator &accumulator,
     std::string &receive_workspace) {
@@ -1912,6 +2862,7 @@ static bool accumulate_backhaul(
       if (cJSON_IsObject(wireless)) {
         observed.band = json_string(wireless, "radioID") ?: "";
         observed.parent_bssid = json_string(wireless, "apBSSID") ?: "";
+        observed.station_bssid = json_string(wireless, "stationBSSID") ?: "";
         const cJSON *channel =
             cJSON_GetObjectItemCaseSensitive(wireless, "channel");
         if (cJSON_IsNumber(channel)) {
@@ -1992,6 +2943,7 @@ static bool calculate_device_stats(
             observed.connection_type = backhaul->second.connection_type;
             observed.backhaul_band = backhaul->second.band;
             observed.parent_bssid = backhaul->second.parent_bssid;
+            observed.station_bssid = backhaul->second.station_bssid;
             observed.backhaul_channel = backhaul->second.channel;
           }
           if (authority && observed.ip.empty() && private_ipv4(router_host)) {
@@ -2069,6 +3021,359 @@ static const NodeObservation *find_observed_node(
   return nullptr;
 }
 
+static uint32_t parent_health_restart_remaining_ms_locked() {
+  if (parent_health_restart_seen_this_boot) {
+    const uint32_t elapsed =
+        uptime_ms() - parent_health_last_restart_uptime_ms;
+    return elapsed >= PARENT_HEALTH_RESTART_COOLDOWN_MS
+               ? 0
+               : PARENT_HEALTH_RESTART_COOLDOWN_MS - elapsed;
+  }
+  if (parent_health_last_restart_epoch == 0) return 0;
+  const uint64_t now = wall_clock_epoch();
+  if (now == 0) return PARENT_HEALTH_RESTART_COOLDOWN_MS;
+  const uint64_t elapsed_seconds =
+      now >= parent_health_last_restart_epoch
+          ? now - parent_health_last_restart_epoch
+          : 0;
+  const uint64_t cooldown_seconds =
+      PARENT_HEALTH_RESTART_COOLDOWN_MS / 1000;
+  return elapsed_seconds >= cooldown_seconds
+             ? 0
+             : static_cast<uint32_t>(
+                   (cooldown_seconds - elapsed_seconds) * 1000ULL);
+}
+
+static uint32_t parent_node_restart_remaining_ms_locked(
+    const std::string &parent_id) {
+  const auto restart = restart_cooldowns.find(parent_id);
+  if (restart == restart_cooldowns.end()) return 0;
+  const uint32_t elapsed = uptime_ms() - restart->second;
+  return elapsed >= PARENT_HEALTH_RESTART_COOLDOWN_MS
+             ? 0
+             : PARENT_HEALTH_RESTART_COOLDOWN_MS - elapsed;
+}
+
+static bool persist_parent_steering_health_locked() {
+  cJSON *root = cJSON_CreateObject();
+  if (root == nullptr) return false;
+  cJSON_AddNumberToObject(root, "version", 1);
+  cJSON_AddNumberToObject(
+      root,
+      "lastParentRestartEpoch",
+      static_cast<double>(parent_health_last_restart_epoch));
+  cJSON *items = cJSON_AddArrayToObject(root, "nodes");
+  size_t saved = 0;
+  for (const auto &entry : parent_steering_health) {
+    if (saved++ >= PARENT_STEERING_HEALTH_LIMIT) break;
+    const ParentSteeringHealth &health = entry.second;
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "childId", health.child_id.c_str());
+    cJSON_AddStringToObject(item, "childName", health.child_name.c_str());
+    cJSON_AddStringToObject(
+        item, "targetParentId", health.target_parent_id.c_str());
+    cJSON_AddStringToObject(
+        item, "targetParentName", health.target_parent_name.c_str());
+    cJSON_AddStringToObject(item, "band", health.band.c_str());
+    cJSON_AddStringToObject(
+        item, "lastFailureAt", health.last_failure_at.c_str());
+    cJSON_AddStringToObject(
+        item, "lastSuccessAt", health.last_success_at.c_str());
+    cJSON_AddStringToObject(
+        item, "lastParentRestartAt", health.last_parent_restart_at.c_str());
+    cJSON_AddStringToObject(
+        item, "lastTargetBssid", health.last_target_bssid.c_str());
+    cJSON_AddStringToObject(
+        item, "lastTargetSource", health.last_target_source.c_str());
+    cJSON_AddNumberToObject(
+        item, "lastOperationId", health.last_operation_id);
+    cJSON_AddNumberToObject(
+        item, "consecutiveFailures", health.consecutive_failures);
+    cJSON_AddNumberToObject(item, "totalFailures", health.total_failures);
+    cJSON_AddNumberToObject(
+        item, "successfulMoves", health.successful_moves);
+    cJSON_AddNumberToObject(
+        item, "parentRestartCount", health.parent_restart_count);
+    cJSON_AddNumberToObject(
+        item, "lastTriggerFailures", health.last_trigger_failures);
+    cJSON_AddNumberToObject(
+        item, "lastTargetChannel", health.last_target_channel);
+    cJSON_AddBoolToObject(
+        item, "lastRequestPublished", health.last_request_published);
+    cJSON_AddBoolToObject(
+        item, "lastCommandEchoed", health.last_command_echoed);
+    cJSON_AddItemToArray(items, item);
+  }
+  char *serialized = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  if (serialized == nullptr) return false;
+  nvs_handle_t handle = 0;
+  esp_err_t result = nvs_open(
+      PARENT_HEALTH_NVS_NAMESPACE, NVS_READWRITE, &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_str(handle, PARENT_HEALTH_NVS_KEY, serialized);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  cJSON_free(serialized);
+  if (result != ESP_OK) {
+    ESP_LOGW(
+        TAG,
+        "Unable to persist Parent steering health: %s",
+        esp_err_to_name(result));
+  }
+  return result == ESP_OK;
+}
+
+static uint32_t json_u32(const cJSON *object, const char *name) {
+  const cJSON *value = cJSON_GetObjectItemCaseSensitive(object, name);
+  return cJSON_IsNumber(value) && value->valuedouble > 0
+             ? static_cast<uint32_t>(value->valuedouble)
+             : 0;
+}
+
+static void load_parent_steering_health() {
+  nvs_handle_t handle = 0;
+  if (nvs_open(
+          PARENT_HEALTH_NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+    return;
+  }
+  size_t length = 0;
+  esp_err_t result =
+      nvs_get_str(handle, PARENT_HEALTH_NVS_KEY, nullptr, &length);
+  if (result != ESP_OK || length < 3 || length > 16384) {
+    nvs_close(handle);
+    return;
+  }
+  std::vector<char> data(length);
+  result = nvs_get_str(
+      handle, PARENT_HEALTH_NVS_KEY, data.data(), &length);
+  nvs_close(handle);
+  if (result != ESP_OK) return;
+  cJSON *root = cJSON_Parse(data.data());
+  if (root == nullptr) return;
+  parent_health_last_restart_epoch =
+      json_u32(root, "lastParentRestartEpoch");
+  const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "nodes");
+  const cJSON *item = nullptr;
+  size_t loaded = 0;
+  if (cJSON_IsArray(items)) {
+    cJSON_ArrayForEach(item, items) {
+      const char *child_id = json_string(item, "childId");
+      const char *parent_id = json_string(item, "targetParentId");
+      if (child_id == nullptr || parent_id == nullptr ||
+          child_id[0] == '\0' || parent_id[0] == '\0' ||
+          strlen(child_id) > 128 || strlen(parent_id) > 128 ||
+          loaded++ >= PARENT_STEERING_HEALTH_LIMIT) {
+        continue;
+      }
+      ParentSteeringHealth health;
+      health.child_id = child_id;
+      health.child_name = json_string(item, "childName") ?: "";
+      health.target_parent_id = parent_id;
+      health.target_parent_name =
+          json_string(item, "targetParentName") ?: "";
+      health.band = json_string(item, "band") ?: "";
+      health.last_failure_at =
+          json_string(item, "lastFailureAt") ?: "";
+      health.last_success_at =
+          json_string(item, "lastSuccessAt") ?: "";
+      health.last_parent_restart_at =
+          json_string(item, "lastParentRestartAt") ?: "";
+      health.last_target_bssid =
+          json_string(item, "lastTargetBssid") ?: "";
+      health.last_target_source =
+          json_string(item, "lastTargetSource") ?: "";
+      health.last_operation_id = json_u32(item, "lastOperationId");
+      health.consecutive_failures =
+          json_u32(item, "consecutiveFailures");
+      health.total_failures = json_u32(item, "totalFailures");
+      health.successful_moves = json_u32(item, "successfulMoves");
+      health.parent_restart_count =
+          json_u32(item, "parentRestartCount");
+      health.last_trigger_failures =
+          json_u32(item, "lastTriggerFailures");
+      health.last_target_channel =
+          static_cast<int>(json_u32(item, "lastTargetChannel"));
+      health.last_request_published =
+          json_bool(item, "lastRequestPublished");
+      health.last_command_echoed =
+          json_bool(item, "lastCommandEchoed");
+      health.state = health.consecutive_failures > 0 ? "watching" : "idle";
+      health.reason = health.consecutive_failures > 0
+                          ? "Restored consecutive steering failures"
+                          : "No unresolved steering failures";
+      parent_steering_health[ascii_lower(health.child_id)] =
+          std::move(health);
+    }
+  }
+  cJSON_Delete(root);
+  ESP_LOGI(
+      TAG,
+      "Parent steering health restored: nodes=%u",
+      static_cast<unsigned>(parent_steering_health.size()));
+}
+
+static uint16_t count_online_mesh_children(
+    const std::vector<NodeObservation> &nodes,
+    const std::string &parent_id) {
+  uint16_t count = 0;
+  for (const auto &node : nodes) {
+    if (node.online && !node.authority &&
+        same_node_id(node.parent_id, parent_id)) {
+      count++;
+    }
+  }
+  return count;
+}
+
+static void evaluate_parent_steering_health(
+    const std::vector<NodeObservation> &nodes) {
+  const bool automation_enabled = mqtt_mode_allows_probe();
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return;
+  }
+  const uint32_t restart_remaining =
+      parent_health_restart_remaining_ms_locked();
+  bool changed = false;
+  bool restart_pending = parent_restart_request.pending;
+  for (auto &entry : parent_steering_health) {
+    ParentSteeringHealth &health = entry.second;
+    const NodeObservation *parent =
+        find_observed_node(nodes, health.target_parent_id);
+    health.target_parent_online = parent != nullptr && parent->online;
+    health.target_parent_online_children = count_online_mesh_children(
+        nodes, health.target_parent_id);
+    if (health.state == "parent-restarting" &&
+        health.consecutive_failures == 0) {
+      if (restart_remaining > 0) {
+        health.reason = health.target_parent_online
+                            ? "Restart accepted; Parent is online while the five-minute safety timer runs"
+                            : "Restart accepted; waiting for Parent to return online";
+      } else {
+        health.state = "idle";
+        health.reason = health.target_parent_online
+                            ? "Parent restart window completed"
+                            : "Parent is still offline after the restart window";
+      }
+      continue;
+    }
+    if (health.consecutive_failures < PARENT_STEERING_FAILURE_THRESHOLD) {
+      continue;
+    }
+    if (parent == nullptr || !parent->online) {
+      health.state = "blocked";
+      health.reason = "Requested Parent is offline; restart would not help";
+    } else if (parent->authority) {
+      health.state = "blocked";
+      health.reason = "The primary gateway is never restarted automatically";
+    } else if (health.target_parent_online_children > 0) {
+      health.state = "blocked";
+      health.reason = "Requested Parent has online mesh children";
+    } else if (!automation_enabled) {
+      health.state = "blocked";
+      health.reason = "MQTT Parent steering is forced off";
+    } else if (std::max(
+                   restart_remaining,
+                   parent_node_restart_remaining_ms_locked(
+                       health.target_parent_id)) > 0) {
+      health.state = "cooldown";
+      health.reason = "Waiting for the five-minute Parent restart limit";
+    } else if (parent_restart_request.pending) {
+      if (same_node_id(parent_restart_request.child_id, health.child_id)) {
+        health.state = "restart-queued";
+        health.reason = "Parent restart is queued";
+      } else {
+        health.state = "blocked";
+        health.reason = "Another Parent restart is already queued";
+      }
+    } else {
+      parent_restart_request.child_id = health.child_id;
+      parent_restart_request.parent_id = health.target_parent_id;
+      parent_restart_request.source_operation_id = health.last_operation_id;
+      parent_restart_request.pending = true;
+      restart_pending = true;
+      health.state = "restart-queued";
+      health.reason = "Failure threshold reached and Parent has no online mesh child";
+      changed = true;
+      ESP_LOGW(
+          TAG,
+          "Parent health queued restart: child=%s parent=%s failures=%u",
+          health.child_name.c_str(),
+          health.target_parent_name.c_str(),
+          static_cast<unsigned>(health.consecutive_failures));
+    }
+  }
+  if (changed) persist_parent_steering_health_locked();
+  xSemaphoreGive(topology_lock_mutex);
+  if (restart_pending && mqtt_steering_task_handle != nullptr) {
+    xTaskNotifyGive(mqtt_steering_task_handle);
+  }
+  App.wake_loop_threadsafe();
+}
+
+static void record_parent_steering_outcome(
+    const MqttSteeringOperation &operation,
+    bool verified,
+    const std::vector<NodeObservation> &nodes) {
+  const bool exact_bh_config =
+      operation.method == "bh-config" &&
+      operation.channel_mode == "exact" &&
+      operation.backhaul_evidence.command_topic.find("BH/config") !=
+          std::string::npos;
+  if (!verified && !exact_bh_config) return;
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return;
+  }
+  const std::string key = ascii_lower(operation.child_id);
+  ParentSteeringHealth &health = parent_steering_health[key];
+  if (!health.target_parent_id.empty() &&
+      !same_node_id(health.target_parent_id, operation.parent_id)) {
+    health.consecutive_failures = 0;
+  }
+  health.child_id = operation.child_id;
+  health.child_name = operation.child_name;
+  health.target_parent_id = operation.parent_id;
+  health.target_parent_name = operation.parent_name;
+  health.band = operation.band;
+  health.last_operation_id = operation.id;
+  health.last_target_bssid = operation.target_bssid;
+  health.last_target_channel = operation.target_channel;
+  health.last_target_source = operation.target_source;
+  health.last_request_published = exact_bh_config;
+  health.last_command_echoed =
+      operation.backhaul_evidence.config_echoed;
+  const NodeObservation *parent =
+      find_observed_node(nodes, operation.parent_id);
+  health.target_parent_online = parent != nullptr && parent->online;
+  health.target_parent_online_children = count_online_mesh_children(
+      nodes, operation.parent_id);
+  if (verified) {
+    health.successful_moves++;
+    health.consecutive_failures = 0;
+    health.last_success_at = iso_timestamp();
+    health.state = "recovered";
+    health.reason = "The requested Parent was verified in fresh topology";
+  } else {
+    health.consecutive_failures++;
+    health.total_failures++;
+    health.last_failure_at = iso_timestamp();
+    health.state = health.consecutive_failures >=
+                           PARENT_STEERING_FAILURE_THRESHOLD
+                       ? "restart-eligible"
+                       : "watching";
+    health.reason = health.consecutive_failures >=
+                            PARENT_STEERING_FAILURE_THRESHOLD
+                        ? "Consecutive exact steering failures reached the restart threshold"
+                        : "Waiting for another qualifying exact steering result";
+  }
+  persist_parent_steering_health_locked();
+  xSemaphoreGive(topology_lock_mutex);
+  evaluate_parent_steering_health(nodes);
+}
+
 static bool mqtt_operation_is_active(const MqttSteeringOperation &operation) {
   return operation.state == "queued" ||
          operation.state == "probing" ||
@@ -2091,22 +3396,29 @@ static bool mqtt_operation_active_for_node(const std::string &node_id) {
 static bool mqtt_topology_lock_conflict(
     const std::string &child_id,
     const std::string &parent_id,
-    std::string &error) {
+    std::string &error,
+    bool require_locked_mapping = false) {
   if (topology_lock_mutex == nullptr ||
       xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
     error = "Topology Lock is temporarily busy";
     return true;
   }
   bool conflict = false;
+  bool found = false;
   if (topology_lock_enabled) {
     for (const auto &mapping : topology_lock_mappings) {
       if (!same_node_id(mapping.node_id, child_id)) continue;
+      found = true;
       if (!same_node_id(mapping.parent_id, parent_id)) {
         conflict = true;
         error = "Topology Lock expects a different Parent for this Node";
       }
       break;
     }
+  }
+  if (require_locked_mapping && (!topology_lock_enabled || !found)) {
+    conflict = true;
+    error = "Topology Lock no longer requests this Parent relationship";
   }
   xSemaphoreGive(topology_lock_mutex);
   return conflict;
@@ -2140,17 +3452,105 @@ static void mqtt_verify_operation(
   } else {
     mqtt_operation.consecutive_matches = 0;
   }
+  bool terminal = false;
+  bool verified = false;
+  MqttSteeringOperation completed;
   if (mqtt_operation.consecutive_matches >= MQTT_VERIFY_GENERATIONS) {
     mqtt_operation.state = "verified";
     mqtt_operation.detail = "The requested Parent matched two consecutive topology generations";
+    terminal = !mqtt_operation.health_outcome_recorded;
+    verified = true;
   } else if (uptime_ms() - mqtt_operation.started_ms >=
              MQTT_VERIFICATION_TIMEOUT_MS) {
     mqtt_operation.state = "failed";
     mqtt_operation.detail =
         "The requested Parent was not confirmed within 180 seconds";
+    terminal = !mqtt_operation.health_outcome_recorded;
+  }
+  if (terminal) {
+    mqtt_operation.health_outcome_recorded = true;
+    completed = mqtt_operation;
   }
   xSemaphoreGive(mqtt_steering_mutex);
+  if (terminal) {
+    record_parent_steering_outcome(completed, verified, nodes);
+  }
   App.wake_loop_threadsafe();
+}
+
+static bool mqtt_preflight(
+    const std::vector<NodeObservation> &nodes,
+    const std::string &child_id,
+    const std::string &parent_id,
+    NodeObservation &child,
+    NodeObservation &parent,
+    std::string &error);
+
+static std::string topology_lock_recovery_band(
+    const NodeObservation &child,
+    const NodeObservation &parent) {
+  const std::string parent_uplink = ascii_upper(parent.backhaul_band);
+  if (!parent.authority && parent_uplink == "5GH") return "5GL";
+  if (!parent.authority && parent_uplink == "5GL") return "5GH";
+  const std::string child_uplink = ascii_upper(child.backhaul_band);
+  return child_uplink == "5GL" ? "5GL" : "5GH";
+}
+
+static bool queue_topology_lock_mqtt_operation(
+    const NodeObservation &child,
+    const NodeObservation &parent,
+    std::string &error) {
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    error = "MQTT Parent steering is temporarily busy";
+    return false;
+  }
+  if (mqtt_mode == MqttSteeringMode::FORCE_OFF) {
+    error = "MQTT Parent steering is disabled";
+    xSemaphoreGive(mqtt_steering_mutex);
+    return false;
+  }
+  if (mqtt_mode == MqttSteeringMode::AUTO && !mqtt_available) {
+    error = "The automatic MQTT capability probe has not succeeded";
+    xSemaphoreGive(mqtt_steering_mutex);
+    return false;
+  }
+  if (mqtt_operation_is_active(mqtt_operation) || mqtt_operation_pending) {
+    error = "Another Parent steering request is still in progress";
+    xSemaphoreGive(mqtt_steering_mutex);
+    return false;
+  }
+  const std::string cooldown_key = ascii_lower(child.id);
+  const auto cooldown = mqtt_child_cooldowns.find(cooldown_key);
+  if (cooldown != mqtt_child_cooldowns.end() &&
+      uptime_ms() - cooldown->second < MQTT_OPERATION_DEDUP_MS) {
+    error = "This Node was steered recently";
+    xSemaphoreGive(mqtt_steering_mutex);
+    return false;
+  }
+  mqtt_operation = {};
+  mqtt_operation.id = ++mqtt_next_operation_id;
+  mqtt_operation.child_id = child.id;
+  mqtt_operation.child_name = child.name;
+  mqtt_operation.parent_id = parent.id;
+  mqtt_operation.parent_name = parent.name;
+  mqtt_operation.previous_parent_id = child.parent_id;
+  mqtt_operation.band = topology_lock_recovery_band(child, parent);
+  mqtt_operation.method = "bh-config";
+  mqtt_operation.child_station_bssid = child.station_bssid;
+  mqtt_operation.child_station_band = child.backhaul_band;
+  mqtt_operation.origin = "topology-lock";
+  mqtt_operation.state = "queued";
+  mqtt_operation.detail = "Topology Lock queued an exact MQTT Parent request";
+  mqtt_operation.requested_at = iso_timestamp();
+  mqtt_operation.started_ms = uptime_ms();
+  mqtt_operation_pending = true;
+  xSemaphoreGive(mqtt_steering_mutex);
+  if (mqtt_steering_task_handle != nullptr) {
+    xTaskNotifyGive(mqtt_steering_task_handle);
+  }
+  App.wake_loop_threadsafe();
+  return true;
 }
 
 static uint32_t topology_lock_remaining_ms_locked() {
@@ -2384,6 +3784,21 @@ static cJSON *topology_lock_json(
       "state",
       topology_lock_enabled ? "monitoring" : "unlocked");
   cJSON_AddStringToObject(root, "lockedAt", topology_lock_saved_at.c_str());
+  MqttSteeringMode recovery_mode = MqttSteeringMode::AUTO;
+  bool recovery_available = false;
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    recovery_mode = mqtt_mode;
+    recovery_available = mqtt_available;
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  cJSON_AddStringToObject(root, "recoveryTransport", "mqtt");
+  cJSON_AddStringToObject(root, "recoveryMode", mqtt_mode_name(recovery_mode));
+  cJSON_AddBoolToObject(
+      root,
+      "recoveryEnabled",
+      recovery_mode != MqttSteeringMode::FORCE_OFF);
+  cJSON_AddBoolToObject(root, "recoveryAvailable", recovery_available);
   cJSON_AddNumberToObject(
       root,
       "cooldownSeconds",
@@ -2413,20 +3828,26 @@ static cJSON *topology_lock_json(
         topology_lock_mismatch_counts.count(mapping.node_id)
             ? topology_lock_mismatch_counts[mapping.node_id]
             : 0;
-    const bool recovering =
-        !topology_lock_history.empty() &&
-        topology_lock_history.front().node_id == mapping.node_id &&
-        topology_lock_history.front().accepted &&
-        uptime_ms() - topology_lock_history.front().uptime_ms < RESTART_COOLDOWN_MS;
+    const bool steering = mqtt_operation_active_for_node(mapping.node_id);
     const char *status = "correct";
     if (node == nullptr || !node->online) {
-      status = recovering ? "recovering" : "node-offline";
+      status = "node-offline";
       offline++;
     } else if (parent == nullptr || !parent->online) {
       status = "parent-offline";
       blocked++;
     } else if (node->parent_id == mapping.parent_id) {
       correct++;
+    } else if (recovery_mode == MqttSteeringMode::FORCE_OFF) {
+      status = "mqtt-disabled";
+      blocked++;
+    } else if (recovery_mode == MqttSteeringMode::AUTO &&
+               !recovery_available) {
+      status = "mqtt-unavailable";
+      blocked++;
+    } else if (steering) {
+      status = "steering";
+      mismatch++;
     } else if (confirmations < TOPOLOGY_LOCK_CONFIRMATIONS) {
       status = "confirming";
       mismatch++;
@@ -2434,7 +3855,7 @@ static cJSON *topology_lock_json(
       status = "cooldown";
       mismatch++;
     } else {
-      status = "restart-ready";
+      status = "steering-ready";
       mismatch++;
     }
     cJSON *item = cJSON_CreateObject();
@@ -2498,6 +3919,7 @@ static cJSON *topology_lock_json(
         "currentParentName",
         action.current_parent_name.c_str());
     cJSON_AddStringToObject(item, "requestedAt", action.requested_at.c_str());
+    cJSON_AddStringToObject(item, "transport", action.transport.c_str());
     cJSON_AddBoolToObject(item, "accepted", action.accepted);
     cJSON_AddItemToArray(history, item);
   }
@@ -2517,18 +3939,17 @@ static void evaluate_topology_lock(
   }
   LockedParent selected;
   NodeObservation selected_node;
-  NodeObservation selected_parent;
   const uint32_t remaining_ms = topology_lock_remaining_ms_locked();
   for (const auto &mapping : topology_lock_mappings) {
     const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
     const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
     if (node == nullptr || parent == nullptr || !node->online ||
-        !parent->online || node->authority || node->ip.empty() ||
-        node->parent_id == mapping.parent_id ||
-        mqtt_operation_active_for_node(mapping.node_id)) {
+        !parent->online || node->authority ||
+        node->parent_id == mapping.parent_id) {
       topology_lock_mismatch_counts[mapping.node_id] = 0;
       continue;
     }
+    if (mqtt_operation_active_for_node(mapping.node_id)) continue;
     uint8_t &count = topology_lock_mismatch_counts[mapping.node_id];
     if (count < TOPOLOGY_LOCK_CONFIRMATIONS) count++;
   }
@@ -2548,7 +3969,7 @@ static void evaluate_topology_lock(
       const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
       const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
       if (node == nullptr || parent == nullptr || !node->online ||
-          !parent->online || node->authority || node->ip.empty() ||
+          !parent->online || node->authority ||
           node->parent_id == mapping.parent_id ||
           mqtt_operation_active_for_node(mapping.node_id) ||
           topology_lock_mismatch_counts[mapping.node_id] <
@@ -2562,7 +3983,6 @@ static void evaluate_topology_lock(
       }
       selected = mapping;
       selected_node = *node;
-      selected_parent = *parent;
       topology_lock_last_selected_node_id = mapping.node_id;
       break;
     }
@@ -2570,84 +3990,59 @@ static void evaluate_topology_lock(
   xSemaphoreGive(topology_lock_mutex);
   if (selected.node_id.empty()) return;
 
-  if (memory_mutex == nullptr ||
-      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
-    ESP_LOGW(TAG, "Topology lock could not reserve the restart workspace");
+  NodeObservation checked_child;
+  NodeObservation checked_parent;
+  std::string error;
+  if (!mqtt_preflight(
+          nodes,
+          selected.node_id,
+          selected.parent_id,
+          checked_child,
+          checked_parent,
+          error)) {
+    ESP_LOGW(TAG, "Topology lock MQTT preflight blocked: %s", error.c_str());
     return;
   }
-  if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
-    xSemaphoreGive(memory_mutex);
+  const bool queued = queue_topology_lock_mqtt_operation(
+      checked_child,
+      checked_parent,
+      error);
+  if (!queued) {
+    ESP_LOGW(TAG, "Topology lock MQTT request not queued: %s", error.c_str());
     return;
   }
-  bool still_armed = topology_lock_enabled &&
-                     topology_lock_remaining_ms_locked() == 0;
-  if (still_armed) {
-    still_armed = false;
-    for (const auto &mapping : topology_lock_mappings) {
-      if (mapping.node_id == selected.node_id &&
-          mapping.parent_id == selected.parent_id) {
-        still_armed = true;
-        break;
-      }
-    }
-  }
-  const auto manual_restart = restart_cooldowns.find(selected.node_id);
-  if (still_armed && manual_restart != restart_cooldowns.end() &&
-      uptime_ms() - manual_restart->second < RESTART_COOLDOWN_MS) {
-    still_armed = false;
-  }
-  if (!still_armed) {
-    xSemaphoreGive(topology_lock_mutex);
-    xSemaphoreGive(memory_mutex);
-    return;
-  }
-  topology_lock_action_seen_this_boot = true;
-  topology_lock_last_action_uptime_ms = uptime_ms();
-  topology_lock_last_action_epoch = wall_clock_epoch();
-  topology_lock_last_action_unknown_time =
-      topology_lock_last_action_epoch == 0;
-  persist_topology_lock_locked();
-  xSemaphoreGive(topology_lock_mutex);
 
-  ESP_LOGW(
-      TAG,
-      "Topology lock restarting %s: current parent=%s expected parent=%s",
-      selected_node.name.c_str(),
-      selected_node.parent_id.c_str(),
-      selected.parent_id.c_str());
-  const JnapResult reboot = jnap_request(
-      selected_node.ip,
-      "core/Reboot",
-      "{}",
-      nullptr,
-      1024);
-  xSemaphoreGive(memory_mutex);
-  const bool accepted = reboot.transport_ok && reboot.status == 200 &&
-                        response_is_ok(reboot.body);
   if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    topology_lock_action_seen_this_boot = true;
+    topology_lock_last_action_uptime_ms = uptime_ms();
+    topology_lock_last_action_epoch = wall_clock_epoch();
+    topology_lock_last_action_unknown_time =
+        topology_lock_last_action_epoch == 0;
+    persist_topology_lock_locked();
     TopologyLockAction action;
-    action.node_id = selected_node.id;
-    action.node_name = selected_node.name;
+    action.node_id = checked_child.id;
+    action.node_name = checked_child.name;
     action.expected_parent_id = selected.parent_id;
-    action.expected_parent_name = selected_parent.name;
-    action.current_parent_id = selected_node.parent_id;
+    action.expected_parent_name = checked_parent.name;
+    action.current_parent_id = checked_child.parent_id;
     const NodeObservation *current_parent =
-        find_observed_node(nodes, selected_node.parent_id);
+        find_observed_node(nodes, checked_child.parent_id);
     action.current_parent_name =
-        current_parent != nullptr ? current_parent->name : selected_node.parent_id;
+        current_parent != nullptr ? current_parent->name : checked_child.parent_id;
     action.requested_at = iso_timestamp();
     action.uptime_ms = topology_lock_last_action_uptime_ms;
-    action.accepted = accepted;
+    action.transport = "mqtt";
+    action.accepted = true;
     add_topology_lock_history_locked(std::move(action));
-    restart_cooldowns[selected_node.id] = topology_lock_last_action_uptime_ms;
     xSemaphoreGive(topology_lock_mutex);
   }
-  if (accepted) {
-    ESP_LOGI(TAG, "Topology lock restart accepted by %s", selected_node.name.c_str());
-    request_refresh();
-  } else {
-    ESP_LOGW(TAG, "Topology lock restart was not acknowledged by %s", selected_node.name.c_str());
-  }
+  ESP_LOGI(
+      TAG,
+      "Topology lock queued MQTT steering for %s: current parent=%s expected parent=%s band=%s",
+      checked_child.name.c_str(),
+      checked_child.parent_id.c_str(),
+      checked_parent.id.c_str(),
+      topology_lock_recovery_band(checked_child, checked_parent).c_str());
 }
 
 static bool collect_snapshot(
@@ -2830,6 +4225,173 @@ static void mqtt_fail_operation(
   App.wake_loop_threadsafe();
 }
 
+static void mqtt_record_target(
+    uint32_t operation_id,
+    const MqttRadioTarget &target) {
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    if (mqtt_operation.id == operation_id) {
+      mqtt_operation.target_bssid = target.bssid;
+      mqtt_operation.target_channel = target.channel;
+      mqtt_operation.target_source = target.source;
+    }
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+}
+
+static void mqtt_record_backhaul(
+    uint32_t operation_id,
+    const MqttBackhaulEvidence &evidence) {
+  if (mqtt_steering_mutex != nullptr &&
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    if (mqtt_operation.id == operation_id) {
+      mqtt_operation.backhaul_evidence = evidence;
+    }
+    xSemaphoreGive(mqtt_steering_mutex);
+  }
+  App.wake_loop_threadsafe();
+}
+
+static bool process_parent_restart_request() {
+  ParentRestartRequest restart;
+  NodeObservation parent;
+  std::string blocked_reason;
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return false;
+  }
+  if (!parent_restart_request.pending) {
+    xSemaphoreGive(topology_lock_mutex);
+    return false;
+  }
+  restart = parent_restart_request;
+  xSemaphoreGive(topology_lock_mutex);
+
+  const std::vector<NodeObservation> nodes = current_node_observations();
+  if (!mqtt_mode_allows_probe()) {
+    blocked_reason = "MQTT Parent steering is forced off";
+  }
+  const NodeObservation *observed_parent =
+      find_observed_node(nodes, restart.parent_id);
+  if (blocked_reason.empty() &&
+      (observed_parent == nullptr || !observed_parent->online)) {
+    blocked_reason = "Requested Parent went offline before the restart";
+  } else if (blocked_reason.empty() && observed_parent->authority) {
+    blocked_reason = "The primary gateway is never restarted automatically";
+  } else if (blocked_reason.empty() &&
+             count_online_mesh_children(nodes, restart.parent_id) > 0) {
+    blocked_reason = "Requested Parent gained an online mesh child before restart";
+  } else if (blocked_reason.empty()) {
+    parent = *observed_parent;
+  }
+
+  if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return false;
+  }
+  const std::string health_key = ascii_lower(restart.child_id);
+  auto health_iterator = parent_steering_health.find(health_key);
+  if (!parent_restart_request.pending ||
+      !same_node_id(parent_restart_request.child_id, restart.child_id) ||
+      !same_node_id(parent_restart_request.parent_id, restart.parent_id) ||
+      health_iterator == parent_steering_health.end()) {
+    xSemaphoreGive(topology_lock_mutex);
+    return true;
+  }
+  ParentSteeringHealth &health = health_iterator->second;
+  const uint32_t cooldown_remaining = std::max(
+      parent_health_restart_remaining_ms_locked(),
+      parent_node_restart_remaining_ms_locked(restart.parent_id));
+  if (blocked_reason.empty() && cooldown_remaining > 0) {
+    blocked_reason = "Waiting for the five-minute Parent restart limit";
+  }
+  if (blocked_reason.empty() &&
+      health.consecutive_failures < PARENT_STEERING_FAILURE_THRESHOLD) {
+    blocked_reason = "The consecutive failure threshold is no longer met";
+  }
+  if (!blocked_reason.empty()) {
+    health.state = cooldown_remaining > 0 ? "cooldown" : "blocked";
+    health.reason = blocked_reason;
+    parent_restart_request = {};
+    persist_parent_steering_health_locked();
+    xSemaphoreGive(topology_lock_mutex);
+    App.wake_loop_threadsafe();
+    return true;
+  }
+  // Reserve the selected Parent before releasing the scheduler lock so a
+  // simultaneous manual restart cannot send a duplicate core/Reboot.
+  restart_cooldowns[parent.id] = uptime_ms();
+  health.state = "parent-restarting";
+  health.reason = "Sending a single-node core/Reboot request to the requested Parent";
+  xSemaphoreGive(topology_lock_mutex);
+  App.wake_loop_threadsafe();
+
+  bool accepted = false;
+  std::string failure;
+  if (memory_mutex == nullptr ||
+      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    failure = "The Node workspace was busy; restart was not sent";
+  } else {
+    const JnapResult reboot = jnap_request(
+        parent.ip,
+        "core/Reboot",
+        "{}",
+        nullptr,
+        1024);
+    xSemaphoreGive(memory_mutex);
+    accepted = reboot.transport_ok && reboot.status == 200 &&
+               response_is_ok(reboot.body);
+    if (!accepted) failure = "The requested Parent did not accept core/Reboot";
+  }
+
+  if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    auto current = parent_steering_health.find(health_key);
+    if (current != parent_steering_health.end()) {
+      ParentSteeringHealth &updated = current->second;
+      if (accepted) {
+        const uint32_t now = uptime_ms();
+        restart_cooldowns[parent.id] = now;
+        parent_health_restart_seen_this_boot = true;
+        parent_health_last_restart_uptime_ms = now;
+        parent_health_last_restart_epoch = wall_clock_epoch();
+        updated.last_trigger_failures = updated.consecutive_failures;
+        updated.consecutive_failures = 0;
+        updated.parent_restart_count++;
+        updated.last_parent_restart_at = iso_timestamp();
+        updated.state = "parent-restarting";
+        updated.reason =
+            "Parent restart accepted; waiting for it to return online before another steering attempt";
+        topology_lock_action_seen_this_boot = true;
+        topology_lock_last_action_uptime_ms = now;
+        topology_lock_last_action_epoch = parent_health_last_restart_epoch;
+        topology_lock_last_action_unknown_time =
+            topology_lock_last_action_epoch == 0;
+        persist_topology_lock_locked();
+      } else {
+        parent_health_restart_seen_this_boot = true;
+        parent_health_last_restart_uptime_ms = uptime_ms();
+        parent_health_last_restart_epoch = wall_clock_epoch();
+        updated.state = "restart-failed";
+        updated.reason = failure;
+      }
+    }
+    parent_restart_request = {};
+    persist_parent_steering_health_locked();
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  if (accepted) {
+    ESP_LOGW(
+        TAG,
+        "Parent health restarted %s after repeated steering failures for %s",
+        parent.name.c_str(),
+        restart.child_id.c_str());
+    request_refresh();
+  } else {
+    ESP_LOGE(TAG, "Parent health restart failed: %s", failure.c_str());
+  }
+  App.wake_loop_threadsafe();
+  return true;
+}
+
 static void mqtt_steering_worker(void *) {
   while (true) {
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
@@ -2837,10 +4399,13 @@ static void mqtt_steering_worker(void *) {
       continue;
     }
 
+    if (process_parent_restart_request()) continue;
+
     MqttSteeringOperation operation;
     MqttSteeringMode mode = MqttSteeringMode::AUTO;
     bool run_operation = false;
     bool run_probe = false;
+    bool run_phy_refresh = false;
     bool capability_available = false;
     if (mqtt_steering_mutex != nullptr &&
         xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -2855,6 +4420,13 @@ static void mqtt_steering_worker(void *) {
       run_probe = !run_operation && mode != MqttSteeringMode::FORCE_OFF &&
                   (mqtt_probe_requested || mqtt_last_probe_ms == 0 ||
                    elapsed >= MQTT_PROBE_INTERVAL_MS);
+      const uint32_t phy_elapsed = uptime_ms() - backhaul_phy_last_refresh_ms;
+      run_phy_refresh =
+          !run_operation && !run_probe &&
+          mode != MqttSteeringMode::FORCE_OFF &&
+          (mode == MqttSteeringMode::FORCE_ON || capability_available) &&
+          (backhaul_phy_last_refresh_ms == 0 ||
+           phy_elapsed >= BACKHAUL_PHY_REFRESH_INTERVAL_MS);
       xSemaphoreGive(mqtt_steering_mutex);
     }
 
@@ -2865,11 +4437,23 @@ static void mqtt_steering_worker(void *) {
       mqtt_set_capability(available, error);
       continue;
     }
+    if (run_phy_refresh) {
+      backhaul_phy_last_refresh_ms = uptime_ms();
+      std::string error;
+      if (!mqtt_refresh_backhaul_phy(error)) {
+        ESP_LOGW(TAG, "Backhaul PHY refresh failed: %s", error.c_str());
+      }
+      App.wake_loop_threadsafe();
+      continue;
+    }
     if (!run_operation) continue;
 
     std::string conflict;
     if (mqtt_topology_lock_conflict(
-            operation.child_id, operation.parent_id, conflict)) {
+            operation.child_id,
+            operation.parent_id,
+            conflict,
+            operation.origin == "topology-lock")) {
       mqtt_fail_operation(operation.id, conflict);
       continue;
     }
@@ -2907,8 +4491,12 @@ static void mqtt_steering_worker(void *) {
     App.wake_loop_threadsafe();
 
     MqttRadioTarget target;
+    MqttBackhaulEvidence backhaul_evidence;
     std::string error;
-    const bool published = mqtt_publish_parent_request(operation, target, error);
+    const bool published = mqtt_publish_parent_request(
+        operation, target, backhaul_evidence, error);
+    mqtt_record_target(operation.id, target);
+    mqtt_record_backhaul(operation.id, backhaul_evidence);
     if (!published) {
       mqtt_set_capability(false, error);
       mqtt_fail_operation(operation.id, error);
@@ -2924,6 +4512,17 @@ static void mqtt_steering_worker(void *) {
     if (mqtt_steering_mutex != nullptr &&
         xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
       if (mqtt_operation.id == operation.id) {
+        mqtt_operation.method =
+            backhaul_evidence.command_topic.find(
+                "/WLAN/cmd/reconsider-backhaul") != std::string::npos
+                ? "reconsider"
+            : backhaul_evidence.command_topic ==
+                    "network/master/cmd/nodes_steering_start"
+                ? "11v"
+            : backhaul_evidence.command_topic ==
+                      "network/master/cmd/nodes_temporary_blacklist"
+                ? "blacklist"
+                : "bh-config";
         mqtt_operation.state = "verification-pending";
         mqtt_operation.detail =
             "The broker acknowledged the request; waiting for two topology generations";
@@ -2937,13 +4536,20 @@ static void mqtt_steering_worker(void *) {
       mqtt_capability_reason.clear();
       mqtt_capability_proof =
           (target.source.empty() ? "Trusted Parent radio state" : target.source) +
-          " and BH/config PUBACK completed";
+          (backhaul_evidence.command_topic.find(
+               "/WLAN/cmd/reconsider-backhaul") != std::string::npos
+               ? " and Node reconsider-backhaul MQTT PUBACK completed"
+           : backhaul_evidence.command_topic ==
+                   "network/master/cmd/nodes_steering_start"
+               ? " and 802.11v MQTT PUBACK completed"
+               : " and BH/config PUBACK completed");
       mqtt_last_probe_at = iso_timestamp();
       mqtt_last_probe_ms = uptime_ms();
       xSemaphoreGive(mqtt_steering_mutex);
     }
     request_refresh();
     App.wake_loop_threadsafe();
+    mqtt_monitor_backhaul(operation, target, backhaul_evidence);
   }
 }
 
@@ -2996,6 +4602,7 @@ static void collector_task(void *) {
     if (memory_locked) xSemaphoreGive(memory_mutex);
     if (snapshot_updated) {
       mqtt_verify_operation(lock_observations, snapshot_generation);
+      evaluate_parent_steering_health(lock_observations);
       evaluate_topology_lock(lock_observations);
       if (mqtt_steering_task_handle != nullptr) {
         xTaskNotifyGive(mqtt_steering_task_handle);
@@ -3071,6 +4678,9 @@ static esp_err_t status_handler(httpd_req_t *request) {
   cJSON_AddStringToObject(root, "edgeUrl", ip.empty() ? "" : ("http://" + ip + "/").c_str());
   cJSON_AddStringToObject(root, "cachedAt", cached_at.c_str());
   cJSON_AddNumberToObject(root, "generation", generation);
+  cJSON_AddNumberToObject(root, "uptimeSeconds", uptime_ms() / 1000);
+  cJSON_AddNumberToObject(
+      root, "resetReason", static_cast<int>(esp_reset_reason()));
   cJSON_AddStringToObject(
       root,
       "clientDetails",
@@ -3101,6 +4711,31 @@ static esp_err_t status_handler(httpd_req_t *request) {
   return result;
 }
 
+static cJSON *backhaul_phy_json() {
+  cJSON *items = cJSON_CreateArray();
+  if (items == nullptr || backhaul_phy_mutex == nullptr ||
+      xSemaphoreTake(backhaul_phy_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+    return items;
+  }
+  const uint32_t now = uptime_ms();
+  for (const auto &entry : backhaul_phy_observations) {
+    const BackhaulPhyObservation &observation = entry.second;
+    if (!std::isfinite(observation.rate_mbps)) continue;
+    const uint32_t age_ms = now - observation.received_ms;
+    cJSON *item = cJSON_CreateObject();
+    if (item == nullptr) continue;
+    cJSON_AddStringToObject(item, "nodeId", observation.child_id.c_str());
+    cJSON_AddNumberToObject(item, "rateMbps", observation.rate_mbps);
+    cJSON_AddStringToObject(item, "rawRate", observation.raw_rate.c_str());
+    cJSON_AddStringToObject(item, "observedAt", observation.observed_at.c_str());
+    cJSON_AddNumberToObject(item, "ageSeconds", (age_ms + 999) / 1000);
+    cJSON_AddBoolToObject(item, "stale", age_ms > BACKHAUL_PHY_STALE_MS);
+    cJSON_AddItemToArray(items, item);
+  }
+  xSemaphoreGive(backhaul_phy_mutex);
+  return items;
+}
+
 static esp_err_t topology_handler(httpd_req_t *request) {
   if (!authorize_web_request(request)) return ESP_OK;
   if (memory_mutex == nullptr ||
@@ -3127,6 +4762,9 @@ static esp_err_t topology_handler(httpd_req_t *request) {
   cJSON *lock = topology_lock_json(snapshot.nodes);
   char *serialized_lock = cJSON_PrintUnformatted(lock);
   cJSON_Delete(lock);
+  cJSON *phy_links = backhaul_phy_json();
+  char *serialized_phy_links = cJSON_PrintUnformatted(phy_links);
+  cJSON_Delete(phy_links);
   std::string prefix =
       "{\"router\":\"" + router_host +
       "\",\"meta\":{\"updatedAt\":\"" + snapshot.updated_at +
@@ -3138,8 +4776,11 @@ static esp_err_t topology_handler(httpd_req_t *request) {
       client_details_name(active_client_details) +
       "\",\"topologyLock\":" +
       (serialized_lock != nullptr ? serialized_lock : "{\"supported\":true,\"enabled\":false}") +
+      ",\"backhaulPhyLinks\":" +
+      (serialized_phy_links != nullptr ? serialized_phy_links : "[]") +
       "},\"rawJnap\":{";
   cJSON_free(serialized_lock);
+  cJSON_free(serialized_phy_links);
   esp_err_t result = httpd_resp_send_chunk(request, prefix.c_str(), prefix.size());
   bool first = true;
   for (const auto &entry : snapshot.entries) {
@@ -3377,14 +5018,29 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
           "{}",
           nullptr,
           1024);
+  const std::string backhaul_status_input =
+      std::string("{\"deviceUUID\":\"") + node.id + "\"}";
+  const JnapResult backhaul_status_response = jnap_request(
+      router_host,
+      "nodes/diagnostics/GetSlaveBackhaulStatus",
+      backhaul_status_input.c_str(),
+      nullptr,
+      8 * 1024);
   const bool credentials_ok = check.transport_ok && check.status == 200 &&
                               response_is_ok(check.body);
   cJSON *identity = parse_output_copy(identity_response);
   cJSON *mode = parse_output_copy(mode_response);
   cJSON *optimization = parse_output_copy(optimization_response);
+  cJSON *backhaul_status =
+      backhaul_status_response.transport_ok && backhaul_status_response.status == 200
+          ? cJSON_ParseWithLength(
+                backhaul_status_response.body.c_str(),
+                backhaul_status_response.body.size())
+          : nullptr;
   if (identity == nullptr) {
     cJSON_Delete(mode);
     cJSON_Delete(optimization);
+    cJSON_Delete(backhaul_status);
     return send_error_json(request, "502 Bad Gateway", "Unable to read the node identity.");
   }
 
@@ -3433,6 +5089,11 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
       topology,
       "nodeSteeringEnabled",
       json_bool(optimization, "isNodeSteeringEnabled"));
+  cJSON_AddItemToObject(
+      root,
+      "slaveBackhaulStatusJnap",
+      backhaul_status != nullptr ? backhaul_status : cJSON_CreateNull());
+  backhaul_status = nullptr;
   cJSON *restart = cJSON_AddObjectToObject(root, "individualRestart");
   cJSON_AddBoolToObject(restart, "visibleInCaSupportUi", setup3);
   cJSON_AddStringToObject(restart, "action", "core/Reboot");
@@ -3456,7 +5117,120 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
   cJSON_Delete(identity);
   cJSON_Delete(mode);
   cJSON_Delete(optimization);
+  cJSON_Delete(backhaul_status);
   return result;
+}
+
+static esp_err_t node_sysinfo_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string node_id;
+  std::string section;
+  if (!query_value(request, "nodeId", node_id) ||
+      !query_value(request, "section", section) ||
+      (section != "logs" && section != "wifi")) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "Node ID and section (logs or wifi) are required.");
+  }
+  NodeInfo node;
+  if (!resolve_node(node_id, node)) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "The node is offline or absent from the current topology.");
+  }
+  if (memory_mutex == nullptr ||
+      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The node diagnostic workspace is temporarily busy.");
+  }
+  struct MemoryRelease {
+    SemaphoreHandle_t handle;
+    ~MemoryRelease() { xSemaphoreGive(handle); }
+  } memory_release{memory_mutex};
+
+  HttpCapture capture;
+  capture.limit = external_memory_size() > 0 ? 1024 * 1024 : 192 * 1024;
+  capture.body.reserve(capture.limit);
+  const std::string url =
+      "http://" + node.ip + "/sysinfo.cgi?section=" + section;
+  esp_http_client_config_t config = {};
+  config.url = url.c_str();
+  config.method = HTTP_METHOD_GET;
+  config.timeout_ms = 20000;
+  config.disable_auto_redirect = true;
+  config.buffer_size = 4096;
+  config.keep_alive_enable = false;
+  config.event_handler = http_event_handler;
+  config.user_data = &capture;
+  esp_http_client_handle_t client = esp_http_client_init(&config);
+  if (client == nullptr) {
+    return send_error_json(
+        request, "503 Service Unavailable", "Unable to allocate the Node diagnostic request.");
+  }
+  esp_http_client_set_header(client, "Authorization", authorization.c_str());
+  esp_http_client_set_header(client, "Cache-Control", "no-cache");
+  const esp_err_t fetch = esp_http_client_perform(client);
+  const int status = esp_http_client_get_status_code(client);
+  const bool complete = esp_http_client_is_complete_data_received(client);
+  esp_http_client_cleanup(client);
+  if (fetch != ESP_OK || status != 200 || !complete || capture.overflow) {
+    return send_error_json(
+        request,
+        "502 Bad Gateway",
+        capture.overflow
+            ? "The Node sysinfo response exceeded the diagnostic limit."
+            : "The Node did not return the requested sysinfo section.");
+  }
+  httpd_resp_set_type(request, "text/plain; charset=utf-8");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  return httpd_resp_send(
+      request, capture.body.data(), static_cast<ssize_t>(capture.body.size()));
+}
+
+static esp_err_t node_radio_info_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string node_id;
+  if (!query_value(request, "nodeId", node_id)) {
+    return send_error_json(request, "400 Bad Request", "Node ID is required.");
+  }
+  NodeInfo node;
+  if (!resolve_node(node_id, node)) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "The node is offline or absent from the current topology.");
+  }
+  if (memory_mutex == nullptr ||
+      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The node diagnostic workspace is temporarily busy.");
+  }
+  const JnapResult result = jnap_request(
+      node.ip,
+      "wirelessap/GetRadioInfo3",
+      "{}",
+      nullptr,
+      32 * 1024);
+  xSemaphoreGive(memory_mutex);
+  if (!result.transport_ok || result.status != 200 ||
+      !response_is_ok(result.body)) {
+    return send_error_json(
+        request,
+        "502 Bad Gateway",
+        "The Node did not return its radio configuration.");
+  }
+  httpd_resp_set_type(request, "application/json; charset=utf-8");
+  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+  return httpd_resp_send(
+      request, result.body.data(), static_cast<ssize_t>(result.body.size()));
 }
 
 static bool read_request_json(httpd_req_t *request, std::string &body, size_t maximum = 1024) {
@@ -3527,12 +5301,189 @@ static std::vector<NodeObservation> current_node_observations() {
   return nodes;
 }
 
+static bool current_topology_optimization_settings(
+    bool &client_steering,
+    bool &node_steering) {
+  client_steering = true;
+  node_steering = true;
+  if (memory_mutex == nullptr || snapshot_mutex == nullptr ||
+      xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    return false;
+  }
+  if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    xSemaphoreGive(memory_mutex);
+    return false;
+  }
+  cJSON *root = parse_response_root(
+      snapshot,
+      "nodes/topologyoptimization/GetTopologyOptimizationSettings2");
+  const cJSON *output = response_output(root);
+  const cJSON *client = output != nullptr
+                            ? cJSON_GetObjectItemCaseSensitive(
+                                  output, "isClientSteeringEnabled")
+                            : nullptr;
+  const cJSON *node = output != nullptr
+                          ? cJSON_GetObjectItemCaseSensitive(
+                                output, "isNodeSteeringEnabled")
+                          : nullptr;
+  const bool valid = cJSON_IsBool(client) && cJSON_IsBool(node);
+  if (valid) {
+    client_steering = cJSON_IsTrue(client);
+    node_steering = cJSON_IsTrue(node);
+  }
+  cJSON_Delete(root);
+  xSemaphoreGive(snapshot_mutex);
+  xSemaphoreGive(memory_mutex);
+  return valid;
+}
+
+static esp_err_t node_steering_mode_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string body;
+  if (!read_request_json(request, body, 512)) {
+    return send_error_json(
+        request, "400 Bad Request", "A Node Steering enabled value is required.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const cJSON *enabled = payload != nullptr
+                             ? cJSON_GetObjectItemCaseSensitive(payload, "enabled")
+                             : nullptr;
+  if (!cJSON_IsBool(enabled)) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request, "400 Bad Request", "enabled must be true or false.");
+  }
+  const bool requested = cJSON_IsTrue(enabled);
+  cJSON_Delete(payload);
+
+  bool client_steering = true;
+  bool previous_node_steering = true;
+  if (!current_topology_optimization_settings(
+          client_steering, previous_node_steering)) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The current Linksys steering settings are unavailable.");
+  }
+  cJSON *settings = cJSON_CreateObject();
+  cJSON_AddBoolToObject(
+      settings, "isClientSteeringEnabled", client_steering);
+  cJSON_AddBoolToObject(settings, "isNodeSteeringEnabled", requested);
+  char *serialized = cJSON_PrintUnformatted(settings);
+  const JnapResult result = jnap_request(
+      router_host,
+      "nodes/topologyoptimization/SetTopologyOptimizationSettings2",
+      serialized ?: "{}",
+      nullptr,
+      1024);
+  cJSON_free(serialized);
+  cJSON_Delete(settings);
+  if (!result.transport_ok || result.status != 200 ||
+      !response_is_ok(result.body)) {
+    return send_error_json(
+        request,
+        "502 Bad Gateway",
+        "The Linksys gateway did not accept the Node Steering setting.");
+  }
+  request_refresh();
+  cJSON *response = cJSON_CreateObject();
+  cJSON_AddBoolToObject(response, "accepted", true);
+  cJSON_AddBoolToObject(response, "enabled", requested);
+  cJSON_AddBoolToObject(
+      response, "previousEnabled", previous_node_steering);
+  cJSON_AddBoolToObject(
+      response, "clientSteeringPreserved", client_steering);
+  return send_cjson(request, response);
+}
+
 static esp_err_t send_cjson(httpd_req_t *request, cJSON *root) {
   char *body = cJSON_PrintUnformatted(root);
   const esp_err_t result = send_json(request, body ?: "{}");
   cJSON_free(body);
   cJSON_Delete(root);
   return result;
+}
+
+static void add_parent_steering_health_json(cJSON *root) {
+  cJSON_AddNumberToObject(
+      root,
+      "failureThreshold",
+      PARENT_STEERING_FAILURE_THRESHOLD);
+  cJSON_AddNumberToObject(
+      root,
+      "parentRestartCooldownSeconds",
+      PARENT_HEALTH_RESTART_COOLDOWN_MS / 1000);
+  cJSON *items = cJSON_AddArrayToObject(root, "nodeHealth");
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return;
+  }
+  const uint32_t restart_remaining =
+      parent_health_restart_remaining_ms_locked();
+  for (const auto &entry : parent_steering_health) {
+    const ParentSteeringHealth &health = entry.second;
+    cJSON *item = cJSON_CreateObject();
+    cJSON_AddStringToObject(item, "childId", health.child_id.c_str());
+    cJSON_AddStringToObject(item, "childName", health.child_name.c_str());
+    cJSON_AddStringToObject(
+        item, "targetParentId", health.target_parent_id.c_str());
+    cJSON_AddStringToObject(
+        item, "targetParentName", health.target_parent_name.c_str());
+    cJSON_AddStringToObject(item, "band", health.band.c_str());
+    cJSON_AddStringToObject(item, "state", health.state.c_str());
+    cJSON_AddStringToObject(item, "reason", health.reason.c_str());
+    cJSON_AddNumberToObject(
+        item, "failureThreshold", PARENT_STEERING_FAILURE_THRESHOLD);
+    cJSON_AddNumberToObject(
+        item, "consecutiveFailures", health.consecutive_failures);
+    cJSON_AddNumberToObject(item, "totalFailures", health.total_failures);
+    cJSON_AddNumberToObject(
+        item, "successfulMoves", health.successful_moves);
+    cJSON_AddNumberToObject(
+        item, "parentRestartCount", health.parent_restart_count);
+    cJSON_AddNumberToObject(
+        item, "lastTriggerFailures", health.last_trigger_failures);
+    cJSON_AddNumberToObject(
+        item,
+        "targetParentOnlineChildren",
+        health.target_parent_online_children);
+    cJSON_AddBoolToObject(
+        item, "targetParentOnline", health.target_parent_online);
+    cJSON_AddBoolToObject(
+        item,
+        "restartQueued",
+        parent_restart_request.pending &&
+            same_node_id(parent_restart_request.child_id, health.child_id));
+    cJSON_AddNumberToObject(
+        item,
+        "restartInSeconds",
+        (std::max(
+             restart_remaining,
+             parent_node_restart_remaining_ms_locked(
+                 health.target_parent_id)) +
+         999) /
+            1000);
+    cJSON_AddNumberToObject(
+        item, "lastOperationId", health.last_operation_id);
+    cJSON_AddBoolToObject(
+        item, "lastRequestPublished", health.last_request_published);
+    cJSON_AddBoolToObject(
+        item, "lastCommandEchoed", health.last_command_echoed);
+    cJSON_AddStringToObject(
+        item, "lastTargetBssid", health.last_target_bssid.c_str());
+    cJSON_AddNumberToObject(
+        item, "lastTargetChannel", health.last_target_channel);
+    cJSON_AddStringToObject(
+        item, "lastTargetSource", health.last_target_source.c_str());
+    cJSON_AddStringToObject(
+        item, "lastFailureAt", health.last_failure_at.c_str());
+    cJSON_AddStringToObject(
+        item, "lastSuccessAt", health.last_success_at.c_str());
+    cJSON_AddStringToObject(
+        item, "lastParentRestartAt", health.last_parent_restart_at.c_str());
+    cJSON_AddItemToArray(items, item);
+  }
+  xSemaphoreGive(topology_lock_mutex);
 }
 
 static cJSON *mqtt_parent_steering_json() {
@@ -3592,12 +5543,106 @@ static cJSON *mqtt_parent_steering_json() {
   cJSON_AddStringToObject(operation, "parentId", mqtt_operation.parent_id.c_str());
   cJSON_AddStringToObject(operation, "parentName", mqtt_operation.parent_name.c_str());
   cJSON_AddStringToObject(operation, "band", mqtt_operation.band.c_str());
+  cJSON_AddStringToObject(operation, "method", mqtt_operation.method.c_str());
+  cJSON_AddStringToObject(
+      operation,
+      "childStationBssid",
+      mqtt_operation.child_station_bssid.c_str());
+  cJSON_AddStringToObject(
+      operation, "channelMode", mqtt_operation.channel_mode.c_str());
+  cJSON_AddStringToObject(
+      operation, "targetBssid", mqtt_operation.target_bssid.c_str());
+  cJSON_AddNumberToObject(
+      operation, "targetChannel", mqtt_operation.target_channel);
+  cJSON_AddStringToObject(
+      operation, "targetSource", mqtt_operation.target_source.c_str());
+  cJSON_AddStringToObject(operation, "origin", mqtt_operation.origin.c_str());
   cJSON_AddNumberToObject(
       operation, "verificationGenerations", mqtt_operation.verification_generations);
   cJSON_AddNumberToObject(
       operation, "consecutiveMatches", mqtt_operation.consecutive_matches);
   cJSON_AddNumberToObject(operation, "requiredMatches", MQTT_VERIFY_GENERATIONS);
+  cJSON *backhaul = cJSON_AddObjectToObject(operation, "mqttBackhaulEvidence");
+  cJSON_AddBoolToObject(
+      backhaul, "configEchoed", mqtt_operation.backhaul_evidence.config_echoed);
+  cJSON_AddNumberToObject(
+      backhaul,
+      "childStatusRecords",
+      mqtt_operation.backhaul_evidence.child_status_records);
+  cJSON_AddBoolToObject(
+      backhaul,
+      "targetMatchSeen",
+      mqtt_operation.backhaul_evidence.target_match_seen);
+  cJSON_AddStringToObject(
+      backhaul,
+      "targetMatchAt",
+      mqtt_operation.backhaul_evidence.target_match_at.c_str());
+  cJSON_AddStringToObject(
+      backhaul, "latestTopic", mqtt_operation.backhaul_evidence.latest_topic.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "commandTopic",
+      mqtt_operation.backhaul_evidence.command_topic.c_str());
+  cJSON_AddStringToObject(
+      backhaul, "latestUuid", mqtt_operation.backhaul_evidence.latest_uuid.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "latestParentIp",
+      mqtt_operation.backhaul_evidence.latest_parent_ip.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "latestApBssid",
+      mqtt_operation.backhaul_evidence.latest_ap_bssid.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "latestStaBssid",
+      mqtt_operation.backhaul_evidence.latest_sta_bssid.c_str());
+  cJSON_AddStringToObject(
+      backhaul, "latestBand", mqtt_operation.backhaul_evidence.latest_band.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "latestInterface",
+      mqtt_operation.backhaul_evidence.latest_interface.c_str());
+  cJSON_AddNumberToObject(
+      backhaul,
+      "latestChannel",
+      mqtt_operation.backhaul_evidence.latest_channel);
+  cJSON_AddStringToObject(
+      backhaul, "latestState", mqtt_operation.backhaul_evidence.latest_state.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "latestTimestamp",
+      mqtt_operation.backhaul_evidence.latest_timestamp.c_str());
+  cJSON_AddNumberToObject(
+      backhaul,
+      "requestedParentSubdeviceRecords",
+      mqtt_operation.backhaul_evidence.parent_subdev_records);
+  cJSON_AddBoolToObject(
+      backhaul,
+      "requestedParentAssociationTrackable",
+      mqtt_operation.backhaul_evidence.parent_association_trackable);
+  cJSON_AddBoolToObject(
+      backhaul,
+      "requestedParentAssociationSeen",
+      mqtt_operation.backhaul_evidence.parent_association_seen);
+  cJSON_AddStringToObject(
+      backhaul,
+      "requestedParentSubdeviceStatus",
+      mqtt_operation.backhaul_evidence.parent_subdev_status.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "requestedParentSubdeviceApBssid",
+      mqtt_operation.backhaul_evidence.parent_subdev_ap_bssid.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "requestedParentSubdeviceInterface",
+      mqtt_operation.backhaul_evidence.parent_subdev_interface.c_str());
+  cJSON_AddStringToObject(
+      backhaul,
+      "requestedParentSubdeviceTimestamp",
+      mqtt_operation.backhaul_evidence.parent_subdev_timestamp.c_str());
   xSemaphoreGive(mqtt_steering_mutex);
+  add_parent_steering_health_json(root);
   return root;
 }
 
@@ -3731,6 +5776,84 @@ static esp_err_t mqtt_parent_mode_handler(httpd_req_t *request) {
   return send_cjson(request, mqtt_parent_steering_json());
 }
 
+static esp_err_t mqtt_blacklist_cancel_handler(httpd_req_t *request) {
+  if (!authorize_web_request(request)) return ESP_OK;
+  std::string body;
+  if (!read_request_json(request, body, 512)) {
+    return send_error_json(
+        request, "400 Bad Request", "A clientBssid is required.");
+  }
+  cJSON *input = cJSON_ParseWithLength(body.c_str(), body.size());
+  const char *client = input != nullptr ? json_string(input, "clientBssid") : nullptr;
+  std::string client_bssid = client ?: "";
+  cJSON_Delete(input);
+  if (!mqtt_valid_bssid(client_bssid)) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "clientBssid must be a valid unicast MAC address.");
+  }
+
+  std::string authority_id;
+  for (const auto &node : current_node_observations()) {
+    if (node.authority && !node.id.empty()) {
+      authority_id = ascii_upper(node.id);
+      break;
+    }
+  }
+  if (authority_id.empty()) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The primary Node UUID is unavailable.");
+  }
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "uuid", authority_id.c_str());
+  cJSON_AddStringToObject(root, "type", "cmd");
+  cJSON_AddStringToObject(root, "TS", iso_timestamp().c_str());
+  cJSON *data = cJSON_AddObjectToObject(root, "data");
+  cJSON_AddStringToObject(data, "client", client_bssid.c_str());
+  cJSON_AddStringToObject(data, "duration", "0");
+  cJSON_AddStringToObject(data, "action", "cancel");
+  char *serialized = cJSON_PrintUnformatted(root);
+  const std::string payload = serialized ?: "";
+  cJSON_free(serialized);
+  cJSON_Delete(root);
+  if (payload.empty()) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The cancel payload could not be allocated.");
+  }
+
+  MqttWireSession session;
+  std::string error;
+  bool saw_devinfo = false;
+  MqttBackhaulEvidence evidence;
+  evidence.command_topic = "network/master/cmd/nodes_temporary_blacklist";
+  if (!session.connect_to_router(error) || !session.subscribe_devinfo(error) ||
+      !session.publish(
+          evidence.command_topic,
+          payload,
+          saw_devinfo,
+          nullptr,
+          "",
+          "5GL",
+          error,
+          &evidence)) {
+    return send_error_json(
+        request,
+        "502 Bad Gateway",
+        error.empty() ? "MQTT cancel failed." : error.c_str());
+  }
+  request_refresh();
+  return send_json(
+      request,
+      "{\"accepted\":true,\"action\":\"cancel\",\"transport\":\"mqtt-1883\"}",
+      "202 Accepted");
+}
+
 static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
   if (!authorize_web_request(request)) return ESP_OK;
   std::string body;
@@ -3741,18 +5864,30 @@ static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
   const char *child_id = payload != nullptr ? json_string(payload, "childId") : nullptr;
   const char *parent_id = payload != nullptr ? json_string(payload, "parentId") : nullptr;
   const char *band = payload != nullptr ? json_string(payload, "band") : nullptr;
+  const char *channel_mode =
+      payload != nullptr ? json_string(payload, "channelMode") : nullptr;
+  const char *method = payload != nullptr ? json_string(payload, "method") : nullptr;
   if (child_id == nullptr || parent_id == nullptr || band == nullptr ||
       (strcmp(band, "5GH") != 0 && strcmp(band, "5GL") != 0) ||
+      (channel_mode != nullptr && strcmp(channel_mode, "exact") != 0 &&
+       strcmp(channel_mode, "auto") != 0) ||
+      (method != nullptr && strcmp(method, "auto") != 0 &&
+       strcmp(method, "11v") != 0 && strcmp(method, "blacklist") != 0 &&
+       strcmp(method, "bh-config") != 0 && strcmp(method, "reconsider") != 0) ||
       strlen(child_id) > 128 || strlen(parent_id) > 128) {
     cJSON_Delete(payload);
     return send_error_json(
         request,
         "400 Bad Request",
-        "childId, parentId, and band (5GH or 5GL) are required.");
+        "childId, parentId, band (5GH or 5GL), and optional channelMode "
+        "(exact or auto) and method (auto, 11v, blacklist, bh-config, or "
+        "reconsider) are required.");
   }
   const std::string requested_child = child_id;
   const std::string requested_parent = parent_id;
   const std::string requested_band = band;
+  const std::string requested_channel_mode = channel_mode ?: "exact";
+  const std::string requested_method = method ?: "bh-config";
   cJSON_Delete(payload);
   NodeObservation child;
   NodeObservation parent;
@@ -3809,6 +5944,11 @@ static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
   mqtt_operation.parent_name = parent.name;
   mqtt_operation.previous_parent_id = child.parent_id;
   mqtt_operation.band = requested_band;
+  mqtt_operation.method = requested_method;
+  mqtt_operation.child_station_bssid = child.station_bssid;
+  mqtt_operation.child_station_band = child.backhaul_band;
+  mqtt_operation.channel_mode = requested_channel_mode;
+  mqtt_operation.origin = "manual";
   mqtt_operation.state = "queued";
   mqtt_operation.detail = "Waiting for the background MQTT worker";
   mqtt_operation.requested_at = iso_timestamp();
@@ -4122,13 +6262,21 @@ static void start_server() {
   register_handler("/api/refresh", HTTP_POST, refresh_handler);
   register_handler("/api/connect", HTTP_POST, connect_handler);
   register_handler("/api/node-capabilities", HTTP_GET, capabilities_handler);
+  register_handler("/api/node-sysinfo", HTTP_GET, node_sysinfo_handler);
+  register_handler("/api/node-radio-info", HTTP_GET, node_radio_info_handler);
   register_handler("/api/restart-node", HTTP_POST, restart_handler);
+  register_handler(
+      "/api/node-steering-mode", HTTP_POST, node_steering_mode_handler);
   register_handler("/api/topology-lock", HTTP_GET, topology_lock_get_handler);
   register_handler("/api/topology-lock", HTTP_POST, topology_lock_post_handler);
   register_handler(
       "/api/mqtt-parent-steering", HTTP_GET, mqtt_parent_get_handler);
   register_handler(
       "/api/mqtt-parent-steering", HTTP_POST, mqtt_parent_mode_handler);
+  register_handler(
+      "/api/mqtt-temporary-blacklist/cancel",
+      HTTP_POST,
+      mqtt_blacklist_cancel_handler);
   register_handler("/api/steer-node-parent", HTTP_POST, mqtt_steer_handler);
   httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, not_found_handler);
   ESP_LOGI(TAG, "MeshScope HTTP server started on port 80");
@@ -4156,9 +6304,11 @@ static void setup(
   topology_lock_mutex = xSemaphoreCreateMutex();
   web_session_mutex = xSemaphoreCreateMutex();
   mqtt_steering_mutex = xSemaphoreCreateMutex();
+  backhaul_phy_mutex = xSemaphoreCreateMutex();
   if (!router_password_ok || snapshot_mutex == nullptr || jnap_mutex == nullptr ||
       memory_mutex == nullptr || topology_lock_mutex == nullptr ||
       web_session_mutex == nullptr || mqtt_steering_mutex == nullptr ||
+      backhaul_phy_mutex == nullptr ||
       authorization.empty() ||
       dashboard_password.size() < 8 ||
       dashboard_password == "SET_IN_LOCAL_CONFIG") {
@@ -4173,6 +6323,7 @@ static void setup(
       static_cast<unsigned>(external_memory_size()));
   load_topology_lock();
   load_mqtt_mode();
+  load_parent_steering_health();
   start_server();
   if (xTaskCreate(
           collector_task,

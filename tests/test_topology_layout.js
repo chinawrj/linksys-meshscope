@@ -7,7 +7,7 @@ const nodes = [
   { id: "big", name: "Atrium", online: true, parentId: "main", band: "5GH" },
   { id: "door", name: "Office", online: true, parentId: "main", band: "5GL" },
   { id: "yard", name: "Patio", online: true, parentId: "main", band: "5GH" },
-  { id: "parent", name: "Bedroom", online: true, parentId: "door", band: "5GH" },
+  { id: "parent", name: "Bedroom", online: true, parentId: "door", band: "5GH", phyRateMbps: 1729.3, phyRateStale: false },
   { id: "road", name: "Garage", online: true, parentId: "big", band: "5GL" },
 ];
 
@@ -35,4 +35,23 @@ test("keeps every online node and preserves parent relationships", () => {
     layout.edges.find((edge) => edge.target.id === "road").source.id,
     "big",
   );
+  assert.equal(
+    layout.edges.find((edge) => edge.target.id === "parent").phyRateMbps,
+    1729.3,
+  );
+});
+
+test("uses the browser width, compacts safe gaps, and scrolls only when cards cannot fit", () => {
+  const wide = compute(nodes, { availableWidth: 1600 });
+  assert.equal(wide.width, 1600);
+  assert.ok(wide.contentWidth <= wide.width);
+
+  const compact = compute(nodes, { availableWidth: 1080 });
+  assert.equal(compact.width, 1080);
+  assert.ok(compact.columnGap >= 72);
+  assert.ok(compact.contentWidth <= 1080);
+
+  const narrow = compute(nodes, { availableWidth: 360 });
+  assert.ok(narrow.contentWidth > 360);
+  assert.equal(narrow.width, narrow.contentWidth);
 });

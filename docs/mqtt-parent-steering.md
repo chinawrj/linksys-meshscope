@@ -189,6 +189,37 @@ JNAP collection, and Topology Lock remain responsive. On PUBACK the worker
 requests a topology refresh, then waits for the requested Parent in two
 distinct JNAP snapshot generations before reporting `verified`.
 
+Topology Lock uses this same queue after three consecutive Parent mismatches;
+it no longer restarts a child node. For a non-primary requested Parent, the
+automatic request uses the opposite radio from that Parent's own uplink:
+`5GH` uplink selects the Parent's `5GL` AP, while `5GL` uplink selects `5GH`.
+The primary node has no uplink, so the child's currently observed band is
+preserved. Automatic actions remain globally limited to one every five
+minutes, and Auto mode waits for a successful capability round trip.
+
 Optional WireGuard changes only how a browser or Home Assistant reaches the
 ESP32. Its peer routes must not cover the Linksys LAN; ESP32-to-router JNAP and
 MQTT traffic continue through local Wi-Fi.
+
+## Parent Steering Health and requested-Parent recovery
+
+The ESP32 persists a health record on the steered child Node. It includes the
+consecutive and total failures, success count, target Parent and radio tuple,
+publish/echo evidence, target Parent online mesh-child count, restart count,
+timestamps, current reason, and cooldown. The same data is rendered directly
+on the topology Node card and in the Node drawer without removing existing
+topology or Client/STA fields.
+
+A failure increments the consecutive counter only when an exact `BH/config`
+publish reached `verification-pending` and then exhausted the 180-second JNAP
+verification window. Discovery, preflight, ACL, broker, offline, and target
+radio errors are excluded. A verified Parent clears the consecutive counter.
+
+The default threshold is two consecutive qualifying failures. At the threshold
+the worker can restart the requested Parent, not the child, only when a fresh
+topology confirms that the Parent is online, is not the primary gateway, and
+has zero online mesh children. The worker repeats every gate immediately before
+calling the Parent's local `core/Reboot`. Accepted Parent restarts reset the
+consecutive counter, keep lifetime totals, start a visible five-minute global
+cooldown, and allow Topology Lock to retry later. State is stored in the
+`mesh_health` NVS namespace and survives ESP32 restart.

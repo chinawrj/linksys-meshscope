@@ -49,7 +49,7 @@ button {
 }
 
 .app-shell {
-  width: min(1520px, 100%);
+  width: min(1920px, 100%);
   min-height: 100vh;
   margin: 0 auto;
   padding: 0 34px 30px;
@@ -376,7 +376,7 @@ button {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 2.1fr) minmax(300px, 0.9fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -462,9 +462,19 @@ button {
   display: none;
 }
 
+.map-scroll-hint.needed {
+  display: block;
+  margin: 9px 14px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: right;
+}
+
 .mesh-map {
   position: relative;
-  min-width: 820px;
+  width: 100%;
+  min-width: 100%;
   height: 520px;
   overflow: hidden;
   border-radius: 15px;
@@ -541,7 +551,7 @@ button {
 .mesh-node {
   position: absolute;
   z-index: 4;
-  width: 188px;
+  width: 220px;
   min-height: 124px;
   padding: 13px 14px 11px;
   border: 1px solid #d1d3cc;
@@ -560,8 +570,21 @@ button {
   min-height: 184px;
 }
 
+.mesh-node.parent-health-expanded {
+  min-height: 206px;
+}
+
 .mesh-node.lock-expanded.parent-steering-expanded {
   min-height: 244px;
+}
+
+.mesh-node.lock-expanded.parent-health-expanded,
+.mesh-node.parent-steering-expanded.parent-health-expanded {
+  min-height: 266px;
+}
+
+.mesh-node.lock-expanded.parent-steering-expanded.parent-health-expanded {
+  min-height: 326px;
 }
 
 .mesh-node:hover,
@@ -782,13 +805,30 @@ button {
 }
 
 .node-stats {
-  display: flex;
+  display: grid;
+  grid-template-columns: 0.65fr 1fr 1fr 0.75fr;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 5px;
   margin-top: 10px;
   padding-top: 9px;
   border-top: 1px solid #e7e7e1;
+}
+
+.node-stats > div:not(.node-signal) {
+  min-width: 0;
+  text-align: left;
+}
+
+.node-phy strong {
+  overflow: hidden;
+  color: var(--blue);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-phy.stale strong {
+  color: var(--amber);
 }
 
 .node-signal {
@@ -843,7 +883,7 @@ button {
   position: absolute;
   z-index: 2;
   min-width: 84px;
-  max-width: 108px;
+  max-width: 184px;
   padding: 4px 7px;
   border: 1px solid #d8ded8;
   border-radius: 99px;
@@ -1553,10 +1593,142 @@ button {
 }
 
 .node-parent-steering-status strong { font-size: 8px; }
+
+.mesh-node.parent-health-attention,
+.mesh-node.parent-health-blocked,
+.mesh-node.parent-health-restarting,
+.mesh-node.parent-health-cooldown {
+  box-shadow: 0 0 0 3px rgba(185, 119, 43, 0.16), 0 9px 28px rgba(39, 48, 44, 0.09);
+}
+
+.mesh-node.parent-health-blocked { box-shadow: 0 0 0 3px rgba(216, 98, 77, 0.18), 0 9px 28px rgba(39, 48, 44, 0.09); }
+.mesh-node.parent-health-restarting { box-shadow: 0 0 0 3px rgba(111, 85, 181, 0.2), 0 9px 28px rgba(39, 48, 44, 0.09); }
+.mesh-node.parent-health-healthy { box-shadow: 0 0 0 3px rgba(61, 133, 109, 0.15), 0 9px 28px rgba(39, 48, 44, 0.09); }
+
+.node-parent-health-status {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: var(--amber-soft);
+  color: #8a541d;
+  text-align: left;
+}
+
+.node-parent-health-status.healthy { background: var(--mint-soft); color: var(--mint); }
+.node-parent-health-status.blocked { background: var(--coral-soft); color: #a53b31; }
+.node-parent-health-status.restarting { background: var(--violet-soft); color: var(--violet); }
+.node-parent-health-status.cooldown { background: #f4eee1; color: #805f2e; }
+
+.node-parent-health-status > i {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.node-parent-health-status strong,
+.node-parent-health-status small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-parent-health-status strong { font-size: 8px; }
+.node-parent-health-status small { color: currentColor; font-size: 7px; opacity: 0.86; }
+.node-parent-health-status .health-reason { opacity: 0.68; }
+
+.node-steering-health-detail {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #dfc89e;
+  border-radius: 16px;
+  background: #fffaf0;
+}
+
+.node-steering-health-detail.healthy { border-color: #add0c1; background: var(--mint-soft); }
+.node-steering-health-detail.blocked { border-color: #e2ada1; background: var(--coral-soft); }
+.node-steering-health-detail.restarting { border-color: #c2b4e1; background: var(--violet-soft); }
+
+.node-steering-health-heading {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.node-steering-health-heading > span {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  font-weight: 900;
+}
+
+.node-steering-health-heading small,
+.node-steering-health-heading strong,
+.node-steering-health-heading p { display: block; }
+.node-steering-health-heading small { color: var(--muted); font-size: 9px; letter-spacing: 0.08em; }
+.node-steering-health-heading strong { margin-top: 3px; font-size: 14px; }
+.node-steering-health-heading p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+
+.node-steering-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.node-steering-health-grid > div {
+  padding: 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.node-steering-health-grid span,
+.node-steering-health-grid strong { display: block; }
+.node-steering-health-grid span { color: var(--muted); font-size: 9px; }
+.node-steering-health-grid strong { margin-top: 3px; font-size: 11px; overflow-wrap: anywhere; }
+
+.node-steering-health-evidence {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(77, 83, 77, 0.14);
+  font-size: 9px;
+}
+
+.node-steering-health-evidence span { color: var(--muted); }
+.node-steering-health-evidence strong,
+.node-steering-health-evidence code { overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .node-steering-health-grid { grid-template-columns: 1fr; }
+}
 .node-parent-steering-status small { margin-top: 2px; color: var(--muted); font-size: 6px; }
 
 .health-panel {
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1.2fr) minmax(260px, 0.9fr);
+  align-items: center;
+}
+
+.health-panel .panel-heading {
+  grid-column: 1 / -1;
 }
 
 .score-pill {
@@ -2670,10 +2842,6 @@ footer {
 @media (max-width: 1100px) {
   .stat-grid {
     grid-template-columns: repeat(2, 1fr);
-  }
-
-  .dashboard-grid {
-    grid-template-columns: 1fr;
   }
 
   .health-panel {

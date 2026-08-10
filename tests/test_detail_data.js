@@ -49,6 +49,10 @@ test("preserves every existing node metric and identity field", () => {
       online: true,
       clientCount: 3,
       speedMbps: 199.4,
+      phyRateMbps: 1729.3,
+      phyRateRaw: "1.7293 Gb/s",
+      phyRateAgeSeconds: 8,
+      phyRateStale: false,
       rssi: -66,
       quality: { label: "Good" },
       model: "WHW03",
@@ -61,18 +65,19 @@ test("preserves every existing node metric and identity field", () => {
       hardwareVersion: "2",
       serialNumber: "test-serial",
     },
-    (value) => Number(value).toFixed(0),
+    (value, digits = 0) => Number(value).toFixed(digits),
   );
 
   assert.deepEqual(
     rows.metrics.map(([label]) => label),
-    ["Current status", "Connected clients", "Backhaul rate", "Backhaul signal"],
+    ["Current status", "Connected clients", "Backhaul rate", "Link PHY rate", "Backhaul signal"],
   );
   assert.deepEqual(
     rows.details.map(([label]) => label),
-    ["Model", "IP address", "MAC address", "Parent node", "Backhaul band", "Channel", "Firmware version", "Hardware version", "Serial number"],
+    ["Model", "IP address", "MAC address", "Parent node", "Backhaul band", "Channel", "PHY source", "PHY raw value", "PHY sample age", "Firmware version", "Hardware version", "Serial number"],
   );
   assert.equal(rows.metrics[2][1], "199 Mbps");
+  assert.equal(rows.metrics[3][1], "1.73 Gbps");
   assert.equal(rows.details[3][1], "Patio");
 });
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.7.0 — 2026-08-10
+
+- Made the topology panel use the full browser width and reflow live through a
+  `ResizeObserver`. Wide views expand the hierarchy, medium views compact safe
+  gaps, and narrow views confine horizontal scrolling to the map while keeping
+  full-size Node cards and all diagnostics.
+- Added live backhaul PHY rate collection from each child Node's MQTT
+  `BH/status` (`phyRate_2`/`phyRate`) every 30 seconds. Topology links, Node
+  cards, and Node details now show PHY rate alongside the existing JNAP
+  `speedMbps` estimate, including source, raw value, age, and stale state.
+- Changed ESP32 Topology Lock recovery from guarded `core/Reboot` retries to
+  exact MQTT `BH/config` Parent steering. Auto capability detection remains
+  the default and Force off blocks automatic recovery.
+- Added Parent-radio selection for automatic recovery: a child uses `5GL`
+  when a non-primary Parent's own uplink is `5GH`, and `5GH` when that uplink
+  is `5GL`. A primary Parent preserves the child's observed band.
+- Kept the three-snapshot mismatch gate, online Parent requirement,
+  five-minute global action limit, and two-generation result verification.
+- Restored ESPHome Wi-Fi, Native API, and WireGuard recovery reboots with an
+  explicit five-minute timeout instead of disabling them with `0s`.
+- Added persistent per-child Parent Steering Health diagnostics to topology
+  cards and Node details: exact publish/echo evidence, consecutive/total
+  failures, successes, target Parent child count, reason, restart count,
+  timestamps, and a live cooldown.
+- Added guarded requested-Parent recovery after two consecutive exact
+  `BH/config` publishes time out unverified. The worker restarts only an online
+  non-primary requested Parent with zero online mesh children, rechecks every
+  gate immediately before `core/Reboot`, and limits attempts to one per five
+  minutes. Preflight, broker, ACL, and radio-resolution errors never count.
+
 ## v0.6.0 — 2026-08-09
 
 ### Highlights

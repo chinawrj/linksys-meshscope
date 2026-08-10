@@ -14,6 +14,8 @@ const state = {
   refreshError: null,
   refreshing: false,
   topologyAnimationFrame: null,
+  topologyResizeObserver: null,
+  topologyViewportWidth: 0,
   topologyLock: MeshTopologyLock.normalize(null),
   topologyLockReceivedAt: Date.now(),
   topologyLockEditing: false,
@@ -70,6 +72,13 @@ function compactNumber(value, digits = 0) {
     maximumFractionDigits: digits,
     minimumFractionDigits: digits,
   });
+}
+
+function formatLinkRate(value) {
+  const rate = Number(value);
+  if (!Number.isFinite(rate)) return "—";
+  if (rate >= 1000) return `${compactNumber(rate / 1000, 2)} Gbps`;
+  return `${compactNumber(rate)} Mbps`;
 }
 
 function formatTime(value) {
@@ -352,10 +361,13 @@ function renderParentSteering() {
 function scheduleParentSteeringPoll() {
   clearTimeout(state.parentSteeringPollTimer);
   state.parentSteeringPollTimer = null;
+  const healthNeedsPolling = (state.parentSteering.nodeHealth || []).some((health) =>
+    ["restart-queued", "parent-restarting", "cooldown", "restart-eligible"].includes(health.state));
   if (!state.parentSteeringLoaded ||
       (!state.parentSteeringLoading &&
        !MeshMqttParentSteering.isOperationActive(state.parentSteering.operation) &&
-       state.parentSteering.state !== "detecting")) return;
+       state.parentSteering.state !== "detecting" &&
+       !healthNeedsPolling)) return;
   state.parentSteeringPollTimer = setTimeout(() => loadParentSteering(false), 2000);
 }
 
@@ -587,8 +599,8 @@ function updateTopologyLockCountdown() {
   const remaining = topologyLockRemaining();
   $$("[data-topology-lock-countdown]").forEach((element) => {
     element.textContent = remaining > 0
-      ? `Restart in ${MeshTopologyLock.duration(remaining)}`
-      : "Restart on next confirmed refresh";
+      ? `Move in ${MeshTopologyLock.duration(remaining)}`
+      : "MQTT move on next confirmed refresh";
   });
   const countdown = $("#topologyLockCountdown");
   if (countdown) {
@@ -604,6 +616,19 @@ function updateTopologyLockCountdown() {
     chip.textContent = "Recovery: Monitoring · " +
       (remaining ? MeshTopologyLock.duration(remaining) : "Action ready");
   }
+}
+
+function updateParentHealthCountdown() {
+  $$('[data-parent-health-countdown]').forEach((element) => {
+    const health = MeshMqttParentSteering.healthForNode(
+      state.parentSteering,
+      element.dataset.parentHealthChild,
+    );
+    const view = MeshMqttParentSteering.healthPresentation(health);
+    if (view) element.textContent = element.dataset.parentHealthCountdownKind === "detail"
+      ? view.remaining ? `${view.remaining}s` : "Ready / inactive"
+      : view.label;
+  });
 }
 
 function setTopologyLock(value) {
@@ -694,13 +719,13 @@ function renderTopologyLock() {
   recoveryChip.className = "topology-recovery-chip active " + (attention ? "attention" : "correct");
   $("#topologyLockIcon").textContent = attention ? "!" : "◆";
   $("#topologyLockTitle").textContent = attention
-    ? `Restart-based recovery is monitoring ${attention} node${attention === 1 ? "" : "s"}`
+    ? `MQTT recovery is monitoring ${attention} node${attention === 1 ? "" : "s"}`
     : "All monitored nodes match the saved parent map";
   $("#topologyLockMode").textContent = "MONITORING";
   $("#topologyLockDescription").textContent = summary.blocked
-    ? "At least one desired parent is offline, so affected restarts are blocked until that parent returns."
+    ? "At least one desired parent is offline or MQTT recovery is disabled, so affected moves are blocked."
     : summary.mismatch
-      ? "Parent differences are being confirmed. Eligible child nodes may restart one at a time under the five-minute global limit."
+      ? "Parent differences are being confirmed. Eligible child nodes are moved with exact MQTT Parent Steering, one at a time under the five-minute global limit."
       : "Every monitored online node currently has the desired parent.";
   $("#editTopologyLockButton").textContent = "Edit desired topology";
   $("#topologyLockStats").innerHTML = `
@@ -712,7 +737,7 @@ function renderTopologyLock() {
   $("#topologyLockHistory").innerHTML = `
     <strong>Recent automatic actions</strong>
     ${lock.history.slice(0, 3).map((action) => `
-      <span><i class="${action.accepted ? "accepted" : "failed"}"></i><b>${escapeHtml(action.name)}</b> · ${escapeHtml(formatTime(action.requestedAt))} · ${action.accepted ? "restart accepted" : "not acknowledged"} · ${escapeHtml(action.currentParentName || action.currentParentId || "unknown")} → ${escapeHtml(action.expectedParentName || action.expectedParentId)}</span>`).join("")}`;
+      <span><i class="${action.accepted ? "accepted" : "failed"}"></i><b>${escapeHtml(action.name)}</b> · ${escapeHtml(formatTime(action.requestedAt))} · ${action.accepted ? "MQTT move queued" : "not queued"} · ${escapeHtml(action.currentParentName || action.currentParentId || "unknown")} → ${escapeHtml(action.expectedParentName || action.expectedParentId)}</span>`).join("")}`;
   updateTopologyLockCountdown();
 }
 
@@ -792,7 +817,7 @@ async function applyTopologyLock() {
   }
   if (!result.valid || !state.topologyLockAcknowledged || state.topologyLockBusy) {
     $("#topologyLockValidation").textContent = result.error ||
-      "Acknowledge the restart behavior before enabling automatic recovery.";
+      "Acknowledge the MQTT steering behavior before enabling automatic recovery.";
     return;
   }
   state.topologyLockBusy = true;
@@ -810,7 +835,7 @@ async function applyTopologyLock() {
     state.topologyLockEditing = false;
     state.topologyLockDraft = {};
     state.topologyLockDraftError = "";
-    toast("Restart-based recovery enabled · Monitoring starts with the next refresh");
+    toast("MQTT topology recovery enabled · Monitoring starts with the next refresh");
     renderTopologyLock();
     renderParentSteering();
     renderTopology(state.topology);
@@ -820,7 +845,7 @@ async function applyTopologyLock() {
   } finally {
     state.topologyLockBusy = false;
     const button = $("#applyTopologyLockButton");
-    button.textContent = "Enable restart-based recovery";
+    button.textContent = "Enable MQTT recovery";
     renderTopologyLockEditor();
   }
 }
@@ -834,7 +859,7 @@ async function disableTopologyLock() {
       method: "POST",
       body: JSON.stringify({ enabled: false }),
     }));
-    toast("Topology lock disabled · Automatic restarts stopped");
+    toast("Topology lock disabled · Automatic MQTT moves stopped");
     renderTopologyLock();
     renderParentSteering();
     renderTopology(state.topology);
@@ -846,7 +871,7 @@ async function disableTopologyLock() {
   }
 }
 
-function layoutNodes(nodes) {
+function layoutNodes(nodes, availableWidth = 0) {
   const lockExpanded = state.topologyLockEditing || state.topologyLock.enabled;
   const steeringExpanded = Boolean(
     state.parentSteering.operation &&
@@ -855,10 +880,33 @@ function layoutNodes(nodes) {
       state.parentSteering.operation.childId,
     )),
   );
+  const healthExpanded = nodes.some((node) =>
+    MeshMqttParentSteering.healthForNode(state.parentSteering, node.id));
+  const nodeHeight = 124 + Number(lockExpanded) * 60 +
+    Number(steeringExpanded) * 60 + Number(healthExpanded) * 82;
   return MeshTopologyLayout.compute(nodes, {
-    nodeHeight: lockExpanded && steeringExpanded ? 244 : lockExpanded || steeringExpanded ? 184 : 124,
-    rowGap: lockExpanded || steeringExpanded ? 38 : 30,
+    nodeHeight,
+    rowGap: nodeHeight > 124 ? 38 : 30,
+    availableWidth,
   });
+}
+
+function observeTopologyWidth() {
+  const scroller = $(".map-scroll");
+  if (!scroller || typeof ResizeObserver === "undefined") return;
+  state.topologyResizeObserver?.disconnect();
+  state.topologyResizeObserver = new ResizeObserver((entries) => {
+    const width = Math.max(0, Math.floor(entries[0]?.contentRect?.width || 0));
+    if (!width || Math.abs(width - state.topologyViewportWidth) < 3) return;
+    state.topologyViewportWidth = width;
+    if (!state.topology) return;
+    cancelAnimationFrame(state.topologyAnimationFrame);
+    state.topologyAnimationFrame = requestAnimationFrame(() => {
+      state.topologyAnimationFrame = null;
+      renderTopology(state.topology);
+    });
+  });
+  state.topologyResizeObserver.observe(scroller);
 }
 
 function applyTopologyLayoutPositions(map) {
@@ -876,6 +924,7 @@ function applyTopologyLayoutPositions(map) {
 
 function renderTopology(data) {
   const map = $("#meshMap");
+  const scroller = $(".map-scroll");
   if (state.topologyAnimationFrame) {
     cancelAnimationFrame(state.topologyAnimationFrame);
     state.topologyAnimationFrame = null;
@@ -883,12 +932,22 @@ function renderTopology(data) {
   const displayNodes = state.topologyLockEditing
     ? MeshTopologyLock.applyDraft(data.nodes, state.topologyLockDraft)
     : data.nodes;
-  const layout = layoutNodes(displayNodes);
+  const availableWidth = Math.max(
+    0,
+    Math.floor((scroller?.clientWidth || state.topologyViewportWidth || 0) - 12),
+  );
+  state.topologyViewportWidth = scroller?.clientWidth || state.topologyViewportWidth;
+  const layout = layoutNodes(displayNodes, availableWidth);
   const { positions, edges, root, nodeWidth, nodeHeight } = layout;
   const offline = data.nodes.filter((node) => !node.online);
   if (!positions.length || !root) return;
+  map.style.width = `${layout.width}px`;
   map.style.minWidth = `${layout.width}px`;
   map.style.height = `${layout.height}px`;
+  $(".map-scroll-hint")?.classList.toggle(
+    "needed",
+    layout.contentWidth > availableWidth + 2,
+  );
   const internetY = root.y + nodeHeight / 2 - 38;
   const wanEdge = {
     id: "internet->gateway",
@@ -941,8 +1000,20 @@ function renderTopology(data) {
     );
     const steeringPresentation = MeshMqttParentSteering.operationPresentation(steeringOperation);
     const steeringTone = steeringPresentation?.tone || "";
+    const steeringHealth = MeshMqttParentSteering.healthForNode(
+      state.parentSteering,
+      node.id,
+    );
+    const healthPresentation = MeshMqttParentSteering.healthPresentation(steeringHealth);
+    const healthTone = healthPresentation?.tone || "";
+    const phyAge = node.phyRateAgeSeconds !== null && node.phyRateAgeSeconds !== undefined
+      ? `${compactNumber(node.phyRateAgeSeconds)} seconds old`
+      : "sample age unavailable";
+    const phyTitle = node.phyRateMbps !== null && node.phyRateMbps !== undefined
+      ? `Child backhaul PHY from MQTT BH/status · ${node.phyRateRaw || formatLinkRate(node.phyRateMbps)} · ${phyAge}${node.phyRateStale ? " · stale" : ""}`
+      : "Waiting for the child Node's MQTT BH/status PHY sample";
     html += `
-      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""}"
+      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""} ${healthPresentation ? `parent-health-expanded parent-health-${escapeHtml(healthTone)}` : ""}"
         data-layout-left="${node.x}" data-layout-top="${node.y}" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
         <div class="node-title">
           <strong>${escapeHtml(node.name)}</strong>
@@ -955,10 +1026,12 @@ function renderTopology(data) {
         <div class="node-stats">
           <div><span>Clients</span><strong>${node.clientCount}</strong></div>
           <div><span>${node.isAuthority ? "Status" : "Backhaul"}</span><strong>${node.isAuthority ? "Online" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
+          <div class="node-phy ${node.phyRateStale ? "stale" : ""}" title="${escapeHtml(phyTitle)}"><span>PHY rate</span><strong>${node.isAuthority ? "—" : formatLinkRate(node.phyRateMbps)}</strong></div>
           <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
         ${lockPresentation ? `<div class="node-lock-status ${escapeHtml(lockPresentation.tone)}"><i aria-hidden="true">${lockItem.status === "correct" ? "◆" : lockItem.status === "parent-offline" ? "◇" : "↻"}</i><span><strong ${lockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(lockPresentation.label)}</strong><small>${escapeHtml(lockPresentation.detail)}</small></span></div>` : ""}
         ${steeringPresentation ? `<div class="node-parent-steering-status ${escapeHtml(steeringTone)}"><i aria-hidden="true">${steeringTone === "verified" ? "✓" : steeringTone === "failed" ? "!" : "↻"}</i><span><strong>${escapeHtml(steeringPresentation.label)}</strong><small>${escapeHtml(steeringPresentation.detail)}</small></span></div>` : ""}
+        ${healthPresentation ? `<div class="node-parent-health-status ${escapeHtml(healthTone)}"><i aria-hidden="true">${healthTone === "healthy" ? "✓" : healthTone === "blocked" ? "!" : healthTone === "restarting" ? "↻" : "#"}</i><span><strong ${healthPresentation.remaining ? `data-parent-health-countdown data-parent-health-child="${escapeHtml(node.id)}"` : ""}>${escapeHtml(healthPresentation.label)}</strong><small>${escapeHtml(healthPresentation.detail)}</small><small class="health-reason">${escapeHtml(healthPresentation.reason)}</small></span></div>` : ""}
         ${draggable ? `<div class="node-drag-hint">Drag onto desired parent</div>` : ""}
         ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
       </button>`;
@@ -1003,6 +1076,7 @@ function renderTopology(data) {
   });
   if (state.topologyLockEditing) wireTopologyLockDragDrop(data);
   updateTopologyLockCountdown();
+  updateParentHealthCountdown();
 }
 
 function wireTopologyLockDragDrop(data) {
@@ -1059,11 +1133,11 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
     ? `Desired → ${edge.source.name}`
     : edge.kind === "current"
       ? `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"} · CURRENT`
-      : edge.band === "WAN"
+    : edge.band === "WAN"
     ? "UPLINK"
-    : `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"}${edge.rssi !== null && edge.rssi !== undefined ? ` · ${edge.rssi}dBm` : ""}`;
+    : `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"}${edge.phyRateMbps !== null && edge.phyRateMbps !== undefined ? ` · PHY ${formatLinkRate(edge.phyRateMbps)}${edge.phyRateStale ? " (stale)" : ""}` : ""}${edge.rssi !== null && edge.rssi !== undefined ? ` · ${edge.rssi}dBm` : ""}`;
   return `
-    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" data-layout-left="${midX - 42}" data-layout-top="${midY - 20}">
+    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" data-layout-left="${midX - 70}" data-layout-top="${midY - 20}">
       <strong>${escapeHtml(displayBand)}</strong><small>${escapeHtml(details)}</small>
     </span>`;
 }
@@ -1241,6 +1315,11 @@ function openDetail(item, kind) {
     topologyLockRemaining(),
     state.topologyLock.confirmationsRequired,
   );
+  const steeringHealth = isNode
+    ? MeshMqttParentSteering.healthForNode(state.parentSteering, item.id)
+    : null;
+  const steeringHealthPresentation =
+    MeshMqttParentSteering.healthPresentation(steeringHealth);
   const parentNode = isNode ? null : MeshDetailData.nodeForClient(state.topology, item);
   const nodeRows = isNode ? MeshDetailData.nodeDetailRows(item, compactNumber) : null;
   const metrics = isNode
@@ -1281,6 +1360,28 @@ function openDetail(item, kind) {
       .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
       .join("")}</div>
     ${topologyLockPresentation ? `<section class="node-lock-detail ${escapeHtml(topologyLockPresentation.tone)}"><span aria-hidden="true">◆</span><div><small>TOPOLOGY LOCK</small><strong ${topologyLockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(topologyLockPresentation.label)}</strong><p>${escapeHtml(topologyLockPresentation.detail)}</p></div></section>` : ""}
+    ${steeringHealthPresentation ? `<section class="node-steering-health-detail ${escapeHtml(steeringHealthPresentation.tone)}">
+      <div class="node-steering-health-heading"><span aria-hidden="true">#</span><div><small>PARENT STEERING HEALTH</small><strong>${escapeHtml(steeringHealthPresentation.label)}</strong><p>${escapeHtml(steeringHealthPresentation.reason)}</p></div></div>
+      <div class="node-steering-health-grid">
+        <div><span>Requested Parent</span><strong>${escapeHtml(steeringHealth.targetParentName || steeringHealth.targetParentId || "—")}</strong></div>
+        <div><span>Band / target</span><strong>${escapeHtml(steeringHealth.band || "—")}${steeringHealth.lastTargetChannel ? ` · ch ${steeringHealth.lastTargetChannel}` : ""}</strong></div>
+        <div><span>Consecutive failures</span><strong>${steeringHealth.consecutiveFailures}/${steeringHealth.failureThreshold}</strong></div>
+        <div><span>Total failures</span><strong>${steeringHealth.totalFailures}</strong></div>
+        <div><span>Successful moves</span><strong>${steeringHealth.successfulMoves}</strong></div>
+        <div><span>Parent online children</span><strong>${steeringHealth.targetParentOnlineChildren}</strong></div>
+        <div><span>MQTT publish / echo</span><strong>${steeringHealth.lastRequestPublished ? "Published" : "No"} / ${steeringHealth.lastCommandEchoed ? "Seen" : "Not seen"}</strong></div>
+        <div><span>Parent restarts</span><strong>${steeringHealth.parentRestartCount}</strong></div>
+        <div><span>Last operation</span><strong>#${steeringHealth.lastOperationId || "—"}</strong></div>
+        <div><span>Restart countdown</span><strong data-parent-health-countdown data-parent-health-countdown-kind="detail" data-parent-health-child="${escapeHtml(item.id)}">${steeringHealthPresentation.remaining ? `${steeringHealthPresentation.remaining}s` : "Ready / inactive"}</strong></div>
+      </div>
+      <div class="node-steering-health-evidence">
+        <span>Target BSSID</span><code>${escapeHtml(steeringHealth.lastTargetBssid || "—")}</code>
+        <span>Target source</span><strong>${escapeHtml(steeringHealth.lastTargetSource || "—")}</strong>
+        <span>Last failure</span><strong>${escapeHtml(steeringHealth.lastFailureAt || "—")}</strong>
+        <span>Last success</span><strong>${escapeHtml(steeringHealth.lastSuccessAt || "—")}</strong>
+        <span>Last Parent restart</span><strong>${escapeHtml(steeringHealth.lastParentRestartAt || "—")}</strong>
+      </div>
+    </section>` : ""}
     ${isNode ? `
       <section class="node-feasibility" aria-labelledby="nodeFeasibilityTitle">
         <div class="node-feasibility-heading">
@@ -1472,7 +1573,10 @@ function render(data) {
   }
   $("#connectModal").classList.add("hidden");
   scheduleAutoRefresh();
-  if (!state.parentSteeringLoaded && !state.parentSteeringLoading) {
+  // Parent health can change in the ESP32 worker without a browser-originated
+  // operation. Refresh the small state document with every topology refresh so
+  // external/automatic failures and Parent restarts appear on Node cards.
+  if (!state.parentSteeringLoading) {
     void loadParentSteering(false);
   }
 }
@@ -1521,7 +1625,11 @@ async function loadInitialData() {
 
 async function initialize() {
   wireEvents();
-  state.topologyLockTimer = setInterval(updateTopologyLockCountdown, 1000);
+  observeTopologyWidth();
+  state.topologyLockTimer = setInterval(() => {
+    updateTopologyLockCountdown();
+    updateParentHealthCountdown();
+  }, 1000);
   try {
     await loadInitialData();
   } catch (error) {
