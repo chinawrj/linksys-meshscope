@@ -278,32 +278,6 @@
       </footer>
     </div>
 
-    <div class="modal-backdrop hidden" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle">
-      <form class="connect-card auth-card" id="authForm">
-        <div class="connect-graphic" aria-hidden="true">
-          <span></span><span></span><span></span>
-        </div>
-        <p class="section-kicker">LOCAL DASHBOARD</p>
-        <h2 id="authTitle">Unlock MeshScope</h2>
-        <p>Enter the dashboard password you created during installation. This is not your Wi-Fi password, Linksys admin password, Home Assistant API key, or OTA password.</p>
-        <label>
-          <span>Dashboard password</span>
-          <div class="password-field">
-            <input id="dashboardPasswordInput" name="password" type="password" autocomplete="current-password" required />
-            <button id="toggleDashboardPassword" type="button" aria-label="Show dashboard password">Show</button>
-          </div>
-        </label>
-        <div class="connect-note">
-          <span>✓</span>
-          <p>This password protects only the MeshScope dashboard. Use it on your trusted LAN or authorized WireGuard path.</p>
-        </div>
-        <p class="form-error" id="authError" role="alert"></p>
-        <button class="button button-primary" id="authButton" type="submit">
-          <span>Open dashboard</span><i aria-hidden="true">→</i>
-        </button>
-      </form>
-    </div>
-
     <div class="modal-backdrop hidden" id="connectModal" role="dialog" aria-modal="true" aria-labelledby="connectTitle">
       <form class="connect-card" id="connectForm">
         <button class="modal-close" id="connectClose" type="button" aria-label="Close">×</button>
@@ -317,7 +291,6 @@
           <span>Router address in firmware</span>
           <strong id="managedRouterHost">—</strong>
           <p>The page can refresh the current configuration but cannot receive or change credentials.</p>
-          <button class="text-button sign-out-button" id="signOutButton" type="button">Sign out of this dashboard</button>
         </div>
         <div id="editableConnectionFields">
           <label>

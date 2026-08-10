@@ -132,9 +132,6 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"/api/topology-lock"',
             '"/api/mqtt-parent-steering"',
             '"/api/steer-node-parent"',
-            '"/api/login"',
-            '"/api/logout"',
-            "authorize_web_request(request)",
             "managedConnection",
             "snapshotReady",
             "routerConnected",
@@ -146,9 +143,6 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "compressed_response",
             "memory_mutex",
             "topology_lock_mutex",
-            "HttpOnly; SameSite=Strict",
-            "esp_fill_random",
-            "WEB_SESSION_LIMIT = 4",
             "mqtt_steering_worker",
             "mqtt_steering_mutex",
         ):
@@ -156,19 +150,34 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertNotIn("WWW-Authenticate", self.edge)
         self.assertNotIn("web_authorization", self.edge)
 
-    def test_dashboard_login_is_password_only_and_has_sign_out(self):
+    def test_esp32_dashboard_has_no_login_or_session_gate(self):
         html = WEB_HTML.read_text(encoding="utf-8")
         app = WEB_APP.read_text(encoding="utf-8")
-        self.assertIn("Unlock MeshScope", html)
-        self.assertIn("Dashboard password", html)
-        self.assertIn("No username is required", "".join(
-            path.read_text(encoding="utf-8")
-            for path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE)
-        ))
-        self.assertNotIn('name="username"', html)
-        self.assertIn('id="signOutButton"', html)
-        self.assertIn('api("/api/login"', app)
-        self.assertIn('api("/api/logout"', app)
+        for fragment in (
+            "authorize_web_request",
+            "web_session",
+            "WEB_SESSION",
+            '"/api/login"',
+            '"/api/logout"',
+            "login_handler",
+            "logout_handler",
+            "authentication_required",
+        ):
+            self.assertNotIn(fragment, self.edge)
+        for fragment in (
+            "Unlock MeshScope",
+            "Dashboard password",
+            'id="authModal"',
+            'id="signOutButton"',
+        ):
+            self.assertNotIn(fragment, html)
+        for fragment in (
+            'api("/api/login"',
+            'api("/api/logout"',
+            "showDashboardLogin",
+            "dashboardPasswordInput",
+        ):
+            self.assertNotIn(fragment, app)
 
     def test_topology_recovery_requires_explicit_acknowledgement(self):
         html = WEB_HTML.read_text(encoding="utf-8")
@@ -453,19 +462,21 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("esphome_meshscope_c3.local.yaml", ignored)
         self.assertIn("esphome_meshscope_c6.local.yaml", ignored)
 
-    def test_examples_require_unique_dashboard_and_api_credentials(self):
+    def test_examples_require_router_api_and_ota_credentials_without_dashboard_login(self):
         for example_path in (C5_EXAMPLE, C3_EXAMPLE, C6_EXAMPLE):
             example = example_path.read_text(encoding="utf-8")
             self.assertIn("meshscope_router_password_b64:", example)
-            self.assertIn("meshscope_dashboard_password:", example)
+            self.assertNotIn("meshscope_dashboard_password:", example)
             self.assertNotIn("meshscope_web_username:", example)
             self.assertIn("meshscope_api_key:", example)
+            self.assertIn("meshscope_ota_password:", example)
         for config in (
             self.common,
             self.c5_config,
             self.c3_config,
             self.c6_config,
         ):
+            self.assertNotIn("meshscope_dashboard_password", config)
             self.assertNotIn(
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
                 config,
