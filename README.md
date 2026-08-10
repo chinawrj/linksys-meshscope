@@ -14,10 +14,9 @@ Linksys mesh owners repeatedly run into two frustrating problems:
 
 MeshScope is a local-first Linksys Velop / Intelligent Mesh dashboard built to
 make both problems visible. Its **Topology Lock** records the parent structure
-you want, continuously compares it with the live network, and can use a
-strictly guarded restart of a mismatched child to give Linksys another chance
-to select the expected parent. Linksys still makes the final association
-decision; MeshScope does not claim to force an exact parent.
+you want, continuously compares it with the live network, and uses guarded
+local MQTT Parent steering to restore a mismatched child to the exact saved
+parent when the compatible router ACL is available.
 
 [![CI](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml/badge.svg)](https://github.com/chinawrj/linksys-meshscope/actions/workflows/ci.yml)
 ![Linksys](https://img.shields.io/badge/Linksys-local%20JNAP-16769b)
@@ -34,13 +33,13 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.6.0 highlight:** the always-on ESP32 appliance can now discover and use
-> exact MQTT Parent steering from the same topology page. **Auto** is the safe
-> default; **Force on** and **Force off** are explicit, persistent choices.
-> Broker acceptance and two-generation topology verification are shown as
-> separate states. The v0.5.0 boot-compatible firmware builder and guarded
-> desktop API remain included; generated Linksys IMG files are never
-> distributed.
+> **v0.7.0 highlight:** Topology Lock now restores the exact saved Parent over
+> guarded local MQTT, tracks per-child steering health, and can recover an
+> otherwise idle requested Parent after repeated accepted-but-unverified
+> moves. Every wireless Node now shows both the Linksys JNAP backhaul estimate
+> and its live MQTT PHY rate. The topology automatically uses the browser
+> width and confines scrolling to the map only when complete cards cannot fit.
+> Generated Linksys IMG files are never distributed.
 
 > MeshScope is an independent community project and is not affiliated with or
 > endorsed by Linksys. Use it only on networks you own or are authorized to
@@ -60,15 +59,14 @@ client identifier are deliberately excluded from this repository image._
    entities. There is no MeshScope cloud service or analytics endpoint.
 4. **Recover only when enabled.** Topology Lock compares saved and current
    parents. After three confirmed mismatches, and only when the desired parent
-   is online and the five-minute cooldown is clear, it may send the one
-   permitted write: `core/Reboot` to the mismatched child. Linksys then makes
-   its own association decision; MeshScope does not issue an exact-parent
-   command.
-5. **Optionally steer an exact Parent.** An owner-built narrow-ACL firmware
-   image can expose Linksys's existing local MQTT Parent command. The desktop
-   API discovers the target radio from fresh MQTT data and applies topology
-   safety checks before one request. This advanced path is separate from the
-   default JNAP-only dashboard.
+   is online and the five-minute cooldown is clear, it queues one exact local
+   MQTT `BH/config` request and requires two fresh topology generations to
+   verify success. For a non-primary Parent, the child uses the opposite radio
+   from that Parent's own uplink (`5GH` → `5GL`, or `5GL` → `5GH`).
+5. **Probe before writing.** An owner-built narrow-ACL firmware image exposes
+   Linksys's existing local MQTT Parent command. **Auto**, the default mode,
+   enables recovery only after a fresh broker round trip. Force on/off remain
+   explicit persistent choices.
 
 ```mermaid
 flowchart LR
@@ -76,7 +74,7 @@ flowchart LR
     Engine -->|"Local dashboard"| Browser["Browser"]
     Engine -->|"Encrypted Native API"| HA["Home Assistant"]
     Remote["Authorized remote client"] -.->|"WireGuard to ESP32 only"| Engine
-    Engine -.->|"Optional guarded child reboot"| Linksys
+    Engine -.->|"Optional selected-Node or requested-Parent recovery"| Linksys
     Engine -.->|"Optional owner-enabled MQTT exact-Parent request"| Linksys
 ```
 
@@ -126,7 +124,7 @@ and restart-state UI without authenticating with or controlling a router.
 - Immediate restart of one selected online node, with offline and recovery
   tracking
 - ESP32 Topology Lock that saves every online node's desired parent, shows
-  parent compliance and restart countdowns directly on the map, and can
+  parent compliance and MQTT-move countdowns directly on the map, and can
   recover a persistent mismatch under strict safety gates
 - Drag-and-drop desired-parent editing on desktop browsers, with accessible
   child/parent selectors as an equivalent input method
@@ -172,18 +170,23 @@ flowchart LR
     Compare -->|"Match"| Healthy["Green: parent correct"]
     Compare -->|"Mismatch"| Confirm["Confirm across 3 snapshots"]
     Confirm --> Parent{"Desired parent online?"}
-    Parent -->|"No"| Wait["Wait; restarting cannot help"]
+    Parent -->|"No"| Wait["Wait; exact move cannot help"]
     Parent -->|"Yes"| Cooldown{"5-minute cooldown clear?"}
     Cooldown -->|"No"| Wait
-    Cooldown -->|"Yes"| Restart["Restart mismatched child"]
-    Restart --> Linksys["Linksys re-evaluates the parent"]
-    Linksys --> Compare
+    Cooldown -->|"Yes"| Radio["Choose opposite Parent uplink radio"]
+    Radio --> MQTT["Publish exact MQTT BH/config"]
+    MQTT --> Verify["Verify 2 fresh topology generations"]
+    Verify --> Compare
 ```
 
 The node card changes color with compliance state and shows the next eligible
 recovery countdown directly on the topology. Recovery requires three
 confirmed snapshots, an online desired parent, and a global five-minute
-cooldown. It never restarts the desired parent or an unidentified device.
+cooldown. A topology mismatch is handled with MQTT first; it never restarts
+the mismatched child. The separate Parent-health guard described below may
+restart a non-primary requested Parent only after repeated exact MQTT moves
+were published but could not be verified. Recovery never steers the primary
+node, an offline or wired child, or a child whose saved Parent is offline.
 
 ## Desktop app: start in five minutes
 
@@ -547,6 +550,21 @@ Select any topology card to open the node details and view the clients or STAs
 attached to that node. `5GH` and `5GL` remain visible on the backhaul paths,
 together with every available channel, rate, and RSSI value.
 
+Each wireless Node shows two deliberately separate link rates. **Backhaul** is
+Linksys JNAP `GetBackhaulInfo.speedMbps`, the firmware's backhaul estimate.
+**PHY rate** is the child Node's current wireless backhaul bitrate from MQTT
+`network/<node UUID>/BH/status` (`phyRate_2`, with `phyRate` retained as the
+human-readable raw value). The ESP32 asks the Nodes for a fresh PHY sample
+every 30 seconds. The topology link label, Node card, and Node details all show
+the result; samples older than two minutes are explicitly marked stale instead
+of being presented as current.
+
+The topology panel uses the full browser width and reacts immediately when its
+container changes size. It expands hierarchy spacing on wide screens, compacts
+safe gaps on medium screens, and keeps horizontal scrolling inside the map on
+narrow screens where full 220-pixel diagnostic cards physically cannot fit.
+The rest of the dashboard never becomes wider than the browser viewport.
+
 ### Topology Lock
 
 Topology Lock is available on the ESP32-hosted page. Select **Edit & lock
@@ -554,34 +572,36 @@ topology** to capture the current live structure. On a desktop browser, drag a
 child card onto its desired parent; on touch devices or with a keyboard, use
 the child and desired-parent selectors. The preview keeps the current `5GH` or
 `5GL` link visible beside the proposed relationship. Nothing is sent to a
-router while editing. Review the restart warning, acknowledge it, then select
-**Enable restart-based recovery**.
+router while editing. Review the short backhaul-disconnection warning,
+acknowledge it, then select **Enable MQTT recovery**.
 
 After applying, every node card becomes a live status surface:
 
 - Green: the current parent matches the saved parent
 - Amber: a mismatch is being confirmed across three successful snapshots
-- Red/orange: the mismatch is confirmed and a restart is queued or counting
+- Red/orange: the mismatch is confirmed and an MQTT move is queued or counting
   down; the `MM:SS` countdown is shown directly on the node card
 - Blue/gray: the desired parent is offline, so recovery is blocked
-- Violet: a restart was sent and the node is being observed during recovery
+- Violet: the MQTT request was accepted and the node is being verified
 - Gray: the child node is offline
 
 The ESP32 stores the lock in non-volatile storage and evaluates it after each
-successful ten-second topology collection. An automatic restart is allowed
-only when the child and its saved parent are both online, the child has a
-private LAN address, and the mismatch has appeared in three consecutive
-snapshots. Automatic actions share a global five-minute cooldown, so at most
-one node can be restarted in that period. If several nodes remain mismatched,
-the scheduler rotates among them instead of repeatedly favoring one node.
+successful ten-second topology collection. An automatic MQTT move is allowed
+only when Auto capability probing has succeeded (or Force on was selected),
+the wireless child and its saved parent are both online, and the mismatch has
+appeared in three consecutive snapshots. Automatic actions share a global
+five-minute cooldown, so at most one node can be moved in that period. If
+several nodes remain mismatched, the scheduler rotates among them instead of
+repeatedly favoring one node.
 Recent attempts are displayed below the map, and Home Assistant receives
 **Topology Lock Active**, **Topology Lock Issues**, and **Topology Lock
 Summary** entities.
 
-Topology Lock is recovery by guarded node restart, not direct parent steering.
-Linksys firmware chooses the attachment again when the node returns, so the
-desired parent is not guaranteed. Use **Stop automatic recovery** to clear the
-saved structure and stop automatic actions. Locks include only nodes online at
+Topology Lock uses the same guarded exact MQTT Parent transport as the manual
+panel. It chooses the radio opposite a non-primary Parent's own uplink and
+requires two fresh topology observations before reporting success. Use **Stop
+automatic recovery** to clear the saved structure and stop automatic actions.
+Locks include only nodes online at
 apply time; edit and reapply after intentionally adding, removing, or
 relocating mesh nodes.
 
@@ -605,6 +625,23 @@ Parent must be observed in two different topology generations within a
 180-second verification window. Reloading the page does not lose an
 in-progress ESP32 operation.
 
+Each steered Node also gets a persistent **Parent Steering Health** record.
+The topology card and Node drawer show the requested Parent, exact band/BSSID/
+channel source, MQTT publish and echo evidence, consecutive and total failures,
+successes, the requested Parent's online mesh-child count, Parent restart count,
+last timestamps, and the five-minute restart countdown. These fields are added
+to the existing card; Clients, backhaul, RSSI, `5GH`/`5GL`, and Topology Lock
+information remain visible.
+
+Only an exact `BH/config` operation that reached broker acceptance and then
+expired unverified counts as a failure. Preflight, offline-Node, radio lookup,
+broker, and ACL errors do not. Success clears the consecutive count. At two
+consecutive qualifying failures, the ESP32 may send one `core/Reboot` directly
+to the requested Parent when that Parent is online, is not Main, and currently
+has zero online mesh children. The conditions are checked again immediately
+before the request, and Parent restarts are globally limited to one every five
+minutes. The target child is never restarted by this health guard.
+
 MeshScope resolves the requested Parent radio from fresh MQTT `DEVINFO` first.
 Some Linksys primary nodes do not publish their own DEVINFO record; in that
 case the ESP32 safely falls back to the current JNAP backhaul snapshot and uses
@@ -612,9 +649,9 @@ the Parent `apBSSID` and channel already observed by an online child on the
 requested band. It still applies the same BSSID, channel, topology, and
 Topology Lock checks before publishing.
 
-Topology Lock and exact steering have different purposes. Dragging nodes in
-the lock editor changes the saved restart-recovery target only. Use the Exact
-Parent Steering panel to move a node immediately. If an enabled lock expects a
+Topology Lock and the manual panel share the exact steering transport but have
+different timing. Dragging nodes changes the saved automatic-recovery target;
+use the Exact Parent Steering panel to move a node immediately. If an enabled lock expects a
 different Parent, MeshScope blocks the manual move so recovery cannot fight it.
 
 Home Assistant receives read-only diagnostics for Parent steering
@@ -675,12 +712,15 @@ The desktop and ESPHome versions use different credential models:
   assumes the home LAN and gateway have not been maliciously intercepted.
 
 Read operations are restricted to an allowlist of `Get*` and `Check*` actions.
-The JNAP write allowlist contains only `core/Reboot`, and its target must resolve to
-an online node with a known private address in the live topology. Topology Lock
-adds the saved-parent-online, three-snapshot confirmation, and global
-five-minute cooldown gates before using that same action. Reset, firmware
-updates, and all other JNAP mutations are rejected before a router request is
-generated.
+The JNAP write allowlist contains only `core/Reboot`. A manual target must be
+the explicitly selected online node with a known private address. An automatic
+Parent-health target must independently pass the repeated-published-failure,
+online, non-primary, zero-online-mesh-children, and five-minute cooldown gates.
+Topology Lock first uses only the exact
+`network/<CHILD_UUID>/BH/config` MQTT topic after saved-parent-online,
+three-snapshot confirmation, radio, cycle, and global five-minute cooldown
+checks. Reset, firmware updates, and all other JNAP mutations are rejected
+before a router request is generated.
 
 The BLE overlays remain offline, owner-controlled research artifacts. The
 desktop dashboard can invoke MQTT Parent steering only when the owner has

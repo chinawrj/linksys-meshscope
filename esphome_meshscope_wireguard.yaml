@@ -26,10 +26,10 @@ wireguard:
     - "${meshscope_wireguard_tunnel_network}"
     - "${meshscope_wireguard_ha_network}"
   peer_persistent_keepalive: "${meshscope_wireguard_keepalive}"
-  # The tunnel is an optional access path. It must never block MeshScope boot
-  # or reboot a healthy local dashboard when the remote peer is unavailable.
+  # The tunnel is an optional access path and must never block MeshScope boot.
+  # Keep ESPHome's automatic reboot timeout enabled for connection recovery.
   require_connection_to_proceed: false
-  reboot_timeout: 0s
+  reboot_timeout: 5min
   update_interval: 10s
 
 binary_sensor:

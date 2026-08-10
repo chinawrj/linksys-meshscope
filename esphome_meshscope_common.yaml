@@ -38,10 +38,10 @@ wifi:
   password: "${meshscope_wifi_password}"
   power_save_mode: NONE
   post_connect_roaming: false
-  reboot_timeout: 0s
+  reboot_timeout: 5min
 
 api:
-  reboot_timeout: 0s
+  reboot_timeout: 5min
   encryption:
     key: "${meshscope_api_key}"
 

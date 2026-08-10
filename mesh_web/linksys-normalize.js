@@ -100,6 +100,11 @@
       raw,
       "nodes/topologyoptimization/GetTopologyOptimizationSettings2",
     );
+    const backhaulPhyById = new Map(
+      (Array.isArray(edgeMeta.backhaulPhyLinks) ? edgeMeta.backhaulPhyLinks : [])
+        .filter((item) => item && item.nodeId)
+        .map((item) => [String(item.nodeId).toUpperCase(), item]),
+    );
 
     const backhaulById = new Map(backhaul.map((item) => [item.deviceUUID, item]));
     const nodeIds = new Set(
@@ -150,6 +155,7 @@
       const parentIp = backhaulItem.parentIPAddress;
       const parentId = parentIp ? ipToNode.get(String(parentIp)) || null : null;
       const wireless = backhaulItem.wirelessConnectionInfo || {};
+      const backhaulPhy = backhaulPhyById.get(String(deviceId).toUpperCase()) || {};
       let rssi = wireless.stationRSSI;
       if (rssi === null || rssi === undefined || Number(rssi) === 0) rssi = wireless.apRSSI;
       const connectionWithMac = deviceConnections.find((item) => item?.macAddress);
@@ -176,6 +182,15 @@
         rssi: rssi ?? null,
         quality: signalQuality(rssi),
         speedMbps: backhaulItem.speedMbps ? Number(backhaulItem.speedMbps) : null,
+        phyRateMbps: Number.isFinite(Number(backhaulPhy.rateMbps))
+          ? Number(backhaulPhy.rateMbps)
+          : null,
+        phyRateRaw: backhaulPhy.rawRate ?? null,
+        phyRateObservedAt: backhaulPhy.observedAt ?? null,
+        phyRateAgeSeconds: Number.isFinite(Number(backhaulPhy.ageSeconds))
+          ? Number(backhaulPhy.ageSeconds)
+          : null,
+        phyRateStale: backhaulPhy.stale === true,
         timestamp: backhaulItem.timestamp ?? null,
         clientCount: 0,
         managementUrl: ipAddress ? `https://${ipAddress}/ca` : null,
@@ -262,6 +277,7 @@
         routerConnected: edgeMeta.routerConnected !== false,
         clientDetails: edgeMeta.clientDetails || "full",
         topologyLock: edgeMeta.topologyLock || null,
+        backhaulPhyLinks: edgeMeta.backhaulPhyLinks || [],
       },
       network: {
         manufacturer: deviceInfo.manufacturer || "Linksys",

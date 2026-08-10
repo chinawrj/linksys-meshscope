@@ -81,7 +81,7 @@ test("countdown and node presentation remain visible on the topology card", () =
   assert.equal(MeshTopologyLock.duration(240), "04:00");
   assert.deepEqual(MeshTopologyLock.presentation(lock.nodes[0], 240), {
     tone: "lock-cooldown",
-    label: "Restart in 04:00",
+    label: "Move in 04:00",
     detail: "Expected Studio · Current Main",
   });
   assert.match(
@@ -93,6 +93,21 @@ test("countdown and node presentation remain visible on the topology card", () =
     }, 0, 4).label,
     /2\/4/,
   );
+});
+
+test("shows exact MQTT steering and disabled recovery states", () => {
+  assert.match(MeshTopologyLock.presentation({
+    status: "steering",
+    expectedParentName: "Studio",
+  }).label, /MQTT move/i);
+  assert.match(MeshTopologyLock.presentation({
+    status: "mqtt-disabled",
+    expectedParentName: "Studio",
+  }).detail, /Enable Parent Steering/i);
+  assert.match(MeshTopologyLock.presentation({
+    status: "mqtt-unavailable",
+    expectedParentName: "Studio",
+  }).label, /MQTT capability/i);
 });
 
 test("shows a blocked state when the desired parent is offline", () => {

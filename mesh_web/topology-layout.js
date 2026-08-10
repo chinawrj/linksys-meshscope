@@ -4,13 +4,16 @@
   else root.MeshTopologyLayout = engine;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   function compute(nodes, options = {}) {
-    const nodeWidth = options.nodeWidth || 188;
+    const nodeWidth = options.nodeWidth || 220;
     const nodeHeight = options.nodeHeight || 124;
     const columnGap = options.columnGap || 128;
+    const minimumColumnGap = options.minimumColumnGap || 72;
+    const maximumColumnGap = options.maximumColumnGap || 220;
     const rowGap = options.rowGap || 30;
-    const left = options.left || 194;
+    const left = options.left || 162;
     const top = options.top || 24;
     const bottomSpace = options.bottomSpace || 78;
+    const availableWidth = Number(options.availableWidth) || 0;
     const online = nodes.filter((node) => node.online);
     const rootNode = online.find((node) => node.isAuthority);
     if (!rootNode) {
@@ -75,6 +78,17 @@
 
     place(rootNode, 0);
     const positions = online.map((node) => placed.get(node.id)).filter(Boolean);
+    let responsiveColumnGap = columnGap;
+    if (maxDepth > 0 && availableWidth > 0) {
+      const fittedGap =
+        (availableWidth - left - nodeWidth - 36) / maxDepth - nodeWidth;
+      responsiveColumnGap = Math.max(
+        minimumColumnGap,
+        Math.min(maximumColumnGap, fittedGap),
+      );
+    }
+    const columnStep = nodeWidth + responsiveColumnGap;
+    for (const node of positions) node.x = left + node.depth * columnStep;
     const edges = positions
       .filter((node) => !node.isAuthority)
       .map((node) => ({
@@ -83,6 +97,8 @@
         target: node,
         band: node.band || node.connectionType || "Mesh",
         speedMbps: node.speedMbps,
+        phyRateMbps: node.phyRateMbps,
+        phyRateStale: node.phyRateStale,
         rssi: node.rssi,
         channel: node.channel,
         tone: node.quality?.tone || "",
@@ -91,13 +107,16 @@
       nodeHeight + top * 2,
       ...positions.map((node) => node.y + nodeHeight + top),
     );
+    const contentWidth = left + maxDepth * columnStep + nodeWidth + 36;
     return {
       positions,
       edges,
       root: placed.get(rootNode.id),
       nodeWidth,
       nodeHeight,
-      width: Math.max(900, left + (maxDepth + 1) * (nodeWidth + columnGap) + 36),
+      columnGap: responsiveColumnGap,
+      contentWidth,
+      width: Math.max(620, availableWidth, contentWidth),
       height: usedHeight + bottomSpace,
     };
   }

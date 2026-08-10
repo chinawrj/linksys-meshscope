@@ -7,6 +7,10 @@
     supported: false,
     enabled: false,
     state: "unavailable",
+    recoveryTransport: "mqtt",
+    recoveryMode: "auto",
+    recoveryEnabled: true,
+    recoveryAvailable: false,
     lockedAt: "",
     cooldownSeconds: 300,
     nextActionInSeconds: 0,
@@ -146,23 +150,39 @@
       case "cooldown":
         return {
           tone: "lock-cooldown",
-          label: `Restart in ${duration(globalRemaining || item.actionInSeconds)}`,
+          label: `Move in ${duration(globalRemaining || item.actionInSeconds)}`,
           detail: `Expected ${item.expectedParentName} · Current ${item.currentParentName || "unknown"}`,
         };
-      case "restart-ready":
+      case "steering-ready":
         return {
           tone: "lock-ready",
-          label: "Restart queued",
+          label: "MQTT move queued",
           detail: `Expected ${item.expectedParentName} · Current ${item.currentParentName || "unknown"}`,
+        };
+      case "steering":
+        return {
+          tone: "lock-recovering",
+          label: "MQTT move in progress",
+          detail: `Moving to ${item.expectedParentName} · Waiting for topology verification`,
+        };
+      case "mqtt-disabled":
+        return {
+          tone: "lock-blocked",
+          label: "MQTT recovery is off",
+          detail: `Enable Parent Steering to restore ${item.expectedParentName}`,
+        };
+      case "mqtt-unavailable":
+        return {
+          tone: "lock-blocked",
+          label: "Waiting for MQTT capability",
+          detail: `Auto mode will restore ${item.expectedParentName} after a safe broker probe`,
         };
       case "parent-offline":
         return {
           tone: "lock-blocked",
           label: `Waiting for ${item.expectedParentName}`,
-          detail: "Expected parent is offline · Restart blocked",
+          detail: "Expected parent is offline · MQTT move blocked",
         };
-      case "recovering":
-        return { tone: "lock-recovering", label: "Restart sent · Monitoring", detail: `Expected ${item.expectedParentName}` };
       default:
         return { tone: "lock-offline", label: "Node offline", detail: `Expected ${item.expectedParentName}` };
     }

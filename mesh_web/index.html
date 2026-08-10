@@ -129,7 +129,7 @@
                 <div class="topology-lock-editor-heading">
                   <div>
                     <strong>Desired topology draft</strong>
-                    <p>Drag a child node onto its desired parent, or use the selectors below. This edits the recovery target only; use Exact Parent Steering below to move a node now.</p>
+                    <p>Drag a child node onto its desired parent, or use the selectors below. After activation, MeshScope uses exact MQTT Parent Steering to restore this structure automatically.</p>
                   </div>
                   <span id="topologyLockDraftStatus">Current live structure</span>
                 </div>
@@ -146,12 +146,12 @@
                 </div>
                 <label class="topology-lock-warning">
                   <input id="topologyLockAcknowledgement" type="checkbox" />
-                  <span><strong>Enable automatic topology recovery?</strong> MeshScope may restart a mismatched child node after three confirmed checks. The node and its clients will disconnect briefly. Linksys chooses the parent after reboot, so the desired parent is not guaranteed. If the mismatch continues, MeshScope may retry one restart every five minutes until you stop recovery.</span>
+                  <span><strong>Enable automatic topology recovery?</strong> After three confirmed mismatches, MeshScope sends an exact MQTT Parent request and verifies the result across two fresh topology generations. The node and its clients may disconnect briefly while wireless backhaul reconnects. MeshScope sends at most one automatic request every five minutes.</span>
                 </label>
                 <p class="topology-lock-validation" id="topologyLockValidation" role="alert"></p>
                 <div class="topology-lock-editor-actions">
                   <button class="button button-quiet" id="cancelTopologyLockButton" type="button">Keep recovery off</button>
-                  <button class="button button-primary" id="applyTopologyLockButton" type="button">Enable restart-based recovery</button>
+                  <button class="button button-primary" id="applyTopologyLockButton" type="button">Enable MQTT recovery</button>
                 </div>
               </div>
               <div class="topology-lock-history" id="topologyLockHistory" hidden></div>
