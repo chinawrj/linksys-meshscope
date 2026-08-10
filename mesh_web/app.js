@@ -121,23 +121,9 @@ async function api(path, options = {}) {
     const error = new Error(payload.error || `Request failed (${response.status})`);
     error.status = response.status;
     error.code = payload.code;
-    if (response.status === 401 && path !== "/api/login") showDashboardLogin();
     throw error;
   }
   return window.MeshLinksysNormalize?.normalizeEnvelope(payload) ?? payload;
-}
-
-function showDashboardLogin(message = "") {
-  $("#connectModal").classList.add("hidden");
-  $("#authError").textContent = message;
-  $("#authModal").classList.remove("hidden");
-  requestAnimationFrame(() => $("#dashboardPasswordInput").focus());
-}
-
-function hideDashboardLogin() {
-  $("#authModal").classList.add("hidden");
-  $("#authError").textContent = "";
-  $("#dashboardPasswordInput").value = "";
 }
 
 function openConnectModal() {
@@ -1613,7 +1599,6 @@ async function refresh(silent = false) {
 
 async function loadInitialData() {
   const status = await api("/api/status");
-  hideDashboardLogin();
   configureConnectionMode(status);
   $("#hostInput").value = status.router || "192.168.1.1";
   if (status.connected || status.snapshotReady) {
@@ -1633,36 +1618,14 @@ async function initialize() {
   try {
     await loadInitialData();
   } catch (error) {
-    if (error.status === 401) showDashboardLogin();
-    else {
-      $("#connectError").textContent = error.message;
-      openConnectModal();
-    }
+    $("#connectError").textContent = error.message;
+    openConnectModal();
   }
   $("#refreshInterval").value = String(state.refreshInterval);
   scheduleAutoRefresh();
 }
 
 function wireEvents() {
-  $("#authForm").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const button = $("#authButton");
-    button.disabled = true;
-    $("#authError").textContent = "";
-    try {
-      await api("/api/login", {
-        method: "POST",
-        body: JSON.stringify({ password: $("#dashboardPasswordInput").value }),
-      });
-      await loadInitialData();
-      toast("Dashboard unlocked");
-    } catch (error) {
-      $("#authError").textContent = error.message;
-      $("#dashboardPasswordInput").focus();
-    } finally {
-      button.disabled = false;
-    }
-  });
   $("#connectForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = $("#connectButton");
@@ -1693,13 +1656,6 @@ function wireEvents() {
     }
   });
   $("#settingsButton").addEventListener("click", openConnectModal);
-  $("#signOutButton").addEventListener("click", async () => {
-    try {
-      await api("/api/logout", { method: "POST", body: "{}" });
-    } finally {
-      window.location.reload();
-    }
-  });
   $("#connectClose").addEventListener("click", closeConnectModal);
   $("#refreshButton").addEventListener("click", () => refresh(false));
   $("#editTopologyLockButton").addEventListener("click", beginTopologyLockEdit);
@@ -1772,16 +1728,6 @@ function wireEvents() {
     const visible = input.type === "text";
     input.type = visible ? "password" : "text";
     $("#togglePassword").textContent = visible ? "Show" : "Hide";
-  });
-  $("#toggleDashboardPassword").addEventListener("click", () => {
-    const input = $("#dashboardPasswordInput");
-    const visible = input.type === "text";
-    input.type = visible ? "password" : "text";
-    $("#toggleDashboardPassword").textContent = visible ? "Show" : "Hide";
-    $("#toggleDashboardPassword").setAttribute(
-      "aria-label",
-      visible ? "Show dashboard password" : "Hide dashboard password",
-    );
   });
   $$(".segmented button").forEach((button) => {
     button.addEventListener("click", () => {

@@ -33,8 +33,11 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.7.0 highlight:** Topology Lock now restores the exact saved Parent over
-> guarded local MQTT, tracks per-child steering health, and can recover an
+> **v0.7.1 highlight:** The ESP32 dashboard now opens directly without a
+> username, password, unlock screen, or session cookie. Keep it on a trusted
+> LAN or behind an authorized WireGuard peer because reachable users can use
+> every control shown on the page. Topology Lock restores the exact saved
+> Parent over guarded local MQTT, tracks per-child steering health, and can recover an
 > otherwise idle requested Parent after repeated accepted-but-unverified
 > moves. Every wireless Node now shows both the Linksys JNAP backhaul estimate
 > and its live MQTT PHY rate. The topology automatically uses the browser
@@ -101,7 +104,7 @@ tunnel and does not require exposing the router LAN.
 | Runs on | Python on macOS, Linux, or Windows | ESP32-C5, ESP32-C6, or ESP32-C3 with the page served by the device |
 | Requirements | Python 3.10+, no runtime packages | ESPHome 2026.7.2; see the target table below |
 | Router credentials | Python process memory only | Ignored YAML, build output, and device flash |
-| Web access | `127.0.0.1:8765` by default | Password-only session on the trusted LAN, optionally reachable through WireGuard |
+| Web access | `127.0.0.1:8765` by default | Direct access on a trusted LAN, optionally reachable through WireGuard |
 | Home Assistant | Not exposed | Encrypted ESPHome Native API |
 
 If you are evaluating compatibility, start with desktop demo mode. It includes
@@ -276,10 +279,10 @@ The 100-cycle, Home Assistant concurrency, and restart/recovery acceptance
 items remain pending, so C6 stays experimental.
 
 ESP32-C5 validation covered USB and OTA installation, full Client/STA mode,
-password-only login and sign-out, persistent Topology Lock state, the
-three-snapshot mismatch gate, a single-node restart, the five-minute global
-cooldown, card colors, and the visible `MM:SS` countdown. Household node names,
-addresses, and credentials are intentionally omitted.
+direct dashboard/API access without a login gate, persistent Topology Lock
+state, the three-snapshot mismatch gate, a single-node restart, the five-minute
+global cooldown, card colors, and the visible `MM:SS` countdown. Household
+node names, addresses, and credentials are intentionally omitted.
 
 ### 1. Create a private local configuration
 
@@ -301,7 +304,7 @@ For an ESP32-C6, use:
 cp esphome_meshscope_c6.local.example.yaml esphome_meshscope_c6.local.yaml
 ```
 
-Generate three independent credentials:
+Generate the two independent credentials used by Home Assistant and OTA:
 
 ```bash
 # Prompts without echo and returns the Linksys password as Base64 for the C++ config
@@ -310,8 +313,7 @@ python3 tools/encode_secret.py
 # ESPHome Native API key; use this as meshscope_api_key
 openssl rand -base64 32
 
-# Generate separate dashboard and OTA passwords; do not reuse them
-openssl rand -hex 24
+# Generate a separate OTA password
 openssl rand -hex 24
 ```
 
@@ -321,8 +323,6 @@ Edit the local YAML for your selected target:
 - `meshscope_router_host`: primary Linksys router LAN address
 - `meshscope_router_password_b64`: output from `encode_secret.py`, not the
   plaintext password
-- `meshscope_dashboard_password`: the only value requested by the ESP32 web
-  page; no username is configured or entered
 - `meshscope_api_key`: 32-byte Base64 key used by Home Assistant
 - `meshscope_ota_password`: password for later OTA updates
 - `meshscope_timezone`: timezone used by ESPHome logs and time components, such
@@ -346,14 +346,13 @@ firmware binaries containing your credentials.
 |---|---|---|
 | Wi-Fi password | Joins the ESP32 to your home network | Local YAML only |
 | Linksys local admin password | Reads topology and sends an allowed node restart | Encoded into local YAML with `tools/encode_secret.py` |
-| Dashboard password | Opens the MeshScope web page and APIs | Browser password-only form |
 | ESPHome API key | Encrypted Home Assistant connection | Home Assistant integration |
 | OTA password | Future firmware uploads | ESPHome update command |
 | WireGuard private key | Identifies the ESP32 tunnel peer | Ignored local YAML only |
 | WireGuard pre-shared key | Optional additional tunnel secret | ESP32 and WireGuard server peer configuration |
 
-These credentials serve different purposes. Do not reuse the Linksys, Wi-Fi,
-Home Assistant, or OTA secret as the dashboard password.
+The dashboard has no separate credential. These remaining credentials serve
+different purposes and should not be reused.
 
 ### 2. Install over USB for the first time
 
@@ -380,14 +379,13 @@ After installation, find the device IP in one of these places:
 Create a DHCP reservation for the ESP32. If mDNS works, open
 `http://meshscope-c5.local/`, `http://meshscope-c6.local/`, or
 `http://meshscope-c3.local/`, depending on the target. Otherwise use
-`http://<esp32-ip>/`. Enter only `meshscope_dashboard_password` on the
-MeshScope unlock screen. The internal session account is automatic. Sessions
-are held in ESP32 memory, expire after 24 hours of inactivity, and end when the
-ESP32 restarts; use **Connection settings → Sign out** on a shared browser.
+`http://<esp32-ip>/`. The dashboard opens immediately; there is no dashboard
+username, password, unlock screen, or session cookie.
 
 ### 3. Add MeshScope to Home Assistant
 
-The encrypted ESPHome Native API key is separate from the dashboard password.
+The encrypted ESPHome Native API remains protected by its own key even though
+the HTTP dashboard is open to reachable clients.
 
 1. Wait up to five minutes for the selected MeshScope target to appear under
    **Settings → Devices & services**.
@@ -411,14 +409,15 @@ Home Assistant receives these entities:
 - Topology Lock Summary
 
 The ESP32 continues collecting data and serving the web page when Home
-Assistant is offline or has never been connected. The configuration explicitly
-disables the ESPHome Native API reboot behavior when no API client is present.
+Assistant is offline or has never been connected. Wi-Fi and the ESPHome Native
+API use a five-minute recovery reboot timeout when their connection remains
+unavailable.
 
 #### Optional WireGuard remote access
 
 MeshScope can serve the same dashboard on its local Wi-Fi address and on a
 WireGuard address. This avoids exposing an HTTP port to the Internet: traffic
-is encrypted by WireGuard before it reaches the password-protected dashboard.
+is encrypted by WireGuard before it reaches the dashboard.
 The ESP32 still talks directly to Linksys over the home Wi-Fi network.
 
 In the ignored target YAML, add the optional package and its substitutions:
@@ -492,21 +491,21 @@ The WireGuard server must define this ESP32 as a peer, using the generated
 public key and `AllowedIPs = 10.23.0.48/32`. Remote clients and the Home
 Assistant host must route `10.23.0.48/32` through the server, and the server's
 forwarding/firewall policy must permit that traffic. After flashing, both
-`http://<local-wifi-ip>/` and `http://<wireguard-address>/` use the same
-MeshScope password. Home Assistant can connect to the WireGuard address with
+`http://<local-wifi-ip>/` and `http://<wireguard-address>/` open directly.
+Home Assistant can connect to the WireGuard address with
 the existing encrypted ESPHome API key. WireGuard status, latest handshake,
 address, and MeshScope WireGuard URL entities are exposed to Home Assistant
 for diagnostics.
 
-The LAN and WireGuard URLs are separate browser origins, so each address asks
-you to unlock once and maintains its own RAM-backed session cookie. Home
-Assistant discovery normally does not cross a WireGuard tunnel: use **Settings
-→ Devices & services → Add integration → ESPHome**, enter the WireGuard
-address and port `6053`, then enter the existing `meshscope_api_key`.
+The dashboard does not create an authentication session on either browser
+origin. Home Assistant discovery normally does not cross a WireGuard tunnel:
+use **Settings → Devices & services → Add integration → ESPHome**, enter the
+WireGuard address and port `6053`, then enter the existing
+`meshscope_api_key`.
 
-This release was validated on ESP32-C5 with a live tunnel: password login,
-protected status and topology APIs, sign-out, and the encrypted Home Assistant
-Native API all worked through the WireGuard address. C3 and C6 WireGuard builds
+This release was validated on ESP32-C5 with a live tunnel: direct dashboard,
+status, and topology access plus the encrypted Home Assistant Native API
+worked through the WireGuard address. C3 and C6 WireGuard builds
 are compile/link tested but remain experimental hardware targets.
 
 ### 4. Update over the air
@@ -656,7 +655,8 @@ different Parent, MeshScope blocks the manual move so recovery cannot fight it.
 
 Home Assistant receives read-only diagnostics for Parent steering
 availability, saved mode, and the latest result. The potentially disruptive
-move remains in the password-protected dashboard.
+move remains in the dashboard and is available to every client that can reach
+it.
 
 ### Selected-node restart
 
@@ -672,8 +672,8 @@ move remains in the password-protected dashboard.
 - Demo nodes, offline nodes, unknown addresses, and IDs absent from the current
   topology cannot be restarted
 
-Do not share the MeshScope dashboard password with LAN users who should not have
-permission to restart a node.
+Do not expose the ESP32 HTTP service to LAN or WireGuard users who should not
+have permission to restart or steer a node.
 
 ## Troubleshooting
 
@@ -682,7 +682,6 @@ permission to restart a node.
 | The target's `.local` address does not open | Find the IP in Linksys DHCP or serial logs, then create a DHCP reservation |
 | The page says the router is offline but still shows topology | This is the last successful snapshot, not a false online state. Check the router address, Wi-Fi, and Linksys local password |
 | The first page remains on “Loading” | Allow one complete JNAP collection cycle; check ESPHome logs if it continues |
-| The dashboard password is rejected | Verify `meshscope_dashboard_password` in the target's ignored local YAML. Rebuild and flash if it changed |
 | Home Assistant does not discover MeshScope | Add the ESPHome integration manually with the ESP32 IP and `meshscope_api_key` |
 | WireGuard address does not open | Confirm the peer handshake, server peer route for the ESP32 `/32`, return routes from the remote client or Home Assistant network, and forwarding/firewall policy on the WireGuard server |
 | Client/STA details are unavailable | Check `/api/status` or the page notice for `nodes-only`; set `meshscope_client_details: "full"` only if the board has enough memory |
@@ -697,13 +696,13 @@ The desktop and ESPHome versions use different credential models:
 
 - The desktop password remains in Python process memory, and the web service
   binds to localhost by default.
-- The ESPHome version stores Wi-Fi, Linksys, dashboard, API, and OTA credentials in an
+- The ESPHome version stores Wi-Fi, Linksys, API, and OTA credentials in an
   ignored local YAML and compiles them into device flash. HTTP APIs never
   return those values to the browser.
-- The ESP32 page uses a password-only form and random, RAM-only session tokens.
-  Protected APIs return `401` without a valid session. Cookies are `HttpOnly`
-  and `SameSite=Strict`; no username is exposed or required. HTTP itself does
-  not encrypt traffic. Use it only on a trusted home LAN or through authorized
+- The ESP32 page and HTTP APIs intentionally have no authentication gate.
+  Anyone who can reach port 80 can read topology/client data and invoke the
+  dashboard's restart, steering, and recovery controls. HTTP itself does not
+  encrypt traffic. Use it only on a trusted home LAN or through authorized
   WireGuard peers; never port-forward it or expose it directly to the Internet.
 - The ESPHome Native API uses a separate encrypted key. It does not encrypt the
   MeshScope web page.

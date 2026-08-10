@@ -3,7 +3,6 @@ substitutions:
   meshscope_wifi_password: "SET_IN_LOCAL_CONFIG"
   meshscope_router_host: "192.168.1.1"
   meshscope_router_password_b64: "SET_IN_LOCAL_CONFIG"
-  meshscope_dashboard_password: "SET_IN_LOCAL_CONFIG"
   meshscope_api_key: "SET_IN_LOCAL_CONFIG"
   meshscope_ota_password: "SET_IN_LOCAL_CONFIG"
   meshscope_timezone: "UTC"
@@ -24,7 +23,6 @@ esphome:
           meshscope_edge_setup(
               "${meshscope_router_host}",
               "${meshscope_router_password_b64}",
-              "${meshscope_dashboard_password}",
               "${meshscope_client_details}",
               "${meshscope_mqtt_parent_steering}");
 

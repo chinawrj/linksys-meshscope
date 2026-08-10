@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.7.1 — 2026-08-10
+
+- Removed the ESP32 dashboard password, unlock modal, RAM session store,
+  login/logout endpoints, session cookies, and per-request authorization gate.
+  The page and every HTTP API now open directly to clients that can reach the
+  ESP32 on its Wi-Fi or optional WireGuard address.
+- Removed `meshscope_dashboard_password` from the shared ESPHome package, CI
+  configurations, and local configuration examples. Existing private YAML
+  files may retain the now-unused substitution during an upgrade.
+- Preserved the independent Linksys local-admin credential, encrypted ESPHome
+  Native API key, OTA password, Wi-Fi credentials, and optional WireGuard keys.
+- Updated installation and security guidance to make the new network trust
+  boundary explicit: do not port-forward port 80, and do not grant LAN or
+  WireGuard reachability to users who must not restart or steer mesh nodes.
+
 ## v0.7.0 — 2026-08-10
 
 - Made the topology panel use the full browser width and reflow live through a

@@ -174,11 +174,6 @@ struct TopologyLockAction {
   bool accepted = false;
 };
 
-struct WebSession {
-  std::string token;
-  uint32_t last_seen_ms = 0;
-};
-
 enum class ClientDetailsMode {
   AUTO,
   FULL,
@@ -298,13 +293,11 @@ struct ParentRestartRequest {
 static std::string router_host;
 static std::string router_password;
 static std::string authorization;
-static std::string dashboard_password;
 static Snapshot snapshot;
 static SemaphoreHandle_t snapshot_mutex = nullptr;
 static SemaphoreHandle_t jnap_mutex = nullptr;
 static SemaphoreHandle_t memory_mutex = nullptr;
 static SemaphoreHandle_t topology_lock_mutex = nullptr;
-static SemaphoreHandle_t web_session_mutex = nullptr;
 static SemaphoreHandle_t mqtt_steering_mutex = nullptr;
 static SemaphoreHandle_t backhaul_phy_mutex = nullptr;
 static TaskHandle_t collector_task_handle = nullptr;
@@ -328,10 +321,6 @@ static constexpr const char *TOPOLOGY_LOCK_NVS_KEY = "config";
 static ClientDetailsMode requested_client_details = ClientDetailsMode::AUTO;
 static ClientDetailsMode active_client_details = ClientDetailsMode::FULL;
 static bool client_details_resolved = false;
-static std::vector<WebSession> web_sessions;
-static constexpr size_t WEB_SESSION_LIMIT = 4;
-static constexpr uint32_t WEB_SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
-static constexpr const char *WEB_SESSION_COOKIE = "meshscope_session";
 static constexpr const char *MQTT_NVS_NAMESPACE = "meshscope_mqtt";
 static constexpr const char *MQTT_NVS_MODE_KEY = "mode";
 // ESP-IDF limits NVS namespace names to 15 characters including no terminator.
@@ -1924,135 +1913,6 @@ static bool base64_decode_string(
   }
   decoded.resize(written);
   return true;
-}
-
-static bool constant_time_equal(
-    const std::string &left,
-    const std::string &right) {
-  if (left.size() != right.size()) return false;
-  unsigned char difference = 0;
-  for (size_t index = 0; index < left.size(); index++) {
-    difference |= static_cast<unsigned char>(left[index]) ^
-                  static_cast<unsigned char>(right[index]);
-  }
-  return difference == 0;
-}
-
-static std::string request_session_token(httpd_req_t *request) {
-  const size_t length = httpd_req_get_hdr_value_len(request, "Cookie");
-  if (length == 0 || length > 1024) return {};
-  std::vector<char> header(length + 1);
-  if (httpd_req_get_hdr_value_str(
-          request,
-          "Cookie",
-          header.data(),
-          header.size()) != ESP_OK) {
-    return {};
-  }
-  const std::string cookies(header.data());
-  const std::string prefix = std::string(WEB_SESSION_COOKIE) + "=";
-  size_t offset = 0;
-  while (offset < cookies.size()) {
-    while (offset < cookies.size() &&
-           (cookies[offset] == ' ' || cookies[offset] == ';')) {
-      offset++;
-    }
-    const size_t end = cookies.find(';', offset);
-    const size_t size =
-        (end == std::string::npos ? cookies.size() : end) - offset;
-    if (size > prefix.size() &&
-        cookies.compare(offset, prefix.size(), prefix) == 0) {
-      return cookies.substr(offset + prefix.size(), size - prefix.size());
-    }
-    if (end == std::string::npos) break;
-    offset = end + 1;
-  }
-  return {};
-}
-
-static void prune_web_sessions_locked(uint32_t now) {
-  web_sessions.erase(
-      std::remove_if(
-          web_sessions.begin(),
-          web_sessions.end(),
-          [now](const WebSession &session) {
-            return now - session.last_seen_ms >= WEB_SESSION_IDLE_MS;
-          }),
-      web_sessions.end());
-}
-
-static bool request_has_web_session(httpd_req_t *request) {
-  const std::string token = request_session_token(request);
-  if (token.empty() || web_session_mutex == nullptr ||
-      xSemaphoreTake(web_session_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-    return false;
-  }
-  const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-  prune_web_sessions_locked(now);
-  bool authorized = false;
-  for (auto &session : web_sessions) {
-    if (constant_time_equal(session.token, token)) {
-      session.last_seen_ms = now;
-      authorized = true;
-      break;
-    }
-  }
-  xSemaphoreGive(web_session_mutex);
-  return authorized;
-}
-
-static std::string create_web_session() {
-  unsigned char bytes[32] = {};
-  esp_fill_random(bytes, sizeof(bytes));
-  static constexpr char HEX[] = "0123456789abcdef";
-  std::string token(sizeof(bytes) * 2, '0');
-  for (size_t index = 0; index < sizeof(bytes); index++) {
-    token[index * 2] = HEX[bytes[index] >> 4];
-    token[index * 2 + 1] = HEX[bytes[index] & 0x0f];
-  }
-  if (web_session_mutex == nullptr ||
-      xSemaphoreTake(web_session_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
-    return {};
-  }
-  const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-  prune_web_sessions_locked(now);
-  if (web_sessions.size() >= WEB_SESSION_LIMIT) {
-    web_sessions.erase(web_sessions.begin());
-  }
-  web_sessions.push_back({token, now});
-  xSemaphoreGive(web_session_mutex);
-  return token;
-}
-
-static void remove_web_session(httpd_req_t *request) {
-  const std::string token = request_session_token(request);
-  if (token.empty() || web_session_mutex == nullptr ||
-      xSemaphoreTake(web_session_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
-    return;
-  }
-  web_sessions.erase(
-      std::remove_if(
-          web_sessions.begin(),
-          web_sessions.end(),
-          [&token](const WebSession &session) {
-            return constant_time_equal(session.token, token);
-          }),
-      web_sessions.end());
-  xSemaphoreGive(web_session_mutex);
-}
-
-static bool authorize_web_request(httpd_req_t *request) {
-  if (request_has_web_session(request)) return true;
-  httpd_resp_set_status(request, "401 Unauthorized");
-  httpd_resp_set_type(request, "application/json; charset=utf-8");
-  httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-  httpd_resp_set_hdr(request, "Connection", "close");
-  httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
-  httpd_resp_send(
-      request,
-      "{\"error\":\"MeshScope dashboard login required.\",\"code\":\"authentication_required\"}",
-      HTTPD_RESP_USE_STRLEN);
-  return false;
 }
 
 static esp_err_t http_event_handler(esp_http_client_event_t *event) {
@@ -4656,7 +4516,6 @@ static esp_err_t asset_handler(httpd_req_t *request) {
 }
 
 static esp_err_t status_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   const std::string ip = edge_ip();
   uint32_t generation = 0;
   std::string cached_at;
@@ -4737,7 +4596,6 @@ static cJSON *backhaul_phy_json() {
 }
 
 static esp_err_t topology_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   if (memory_mutex == nullptr ||
       xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
     return send_error_json(
@@ -4814,7 +4672,6 @@ static void request_refresh() {
 }
 
 static esp_err_t refresh_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   const uint32_t previous = current_generation();
   request_refresh();
   const uint32_t started = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -4826,7 +4683,6 @@ static esp_err_t refresh_handler(httpd_req_t *request) {
 }
 
 static esp_err_t connect_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   if (request->content_len > 0) {
     char discard[256];
     size_t remaining = request->content_len;
@@ -4971,7 +4827,6 @@ static bool services_contain(const cJSON *identity, const char *needle) {
 }
 
 static esp_err_t capabilities_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string node_id;
   if (!query_value(request, "nodeId", node_id)) {
     return send_error_json(request, "400 Bad Request", "Node ID is required.");
@@ -5122,7 +4977,6 @@ static esp_err_t capabilities_handler(httpd_req_t *request) {
 }
 
 static esp_err_t node_sysinfo_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string node_id;
   std::string section;
   if (!query_value(request, "nodeId", node_id) ||
@@ -5193,7 +5047,6 @@ static esp_err_t node_sysinfo_handler(httpd_req_t *request) {
 }
 
 static esp_err_t node_radio_info_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string node_id;
   if (!query_value(request, "nodeId", node_id)) {
     return send_error_json(request, "400 Bad Request", "Node ID is required.");
@@ -5247,50 +5100,6 @@ static bool read_request_json(httpd_req_t *request, std::string &body, size_t ma
   return true;
 }
 
-static esp_err_t login_handler(httpd_req_t *request) {
-  std::string body;
-  if (!read_request_json(request, body, 512)) {
-    return send_error_json(
-        request,
-        "400 Bad Request",
-        "Enter the MeshScope dashboard password.");
-  }
-  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
-  const char *password =
-      payload != nullptr ? json_string(payload, "password") : nullptr;
-  const bool accepted =
-      password != nullptr &&
-      constant_time_equal(dashboard_password, std::string(password));
-  cJSON_Delete(payload);
-  if (!accepted) {
-    return send_error_json(
-        request,
-        "401 Unauthorized",
-        "That dashboard password was not accepted. Check the value in your local ESPHome YAML.");
-  }
-  const std::string token = create_web_session();
-  if (token.empty()) {
-    return send_error_json(
-        request,
-        "503 Service Unavailable",
-        "The dashboard session store is temporarily unavailable.");
-  }
-  const std::string cookie =
-      std::string(WEB_SESSION_COOKIE) + "=" + token +
-      "; Path=/; HttpOnly; SameSite=Strict";
-  httpd_resp_set_hdr(request, "Set-Cookie", cookie.c_str());
-  return send_json(request, "{\"authenticated\":true}");
-}
-
-static esp_err_t logout_handler(httpd_req_t *request) {
-  remove_web_session(request);
-  httpd_resp_set_hdr(
-      request,
-      "Set-Cookie",
-      "meshscope_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
-  return send_json(request, "{\"authenticated\":false}");
-}
-
 static std::vector<NodeObservation> current_node_observations() {
   std::vector<NodeObservation> nodes;
   if (snapshot_mutex != nullptr &&
@@ -5338,7 +5147,6 @@ static bool current_topology_optimization_settings(
 }
 
 static esp_err_t node_steering_mode_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string body;
   if (!read_request_json(request, body, 512)) {
     return send_error_json(
@@ -5710,7 +5518,6 @@ static bool mqtt_preflight(
 }
 
 static esp_err_t mqtt_parent_get_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string refresh;
   if (query_value(request, "refresh", refresh) && refresh == "1" &&
       mqtt_steering_mutex != nullptr &&
@@ -5725,7 +5532,6 @@ static esp_err_t mqtt_parent_get_handler(httpd_req_t *request) {
 }
 
 static esp_err_t mqtt_parent_mode_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string body;
   if (!read_request_json(request, body, 512)) {
     return send_error_json(request, "400 Bad Request", "A Parent steering mode is required.");
@@ -5777,7 +5583,6 @@ static esp_err_t mqtt_parent_mode_handler(httpd_req_t *request) {
 }
 
 static esp_err_t mqtt_blacklist_cancel_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string body;
   if (!read_request_json(request, body, 512)) {
     return send_error_json(
@@ -5855,7 +5660,6 @@ static esp_err_t mqtt_blacklist_cancel_handler(httpd_req_t *request) {
 }
 
 static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   std::string body;
   if (!read_request_json(request, body, 1024)) {
     return send_error_json(request, "400 Bad Request", "The Parent steering request is invalid.");
@@ -5968,14 +5772,12 @@ static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
 }
 
 static esp_err_t topology_lock_get_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   return send_cjson(
       request,
       topology_lock_json(current_node_observations()));
 }
 
 static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   const size_t content_type_length =
       httpd_req_get_hdr_value_len(request, "Content-Type");
   std::vector<char> content_type(content_type_length + 1);
@@ -6121,7 +5923,6 @@ static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
 }
 
 static esp_err_t restart_handler(httpd_req_t *request) {
-  if (!authorize_web_request(request)) return ESP_OK;
   const size_t content_type_length =
       httpd_req_get_hdr_value_len(request, "Content-Type");
   std::vector<char> content_type(content_type_length + 1);
@@ -6255,8 +6056,6 @@ static void start_server() {
         asset_handler,
         const_cast<meshscope_web_assets::Asset *>(&asset));
   }
-  register_handler("/api/login", HTTP_POST, login_handler);
-  register_handler("/api/logout", HTTP_POST, logout_handler);
   register_handler("/api/status", HTTP_GET, status_handler);
   register_handler("/api/topology", HTTP_GET, topology_handler);
   register_handler("/api/refresh", HTTP_POST, refresh_handler);
@@ -6285,7 +6084,6 @@ static void start_server() {
 static void setup(
     const char *host,
     const char *password_b64,
-    const char *configured_dashboard_password,
     const char *client_details,
     const char *mqtt_parent_steering) {
   router_host = host ?: "";
@@ -6297,21 +6095,17 @@ static void setup(
       encoded_password != "SET_IN_LOCAL_CONFIG" &&
       base64_decode_string(encoded_password, router_password);
   authorization = base64_basic_auth("admin", router_password);
-  dashboard_password = configured_dashboard_password ?: "";
   snapshot_mutex = xSemaphoreCreateMutex();
   jnap_mutex = xSemaphoreCreateMutex();
   memory_mutex = xSemaphoreCreateMutex();
   topology_lock_mutex = xSemaphoreCreateMutex();
-  web_session_mutex = xSemaphoreCreateMutex();
   mqtt_steering_mutex = xSemaphoreCreateMutex();
   backhaul_phy_mutex = xSemaphoreCreateMutex();
   if (!router_password_ok || snapshot_mutex == nullptr || jnap_mutex == nullptr ||
       memory_mutex == nullptr || topology_lock_mutex == nullptr ||
-      web_session_mutex == nullptr || mqtt_steering_mutex == nullptr ||
+      mqtt_steering_mutex == nullptr ||
       backhaul_phy_mutex == nullptr ||
-      authorization.empty() ||
-      dashboard_password.size() < 8 ||
-      dashboard_password == "SET_IN_LOCAL_CONFIG") {
+      authorization.empty()) {
     ESP_LOGE(TAG, "MeshScope initialization failed");
     return;
   }
@@ -6455,13 +6249,11 @@ static std::string mqtt_parent_result_copy() {
 inline void meshscope_edge_setup(
     const char *host,
     const char *password_b64,
-    const char *dashboard_password,
     const char *client_details,
     const char *mqtt_parent_steering) {
   meshscope_edge::setup(
       host,
       password_b64,
-      dashboard_password,
       client_details,
       mqtt_parent_steering);
 }
