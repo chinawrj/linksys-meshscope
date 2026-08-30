@@ -249,6 +249,48 @@ test("Parent restart countdown decreases without hiding persisted statistics", (
   assert.equal(view.health.lastTriggerFailures, 2);
 });
 
+test("keeps healthy steering history in details without showing persistent topology warnings", () => {
+  const healthy = Steering.normalizeHealth({
+    childId: "YARD",
+    targetParentId: "TREE",
+    targetParentName: "BigTree",
+    state: "idle",
+    reason: "No unresolved steering failures",
+    consecutiveFailures: 0,
+    totalFailures: 2,
+    successfulMoves: 5,
+  });
+  const detail = Steering.healthPresentation(healthy);
+  assert.equal(detail.tone, "healthy");
+  assert.equal(detail.health.totalFailures, 2);
+  assert.equal(detail.health.successfulMoves, 5);
+  assert.equal(Steering.healthCardPresentation(healthy), null);
+
+  const recovered = Steering.normalizeHealth({
+    ...healthy,
+    state: "recovered",
+  });
+  assert.equal(Steering.healthCardPresentation(recovered), null);
+});
+
+test("keeps unresolved and active Parent health states visible on topology cards", () => {
+  const watching = Steering.normalizeHealth({
+    childId: "YARD",
+    targetParentId: "TREE",
+    state: "watching",
+    consecutiveFailures: 1,
+    failureThreshold: 2,
+  });
+  assert.equal(Steering.healthCardPresentation(watching).tone, "watching");
+
+  const restarting = Steering.normalizeHealth({
+    ...watching,
+    state: "parent-restarting",
+    consecutiveFailures: 0,
+  });
+  assert.equal(Steering.healthCardPresentation(restarting).tone, "restarting");
+});
+
 test("renders an accessible steering form without removing existing topology and client information", () => {
   const html = fs.readFileSync(path.join(WEB_ROOT, "index.html"), "utf8");
   const app = fs.readFileSync(path.join(WEB_ROOT, "app.js"), "utf8");
@@ -279,5 +321,6 @@ test("renders an accessible steering form without removing existing topology and
   assert.match(app, /PARENT STEERING HEALTH/);
   assert.match(app, /Parent online children/);
   assert.match(app, /MQTT publish \/ echo/);
+  assert.match(app, /healthCardPresentation/);
   assert.match(app, /parent-health-expanded/);
 });

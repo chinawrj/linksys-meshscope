@@ -370,7 +370,7 @@
     const failures = `${health.consecutiveFailures}/${health.failureThreshold}`;
     const childCount = health.targetParentOnlineChildren;
     const remaining = healthRestartRemaining(health, now);
-    let tone = "watching";
+    let tone = health.consecutiveFailures > 0 ? "watching" : "healthy";
     let label = `Steering health · ${failures} failures`;
     if (["restart-queued", "parent-restarting"].includes(health.state)) {
       tone = "restarting";
@@ -401,6 +401,22 @@
       remaining,
       health,
     };
+  }
+
+  function healthCardPresentation(value, now = Date.now()) {
+    const health = normalizeHealth(value);
+    if (!health) return null;
+
+    // The topology is an operational overview, not a history report. Healthy
+    // idle and recovered records remain available in the Node detail drawer,
+    // but must not look like persistent warnings or enlarge every map row.
+    if (
+      health.consecutiveFailures === 0 &&
+      ["idle", "recovered"].includes(health.state)
+    ) {
+      return null;
+    }
+    return healthPresentation(health, now);
   }
 
   function capabilityPresentation(value) {
@@ -457,6 +473,7 @@
     descendantIds,
     eligibleChildren,
     eligibleParents,
+    healthCardPresentation,
     healthForNode,
     healthPresentation,
     healthRestartRemaining,

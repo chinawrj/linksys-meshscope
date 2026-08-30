@@ -866,8 +866,13 @@ function layoutNodes(nodes, availableWidth = 0) {
       state.parentSteering.operation.childId,
     )),
   );
-  const healthExpanded = nodes.some((node) =>
-    MeshMqttParentSteering.healthForNode(state.parentSteering, node.id));
+  const healthExpanded = nodes.some((node) => {
+    const health = MeshMqttParentSteering.healthForNode(
+      state.parentSteering,
+      node.id,
+    );
+    return Boolean(MeshMqttParentSteering.healthCardPresentation(health));
+  });
   const nodeHeight = 124 + Number(lockExpanded) * 60 +
     Number(steeringExpanded) * 60 + Number(healthExpanded) * 82;
   return MeshTopologyLayout.compute(nodes, {
@@ -990,7 +995,7 @@ function renderTopology(data) {
       state.parentSteering,
       node.id,
     );
-    const healthPresentation = MeshMqttParentSteering.healthPresentation(steeringHealth);
+    const healthPresentation = MeshMqttParentSteering.healthCardPresentation(steeringHealth);
     const healthTone = healthPresentation?.tone || "";
     const phyAge = node.phyRateAgeSeconds !== null && node.phyRateAgeSeconds !== undefined
       ? `${compactNumber(node.phyRateAgeSeconds)} seconds old`
