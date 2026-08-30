@@ -39,7 +39,7 @@
         ["Current status", node.online ? "Online" : "Offline"],
         ["Connected clients", `${node.clientCount}`],
         [
-          "Backhaul rate",
+          "Hop throughput",
           node.speedMbps
             ? `${formatNumber(node.speedMbps)} Mbps`
             : node.isAuthority

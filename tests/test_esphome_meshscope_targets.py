@@ -288,7 +288,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"network/status_resend_all"',
             '"network/DEVINFO/status_resend_all"',
             '"network/BH/status_resend_all"',
-            "BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 1000",
+            "BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 60 * 1000",
             "BACKHAUL_PHY_COLLECT_MS = 6 * 1000",
             'mqtt_json_scalar(packet.body, payload_offset, "phyRate"',
             'mqtt_json_scalar(packet.body, payload_offset, "phyRate_2"',

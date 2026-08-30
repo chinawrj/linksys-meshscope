@@ -39,8 +39,8 @@ client identifier are deliberately excluded from this repository image._
 > every control shown on the page. Topology Lock restores the exact saved
 > Parent over guarded local MQTT, tracks per-child steering health, and can recover an
 > otherwise idle requested Parent after repeated accepted-but-unverified
-> moves. Every wireless Node now shows both the Linksys JNAP backhaul estimate
-> and its live MQTT PHY rate. The topology automatically uses the browser
+> moves. Every wireless Node now shows both the Linksys measured hop throughput
+> and its latest MQTT PHY sample. The topology automatically uses the browser
 > width and confines scrolling to the map only when complete cards cannot fit.
 > Generated Linksys IMG files are never distributed.
 
@@ -549,14 +549,18 @@ Select any topology card to open the node details and view the clients or STAs
 attached to that node. `5GH` and `5GL` remain visible on the backhaul paths,
 together with every available channel, rate, and RSSI value.
 
-Each wireless Node shows two deliberately separate link rates. **Backhaul** is
-Linksys JNAP `GetBackhaulInfo.speedMbps`, the firmware's backhaul estimate.
+Each wireless Node shows two deliberately separate link rates. **Hop
+throughput** is Linksys JNAP `GetBackhaulInfo.speedMbps`, an active Thrulay
+measurement from that child Node to its immediate Parent. It is a per-hop
+measurement, not end-to-end throughput to the gateway or Internet.
 **PHY rate** is the child Node's current wireless backhaul bitrate from MQTT
 `network/<node UUID>/BH/status` (`phyRate_2`, with `phyRate` retained as the
-human-readable raw value). The ESP32 asks the Nodes for a fresh PHY sample
-every 30 seconds. The topology link label, Node card, and Node details all show
-the result; samples older than two minutes are explicitly marked stale instead
-of being presented as current.
+human-readable raw value). The ESP32 asks for one PHY sample after boot and no
+more than once every 30 minutes. This avoids repeatedly invoking Linksys'
+backhaul status workflow merely to refresh an instantaneous value. The
+topology link label, Node card, and Node details all show the result; samples
+older than two minutes are explicitly marked stale instead of being presented
+as current.
 
 The topology panel uses the full browser width and reacts immediately when its
 container changes size. It expands hierarchy spacing on wide screens, compacts

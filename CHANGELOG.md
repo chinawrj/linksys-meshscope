@@ -22,9 +22,10 @@
   gaps, and narrow views confine horizontal scrolling to the map while keeping
   full-size Node cards and all diagnostics.
 - Added live backhaul PHY rate collection from each child Node's MQTT
-  `BH/status` (`phyRate_2`/`phyRate`) every 30 seconds. Topology links, Node
-  cards, and Node details now show PHY rate alongside the existing JNAP
-  `speedMbps` estimate, including source, raw value, age, and stale state.
+  `BH/status` (`phyRate_2`/`phyRate`) after boot and at most every 30 minutes.
+  Topology links, Node cards, and Node details now show PHY rate alongside the
+  existing JNAP `speedMbps` measured hop throughput, including source, raw
+  value, age, and stale state.
 - Changed ESP32 Topology Lock recovery from guarded `core/Reboot` retries to
   exact MQTT `BH/config` Parent steering. Auto capability detection remains
   the default and Force off blocks automatic recovery.

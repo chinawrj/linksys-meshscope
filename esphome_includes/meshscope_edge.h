@@ -57,7 +57,10 @@ static constexpr size_t TOPOLOGY_LOCK_HISTORY_LIMIT = 8;
 static constexpr uint32_t REFRESH_WAIT_MS = 20000;
 static constexpr uint16_t MQTT_PORT = 1883;
 static constexpr uint32_t MQTT_PROBE_INTERVAL_MS = 5 * 60 * 1000;
-static constexpr uint32_t BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 1000;
+// BH/status_resend_all can cascade into Linksys' active Thrulay backhaul
+// measurement. Keep the on-boot sample, but avoid continuously loading the
+// mesh merely to refresh an instantaneous PHY value.
+static constexpr uint32_t BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 static constexpr uint32_t BACKHAUL_PHY_COLLECT_MS = 6 * 1000;
 static constexpr uint32_t BACKHAUL_PHY_STALE_MS = 2 * 60 * 1000;
 static constexpr uint32_t MQTT_OPERATION_TIMEOUT_MS = 20000;

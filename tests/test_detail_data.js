@@ -70,7 +70,7 @@ test("preserves every existing node metric and identity field", () => {
 
   assert.deepEqual(
     rows.metrics.map(([label]) => label),
-    ["Current status", "Connected clients", "Backhaul rate", "Link PHY rate", "Backhaul signal"],
+    ["Current status", "Connected clients", "Hop throughput", "Link PHY rate", "Backhaul signal"],
   );
   assert.deepEqual(
     rows.details.map(([label]) => label),

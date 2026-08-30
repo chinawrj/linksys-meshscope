@@ -514,7 +514,7 @@ function renderSummary(data) {
   $("#statClients").textContent = compactNumber(summary.clientsOnline);
   $("#statClientsSub").textContent = `${summary.clientsKnown} known device records`;
   $("#statBackhaul").textContent = summary.backhaulMbps ? `${compactNumber(summary.backhaulMbps)}M` : "—";
-  $("#statBackhaulSub").textContent = "Combined negotiated rate for online nodes";
+  $("#statBackhaulSub").textContent = "Sum of latest child-to-parent hop measurements";
   $("#statAttention").textContent = compactNumber(summary.weakNodes + (summary.nodesTotal - summary.nodesOnline));
   $("#statAttentionSub").textContent = `${summary.weakNodes} weak signal · ${summary.nodesTotal - summary.nodesOnline} offline`;
 
@@ -1016,7 +1016,7 @@ function renderTopology(data) {
           : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`}
         <div class="node-stats">
           <div><span>Clients</span><strong>${node.clientCount}</strong></div>
-          <div><span>${node.isAuthority ? "Status" : "Backhaul"}</span><strong>${node.isAuthority ? "Online" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
+          <div><span>${node.isAuthority ? "Status" : "Hop throughput"}</span><strong>${node.isAuthority ? "Online" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
           <div class="node-phy ${node.phyRateStale ? "stale" : ""}" title="${escapeHtml(phyTitle)}"><span>PHY rate</span><strong>${node.isAuthority ? "—" : formatLinkRate(node.phyRateMbps)}</strong></div>
           <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
