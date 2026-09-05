@@ -62,6 +62,7 @@ jobs:
           node --check mesh_web/mqtt-parent-steering-state.js
           node --check mesh_web/refresh-state.js
           node --check mesh_web/topology-layout.js
+          node --check mesh_web/topology-renderer.js
           node --check mesh_web/topology-lock-state.js
           node --check mesh_web/workspace.js
 
@@ -71,6 +72,7 @@ jobs:
             tests/test_connection_mode.js \
             tests/test_refresh_state.js \
             tests/test_topology_layout.js \
+            tests/test_topology_renderer.js \
             tests/test_topology_lock_state.js \
             tests/test_detail_data.js \
             tests/test_node_restart_state.js \

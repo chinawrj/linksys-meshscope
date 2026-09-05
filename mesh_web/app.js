@@ -13,7 +13,7 @@ const state = {
   refreshDue: false,
   refreshError: null,
   refreshing: false,
-  topologyAnimationFrame: null,
+  topologyResizeFrame: null,
   topologyResizeObserver: null,
   topologyViewportWidth: 0,
   topologyLock: MeshTopologyLock.normalize(null),
@@ -943,9 +943,9 @@ function observeTopologyWidth() {
     if (!width || Math.abs(width - state.topologyViewportWidth) < 3) return;
     state.topologyViewportWidth = width;
     if (!state.topology) return;
-    cancelAnimationFrame(state.topologyAnimationFrame);
-    state.topologyAnimationFrame = requestAnimationFrame(() => {
-      state.topologyAnimationFrame = null;
+    cancelAnimationFrame(state.topologyResizeFrame);
+    state.topologyResizeFrame = requestAnimationFrame(() => {
+      state.topologyResizeFrame = null;
       renderTopology(state.topology);
     });
   });
@@ -1033,10 +1033,10 @@ function renderTopology(data) {
   const map = $("#meshMap");
   const focusedNode = map.contains(document.activeElement) ? document.activeElement.dataset.nodeId : null;
   const scroller = $(".map-scroll");
-  if (state.topologyAnimationFrame) {
-    cancelAnimationFrame(state.topologyAnimationFrame);
-    state.topologyAnimationFrame = null;
-  }
+  // A refresh can arrive before a pending resize. Coalesce the layout work;
+  // there is no persistent renderer/animation callback to retain old trees.
+  cancelAnimationFrame(state.topologyResizeFrame);
+  state.topologyResizeFrame = null;
   const displayNodes = state.topologyLockEditing
     ? MeshTopologyLock.applyDraft(data.nodes, state.topologyLockDraft)
     : data.nodes;
@@ -1059,6 +1059,9 @@ function renderTopology(data) {
   const { positions, edges, root, nodeWidth, nodeHeight } = layout;
   const offline = data.nodes.filter((node) => !node.online);
   if (!positions.length || !root) {
+    map.style.width = `${availableWidth || 620}px`;
+    map.style.minWidth = "0";
+    map.style.height = "280px";
     map.innerHTML = '<div class="map-empty"><strong>No online gateway in this snapshot</strong><p>Use Node list to inspect all known nodes, including offline nodes.</p></div>';
     workspace?.topologyRendered({ width: availableWidth || 620, height: 280 });
     return;
@@ -1097,7 +1100,7 @@ function renderTopology(data) {
       }
     }
   }
-  let html = `<canvas class="topology-canvas" id="topologyCanvas" aria-hidden="true"></canvas>`;
+  let html = "";
   html += `<div class="map-internet" data-layout-left="34" data-layout-top="${internetY}"><span>⌁</span><small>INTERNET</small></div>`;
   html += edgeLabelHtml(wanEdge);
   for (const edge of edges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
@@ -1116,9 +1119,7 @@ function renderTopology(data) {
       })
       .join("")}</div>`;
   }
-  map.innerHTML = html;
-  applyTopologyLayoutPositions(map);
-  const canvasEdges = [
+  const linkEdges = [
     wanEdge,
     ...[...currentPreviewEdges, ...edges].map((edge) => ({
       ...edge,
@@ -1132,8 +1133,9 @@ function renderTopology(data) {
       },
     })),
   ];
+  map.innerHTML = MeshTopologyRenderer.svg(linkEdges, layout.width, layout.height) + html;
+  applyTopologyLayoutPositions(map);
   workspace?.topologyRendered(layout);
-  if (!workspace || workspace.graphVisible()) requestAnimationFrame(() => startTopologyCanvas(canvasEdges, layout.width, layout.height));
   map.querySelectorAll("[data-node-id]").forEach((button) => {
     button.addEventListener("click", () => {
       if (Date.now() < state.suppressNodeClickUntil) return;
@@ -1211,83 +1213,6 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
     </span>`;
 }
 
-function startTopologyCanvas(edges, width, height) {
-  const canvas = $("#topologyCanvas");
-  if (!canvas || (workspace && !workspace.graphVisible())) return;
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  const context = canvas.getContext("2d");
-  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const palettes = {
-    "5GH": { line: "#3f7f9a", glow: "rgba(63,127,154,.17)" },
-    "5GL": { line: "#3d856d", glow: "rgba(61,133,109,.17)" },
-    "WAN": { line: "#7a9b90", glow: "rgba(122,155,144,.14)" },
-    "Ethernet": { line: "#b9772b", glow: "rgba(185,119,43,.15)" },
-    "LOCK": { line: "#6f55b5", glow: "rgba(111,85,181,.2)" },
-  };
-  context.scale(ratio, ratio);
-
-  function pointOnCurve(from, to, progress) {
-    const control = Math.max(42, (to.x - from.x) * 0.48);
-    const p0 = from;
-    const p1 = { x: from.x + control, y: from.y };
-    const p2 = { x: to.x - control, y: to.y };
-    const p3 = to;
-    const inverse = 1 - progress;
-    return {
-      x: inverse ** 3 * p0.x + 3 * inverse ** 2 * progress * p1.x + 3 * inverse * progress ** 2 * p2.x + progress ** 3 * p3.x,
-      y: inverse ** 3 * p0.y + 3 * inverse ** 2 * progress * p1.y + 3 * inverse * progress ** 2 * p2.y + progress ** 3 * p3.y,
-    };
-  }
-
-  function draw(timestamp = 0) {
-    context.clearRect(0, 0, width, height);
-    edges.forEach((edge, edgeIndex) => {
-      const from = edge.sourcePoint;
-      const to = edge.targetPoint;
-      const control = Math.max(42, (to.x - from.x) * 0.48);
-      const palette = edge.kind === "desired"
-        ? palettes.LOCK
-        : palettes[edge.band] || palettes.WAN;
-      context.save();
-      if (edge.kind === "current") context.setLineDash([7, 6]);
-      context.beginPath();
-      context.moveTo(from.x, from.y);
-      context.bezierCurveTo(from.x + control, from.y, to.x - control, to.y, to.x, to.y);
-      context.lineWidth = 7;
-      context.strokeStyle = palette.glow;
-      context.stroke();
-      context.lineWidth = 2;
-      context.strokeStyle = palette.line;
-      context.stroke();
-      for (const point of [from, to]) {
-        context.beginPath();
-        context.arc(point.x, point.y, 4, 0, Math.PI * 2);
-        context.fillStyle = palette.line;
-        context.fill();
-      }
-      if (!reduceMotion && edge.kind !== "current") {
-        const progress = ((timestamp / 4200) + edgeIndex * 0.173) % 1;
-        const packet = pointOnCurve(from, to, progress);
-        context.beginPath();
-        context.arc(packet.x, packet.y, 4.2, 0, Math.PI * 2);
-        context.shadowBlur = 10;
-        context.shadowColor = palette.line;
-        context.fillStyle = "#fffefa";
-        context.fill();
-        context.lineWidth = 2;
-        context.strokeStyle = palette.line;
-        context.stroke();
-      }
-      context.restore();
-    });
-    if (!reduceMotion && (!workspace || workspace.graphVisible())) state.topologyAnimationFrame = requestAnimationFrame(draw);
-  }
-  draw();
-}
 
 function filteredClients() {
   if (!state.topology) return [];

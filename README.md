@@ -33,7 +33,11 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.8.0 highlight:** A clearer workspace for desktop and iPhone. Switch
+> **v0.8.1 highlight:** Zoom-safe SVG graph links replace the large animated
+> Canvas after an iPhone crash investigation. All metrics and controls remain;
+> only decorative moving dots were removed. [Evidence and test limits](docs/iphone-graph-zoom.md).
+>
+> **v0.8.0 workspace:** A clearer workspace for desktop and iPhone. Switch
 > between **Topology**, **Clients**, and **Recovery**; search nodes or show only
 > those needing attention. Phones open a readable Node list with all the same
 > metrics as the graph. Node details put Clients and Actions one tap away,
@@ -119,7 +123,7 @@ and restart-state UI without authenticating with or controlling a router.
 
 ## What the dashboard shows
 
-- Parent-aware topology layout with animated, directional backhaul paths
+- Parent-aware topology layout with zoom-safe vector backhaul paths
 - Separate `5GH` and `5GL` labels, channel, negotiated rate, and RSSI
 - 10, 30, or 60 second auto-refresh, pause, manual refresh, and refresh after
   returning from a background tab
@@ -152,6 +156,15 @@ example.
 The three workspace buttons keep monitoring separate from configuration.
 Switching views, searching, opening details, and editing a draft never sends a
 steering or restart command.
+
+**Phone graph zoom:** choose **Graph → Fit graph** for an overview, then use
+the browser's normal pinch zoom to inspect it. **100%** restores full-size node
+cards inside the scrollable map. Since v0.8.1, links are SVG vectors rather than
+a continuously repainted full-diagram Canvas. This removes that Canvas memory
+allocation and animation-loop lifecycle from zoom/refresh operations. Decorative
+moving dots have been removed; bands, endpoints, metrics, and every node remain.
+Browser zoom is not disabled or capped. See the
+[iPhone zoom investigation](docs/iphone-graph-zoom.md) for evidence and test limits.
 
 | What you want to do | Where to go |
 | --- | --- |

@@ -3,6 +3,7 @@
 Run: python3 tests/serve_workspace_preview.py --port 8766 --scenario recovery
 Scenarios: recovery, degraded, offline, nodes-only. Serves the actual compressed
 ESP32 bundle under its Content Security Policy to catch embedded-only regressions.
+Use --extra-nodes 16 for a larger, deeper graph during mobile zoom checks.
 """
 import argparse
 import copy
@@ -83,6 +84,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8766)
     parser.add_argument('--scenario', choices=['recovery','degraded','offline','nodes-only'], default='recovery')
+    parser.add_argument('--extra-nodes', type=int, choices=range(101), default=0, metavar='0..100')
     args = parser.parse_args()
     data = app.build_demo_topology('192.168.1.1')
     app.STATE.enable_demo()
@@ -104,6 +106,18 @@ if __name__ == '__main__':
     spare.update(id='demo-offline', name='Storage room (offline)', online=False, clientCount=0)
     data['nodes'].append(spare)
     data['summary']['nodesTotal'] += 1
+    for index in range(args.extra_nodes):
+        parent = data['nodes'][0] if index % 4 == 0 else data['nodes'][-1]
+        extra = copy.deepcopy(data['nodes'][1])
+        extra.update(id=f'demo-extra-{index}', name=f'Extra room {index + 1:02}',
+                     parentId=parent['id'], parentName=parent['name'], clientCount=0,
+                     ipAddress=f'192.0.2.{index + 1}', online=True)
+        data['nodes'].append(extra)
+        lock['nodes'].append({'nodeId':extra['id'], 'status':'correct',
+                             'expectedParentId':parent['id'], 'expectedParentName':parent['name'],
+                             'currentParentId':parent['id'], 'currentParentName':parent['name']})
+        data['summary']['nodesTotal'] += 1
+        data['summary']['nodesOnline'] += 1
     steering = {'mode':'auto','state':'available','supported':True,'available':True,'roundTrip':True,'effectiveEnabled':True,
                 'reason':'Synthetic broker round trip for UI review. No router connection.', 'testedAt':app.now_iso(),
                 'nodeHealth':[{'childId':'demo-road-south','childName':'Garage','targetParentId':'demo-yard-east','targetParentName':'Patio',

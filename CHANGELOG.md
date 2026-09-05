@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.8.1 — 2026-09-06
+
+- Replaced the continuously redrawn topology Canvas with SVG links. Fit graph
+  and browser zoom no longer retain a DPR-scaled bitmap for the entire mesh,
+  and overlapping redraws cannot leave behind Canvas animation loops.
+- Preserved curved links, endpoints, `5GH`/`5GL`/Ethernet styling, desired/current
+  parent previews, labels, node metrics, and all node actions. Only decorative
+  moving dots were removed; live topology and recovery countdowns still refresh.
+- Separated the one-shot resize callback from rendering. Fit now accommodates
+  diagrams that need a scale below 10%, and an all-offline snapshot resets the
+  previous graph dimensions correctly.
+- Added an offline v0.8.0 failure-path reproducer, vector-rendering/Fit regression
+  tests, and an enlarged synthetic topology for mobile and Safari zoom checks.
+  Physical iPhone pinch/crash tracing is not claimed by these tests.
+
 ## v0.8.0 — 2026-09-05
 
 - Reorganized the dashboard into **Topology**, **Clients**, and **Recovery**
