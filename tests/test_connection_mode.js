@@ -13,6 +13,7 @@ test("ESPHome mode explains that connection values are firmware-managed", () => 
   const mode = view({ managedConnection: true });
   assert.equal(mode.managed, true);
   assert.equal(mode.settingsLabel, "Device configuration");
-  assert.equal(mode.submitLabel, "Reload network");
-  assert.match(mode.description, /managed by the ESPHome firmware/);
+  assert.equal(mode.submitLabel, "Save & reload network");
+  assert.match(mode.description, /credentials stay in ESPHome firmware/);
+  assert.match(mode.note, /survives restarts/);
 });

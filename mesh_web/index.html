@@ -147,7 +147,7 @@
                 </div>
                 <label class="topology-lock-warning">
                   <input id="topologyLockAcknowledgement" type="checkbox" />
-                  <span><strong>Enable automatic topology recovery?</strong> After three confirmed mismatches, MeshScope sends an exact MQTT Parent request and verifies the result across two fresh topology generations. The node and its clients may disconnect briefly while wireless backhaul reconnects. MeshScope sends at most one automatic request every five minutes.</span>
+                  <span id="topologyLockRateLimitNotice"><strong>Enable automatic topology recovery?</strong> After three confirmed mismatches, MeshScope sends an exact MQTT Parent request and verifies the result across two fresh topology generations. The node and its clients may disconnect briefly while wireless backhaul reconnects. MeshScope sends at most one automatic request every 60 seconds by default; change this in Device configuration.</span>
                 </label>
                 <p class="topology-lock-validation" id="topologyLockValidation" role="alert"></p>
                 <div class="topology-lock-editor-actions">
@@ -291,7 +291,15 @@
         <div class="managed-connection-panel" id="managedConnectionPanel" hidden>
           <span>Router address in firmware</span>
           <strong id="managedRouterHost">—</strong>
-          <p>The page can refresh the current configuration but cannot receive or change credentials.</p>
+          <p>The router address and credentials remain firmware-managed.</p>
+          <label class="device-config-field" for="topologyLockRateLimitSeconds">
+            <span>Topology Lock action rate limit</span>
+            <div class="number-unit-field">
+              <input id="topologyLockRateLimitSeconds" name="topologyLockRateLimitSeconds" type="number" inputmode="numeric" min="10" max="86400" step="1" value="60" required />
+              <b>seconds</b>
+            </div>
+            <small>Minimum delay between automatic MQTT Parent moves. Default: 60 seconds.</small>
+          </label>
         </div>
         <div id="editableConnectionFields">
           <label>

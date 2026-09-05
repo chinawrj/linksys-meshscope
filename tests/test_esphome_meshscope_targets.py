@@ -208,13 +208,23 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
 
     def test_topology_lock_is_persistent_observable_and_rate_limited(self):
         for fragment in (
-            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MS = 5 * 60 * 1000",
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_DEFAULT_SECONDS = 60",
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS = 10",
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS = 24 * 60 * 60",
             "TOPOLOGY_LOCK_CONFIRMATIONS = 3",
             'TOPOLOGY_LOCK_NVS_NAMESPACE = "meshscope_lock"',
+            'TOPOLOGY_LOCK_COOLDOWN_NVS_KEY = "cooldown_s"',
             "persist_topology_lock_locked()",
+            "persist_topology_lock_cooldown_seconds(",
+            "load_topology_lock_cooldown_seconds()",
+            "set_topology_lock_cooldown_seconds(",
             "load_topology_lock()",
             "validate_topology_lock_mappings(",
             "evaluate_topology_lock(",
+            "topology_lock_expected_depth_locked(",
+            "topology_lock_expected_parent_settled_locked(",
+            '"topologyLockRateLimitSeconds"',
+            '"/api/device-configuration"',
             '"nextActionInSeconds"',
             '"expectedParentOnline"',
             '"confirmations"',
@@ -236,6 +246,28 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
+        evaluate = self.edge.split("static void evaluate_topology_lock(", 1)[1].split(
+            "static bool collect_snapshot(", 1
+        )[0]
+        self.assertIn("size_t selected_depth", evaluate)
+        self.assertIn("depth >= selected_depth", evaluate)
+        self.assertIn("topology_lock_last_selected_node_id", evaluate)
+        self.assertIn(
+            "!topology_lock_expected_parent_settled_locked(nodes, mapping)",
+            evaluate,
+        )
+
+        html = WEB_HTML.read_text(encoding="utf-8")
+        app = WEB_APP.read_text(encoding="utf-8")
+        for fragment in (
+            'id="topologyLockRateLimitSeconds"',
+            'min="10" max="86400"',
+            'api("/api/device-configuration"',
+            "from root to leaves",
+        ):
+            self.assertIn(fragment, html + app)
+        self.assertIn("Topology Lock Action Rate Limit", self.common)
+        self.assertIn("meshscope_edge_set_topology_lock_rate_limit_seconds(x)", self.common)
 
     def test_topology_lock_uses_opposite_parent_backhaul_radio(self):
         self.assertIn('parent_uplink == "5GH") return "5GL"', self.edge)

@@ -150,6 +150,15 @@ function setConnectionStatus(connected) {
   if (!connected) $("#liveText").textContent = "Waiting to connect";
 }
 
+function updateTopologyLockRateLimitCopy(seconds) {
+  const value = Number(seconds);
+  if (!Number.isInteger(value) || value < 10 || value > 86400) return;
+  const notice = $("#topologyLockRateLimitNotice");
+  if (notice) {
+    notice.innerHTML = `<strong>Enable automatic topology recovery?</strong> After three confirmed mismatches, MeshScope sends an exact MQTT Parent request and verifies the result across two fresh topology generations. The node and its clients may disconnect briefly while wireless backhaul reconnects. MeshScope sends at most one automatic request every ${value} seconds; change this in Device configuration.`;
+  }
+}
+
 function configureConnectionMode(status) {
   const mode = MeshConnectionMode.view(status);
   state.managedConnection = mode.managed;
@@ -162,6 +171,11 @@ function configureConnectionMode(status) {
   $("#editableConnectionFields").hidden = mode.managed;
   $("#managedConnectionPanel").hidden = !mode.managed;
   $("#managedRouterHost").textContent = status.router || "—";
+  const rateLimit = Number(status.topologyLockRateLimitSeconds);
+  if (Number.isInteger(rateLimit) && rateLimit >= 10 && rateLimit <= 86400) {
+    $("#topologyLockRateLimitSeconds").value = String(rateLimit);
+    updateTopologyLockRateLimitCopy(rateLimit);
+  }
   $("#hostInput").required = !mode.managed;
   $("#passwordInput").required = !mode.managed;
 }
@@ -662,6 +676,7 @@ function renderTopologyLock() {
   const panel = $("#topologyLockPanel");
   if (!panel || !state.topology) return;
   const lock = state.topologyLock;
+  updateTopologyLockRateLimitCopy(lock.cooldownSeconds);
   const recoveryChip = $("#topologyRecoveryChip");
   const supported = lock.supported && state.topology.meta?.edgeHosted === true;
   const editing = supported && state.topologyLockEditing;
@@ -717,7 +732,7 @@ function renderTopologyLock() {
   $("#topologyLockDescription").textContent = summary.blocked
     ? "At least one desired parent is offline or MQTT recovery is disabled, so affected moves are blocked."
     : summary.mismatch
-      ? "Parent differences are being confirmed. Eligible child nodes are moved with exact MQTT Parent Steering, one at a time under the five-minute global limit."
+      ? `Parent differences are being confirmed. Eligible child nodes are moved with exact MQTT Parent Steering from root to leaves, one at a time under the configured ${lock.cooldownSeconds}-second action limit.`
       : summary.wired
         ? `Every monitored online node currently has the desired parent. ${summary.wired} Ethernet node${summary.wired === 1 ? " uses" : "s use"} a manual display assignment and ${summary.wired === 1 ? "is" : "are"} excluded from wireless MQTT recovery.`
         : "Every monitored online node currently has the desired parent.";
@@ -1728,13 +1743,31 @@ function wireEvents() {
             host: $("#hostInput").value,
             password: $("#passwordInput").value,
           };
+      if (state.managedConnection) {
+        const rateLimit = Number($("#topologyLockRateLimitSeconds").value);
+        if (!Number.isInteger(rateLimit) || rateLimit < 10 || rateLimit > 86400) {
+          throw new Error("Topology Lock rate limit must be an integer from 10 to 86400 seconds.");
+        }
+        const configuration = await api("/api/device-configuration", {
+          method: "POST",
+          body: JSON.stringify({ topologyLockRateLimitSeconds: rateLimit }),
+        });
+        $("#topologyLockRateLimitSeconds").value = String(
+          configuration.topologyLockRateLimitSeconds,
+        );
+        updateTopologyLockRateLimitCopy(
+          configuration.topologyLockRateLimitSeconds,
+        );
+      }
       const data = await api("/api/connect", {
         method: "POST",
         body: JSON.stringify(body),
       });
       $("#passwordInput").value = "";
       render(data);
-      toast("Connected to Linksys Mesh");
+      toast(state.managedConnection
+        ? "Device configuration saved"
+        : "Connected to Linksys Mesh");
     } catch (error) {
       $("#connectError").textContent = error.message;
       (state.managedConnection ? button : $("#passwordInput")).focus();

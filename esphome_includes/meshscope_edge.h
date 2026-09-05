@@ -51,7 +51,9 @@ static constexpr size_t COMPRESSION_HASH_SIZE = 2048;
 static constexpr uint32_t REFRESH_INTERVAL_MS = 10000;
 static constexpr uint32_t RESTART_COOLDOWN_MS = 90000;
 static constexpr uint32_t HOP_TEST_COOLDOWN_MS = 60 * 1000;
-static constexpr uint32_t TOPOLOGY_LOCK_ACTION_COOLDOWN_MS = 5 * 60 * 1000;
+static constexpr uint32_t TOPOLOGY_LOCK_ACTION_COOLDOWN_DEFAULT_SECONDS = 60;
+static constexpr uint32_t TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS = 10;
+static constexpr uint32_t TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS = 24 * 60 * 60;
 static constexpr uint8_t TOPOLOGY_LOCK_CONFIRMATIONS = 3;
 static constexpr size_t TOPOLOGY_LOCK_MAX_NODES = 32;
 static constexpr size_t TOPOLOGY_LOCK_HISTORY_LIMIT = 8;
@@ -323,6 +325,9 @@ static uint32_t topology_lock_last_action_uptime_ms = 0;
 static bool topology_lock_action_seen_this_boot = false;
 static constexpr const char *TOPOLOGY_LOCK_NVS_NAMESPACE = "meshscope_lock";
 static constexpr const char *TOPOLOGY_LOCK_NVS_KEY = "config";
+static constexpr const char *TOPOLOGY_LOCK_COOLDOWN_NVS_KEY = "cooldown_s";
+static uint32_t topology_lock_action_cooldown_seconds =
+    TOPOLOGY_LOCK_ACTION_COOLDOWN_DEFAULT_SECONDS;
 static ClientDetailsMode requested_client_details = ClientDetailsMode::AUTO;
 static ClientDetailsMode active_client_details = ClientDetailsMode::FULL;
 static bool client_details_resolved = false;
@@ -3423,25 +3428,97 @@ static bool queue_topology_lock_mqtt_operation(
   return true;
 }
 
+static uint32_t topology_lock_action_cooldown_ms_locked() {
+  return topology_lock_action_cooldown_seconds * 1000U;
+}
+
 static uint32_t topology_lock_remaining_ms_locked() {
+  const uint32_t cooldown_ms = topology_lock_action_cooldown_ms_locked();
   if (topology_lock_action_seen_this_boot) {
     const uint32_t elapsed = uptime_ms() - topology_lock_last_action_uptime_ms;
-    return elapsed >= TOPOLOGY_LOCK_ACTION_COOLDOWN_MS
+    return elapsed >= cooldown_ms
                ? 0
-               : TOPOLOGY_LOCK_ACTION_COOLDOWN_MS - elapsed;
+               : cooldown_ms - elapsed;
   }
   if (topology_lock_last_action_epoch == 0) return 0;
   const uint64_t now = wall_clock_epoch();
-  if (now == 0) return TOPOLOGY_LOCK_ACTION_COOLDOWN_MS;
+  if (now == 0) return cooldown_ms;
   const uint64_t elapsed_seconds =
       now >= topology_lock_last_action_epoch
           ? now - topology_lock_last_action_epoch
           : 0;
-  const uint64_t cooldown_seconds = TOPOLOGY_LOCK_ACTION_COOLDOWN_MS / 1000;
+  const uint64_t cooldown_seconds = topology_lock_action_cooldown_seconds;
   return elapsed_seconds >= cooldown_seconds
              ? 0
              : static_cast<uint32_t>(
                    (cooldown_seconds - elapsed_seconds) * 1000ULL);
+}
+
+static bool persist_topology_lock_cooldown_seconds(uint32_t seconds) {
+  nvs_handle_t handle = 0;
+  esp_err_t result = nvs_open(
+      TOPOLOGY_LOCK_NVS_NAMESPACE,
+      NVS_READWRITE,
+      &handle);
+  if (result == ESP_OK) {
+    result = nvs_set_u32(handle, TOPOLOGY_LOCK_COOLDOWN_NVS_KEY, seconds);
+    if (result == ESP_OK) result = nvs_commit(handle);
+    nvs_close(handle);
+  }
+  if (result != ESP_OK) {
+    ESP_LOGW(
+        TAG,
+        "Unable to persist Topology Lock rate limit: %s",
+        esp_err_to_name(result));
+    return false;
+  }
+  return true;
+}
+
+static void load_topology_lock_cooldown_seconds() {
+  nvs_handle_t handle = 0;
+  if (nvs_open(
+          TOPOLOGY_LOCK_NVS_NAMESPACE,
+          NVS_READONLY,
+          &handle) != ESP_OK) {
+    return;
+  }
+  uint32_t seconds = 0;
+  const esp_err_t result = nvs_get_u32(
+      handle,
+      TOPOLOGY_LOCK_COOLDOWN_NVS_KEY,
+      &seconds);
+  nvs_close(handle);
+  if (result == ESP_OK &&
+      seconds >= TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS &&
+      seconds <= TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS) {
+    topology_lock_action_cooldown_seconds = seconds;
+  }
+  ESP_LOGI(
+      TAG,
+      "Topology Lock rate limit: %u seconds",
+      static_cast<unsigned>(topology_lock_action_cooldown_seconds));
+}
+
+static bool set_topology_lock_cooldown_seconds(uint32_t seconds) {
+  if (seconds < TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS ||
+      seconds > TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS ||
+      topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return false;
+  }
+  const uint32_t previous = topology_lock_action_cooldown_seconds;
+  topology_lock_action_cooldown_seconds = seconds;
+  const bool saved = persist_topology_lock_cooldown_seconds(seconds);
+  if (!saved) topology_lock_action_cooldown_seconds = previous;
+  xSemaphoreGive(topology_lock_mutex);
+  if (saved) {
+    ESP_LOGI(
+        TAG,
+        "Topology Lock rate limit changed to %u seconds",
+        static_cast<unsigned>(seconds));
+  }
+  return saved;
 }
 
 static bool persist_topology_lock_locked() {
@@ -3672,7 +3749,7 @@ static cJSON *topology_lock_json(
   cJSON_AddNumberToObject(
       root,
       "cooldownSeconds",
-      TOPOLOGY_LOCK_ACTION_COOLDOWN_MS / 1000);
+      topology_lock_action_cooldown_seconds);
   cJSON_AddNumberToObject(
       root,
       "nextActionInSeconds",
@@ -3807,6 +3884,52 @@ static cJSON *topology_lock_json(
   return root;
 }
 
+static size_t topology_lock_expected_depth_locked(
+    const std::string &node_id,
+    const std::string &authority_id) {
+  std::string cursor = node_id;
+  std::set<std::string> seen;
+  size_t depth = 0;
+  while (!same_node_id(cursor, authority_id) &&
+         depth <= topology_lock_mappings.size()) {
+    if (!seen.insert(ascii_lower(cursor)).second) {
+      return topology_lock_mappings.size() + 1;
+    }
+    const auto mapping = std::find_if(
+        topology_lock_mappings.begin(),
+        topology_lock_mappings.end(),
+        [&](const LockedParent &item) {
+          return same_node_id(item.node_id, cursor);
+        });
+    if (mapping == topology_lock_mappings.end()) {
+      return topology_lock_mappings.size() + 1;
+    }
+    cursor = mapping->parent_id;
+    depth++;
+  }
+  return same_node_id(cursor, authority_id)
+             ? depth
+             : topology_lock_mappings.size() + 1;
+}
+
+static bool topology_lock_expected_parent_settled_locked(
+    const std::vector<NodeObservation> &nodes,
+    const LockedParent &mapping) {
+  const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
+  if (parent == nullptr || !parent->online) return false;
+  if (parent->authority || wired_connection_type(parent->connection_type)) {
+    return true;
+  }
+  const auto parent_mapping = std::find_if(
+      topology_lock_mappings.begin(),
+      topology_lock_mappings.end(),
+      [&](const LockedParent &item) {
+        return same_node_id(item.node_id, parent->id);
+      });
+  return parent_mapping != topology_lock_mappings.end() &&
+         same_node_id(parent->parent_id, parent_mapping->parent_id);
+}
+
 static void evaluate_topology_lock(
     const std::vector<NodeObservation> &nodes) {
   if (topology_lock_mutex == nullptr ||
@@ -3835,6 +3958,13 @@ static void evaluate_topology_lock(
     if (count < TOPOLOGY_LOCK_CONFIRMATIONS) count++;
   }
   if (remaining_ms == 0 && !topology_lock_mappings.empty()) {
+    const NodeObservation *authority = nullptr;
+    for (const auto &node : nodes) {
+      if (node.online && node.authority) {
+        authority = &node;
+        break;
+      }
+    }
     size_t start = 0;
     for (size_t index = 0; index < topology_lock_mappings.size(); index++) {
       if (topology_lock_mappings[index].node_id ==
@@ -3843,6 +3973,7 @@ static void evaluate_topology_lock(
         break;
       }
     }
+    size_t selected_depth = topology_lock_mappings.size() + 1;
     for (size_t offset = 0; offset < topology_lock_mappings.size(); offset++) {
       const LockedParent &mapping =
           topology_lock_mappings[
@@ -3852,10 +3983,11 @@ static void evaluate_topology_lock(
       if (node == nullptr || parent == nullptr || !node->online ||
           !parent->online || node->authority ||
           wired_connection_type(node->connection_type) ||
-          node->parent_id == mapping.parent_id ||
+          same_node_id(node->parent_id, mapping.parent_id) ||
           mqtt_operation_active_for_node(mapping.node_id) ||
           topology_lock_mismatch_counts[mapping.node_id] <
-              TOPOLOGY_LOCK_CONFIRMATIONS) {
+              TOPOLOGY_LOCK_CONFIRMATIONS ||
+          !topology_lock_expected_parent_settled_locked(nodes, mapping)) {
         continue;
       }
       const auto manual_restart = restart_cooldowns.find(mapping.node_id);
@@ -3863,10 +3995,17 @@ static void evaluate_topology_lock(
           uptime_ms() - manual_restart->second < RESTART_COOLDOWN_MS) {
         continue;
       }
+      const size_t depth = authority != nullptr
+                               ? topology_lock_expected_depth_locked(
+                                     mapping.node_id, authority->id)
+                               : topology_lock_mappings.size() + 1;
+      if (!selected.node_id.empty() && depth >= selected_depth) continue;
       selected = mapping;
       selected_node = *node;
-      topology_lock_last_selected_node_id = mapping.node_id;
-      break;
+      selected_depth = depth;
+    }
+    if (!selected.node_id.empty()) {
+      topology_lock_last_selected_node_id = selected.node_id;
     }
   }
   xSemaphoreGive(topology_lock_mutex);
@@ -4577,6 +4716,10 @@ static esp_err_t status_handler(httpd_req_t *request) {
         root,
         "topologyLockNextActionInSeconds",
         (topology_lock_remaining_ms_locked() + 999) / 1000);
+    cJSON_AddNumberToObject(
+        root,
+        "topologyLockRateLimitSeconds",
+        topology_lock_action_cooldown_seconds);
     xSemaphoreGive(topology_lock_mutex);
   }
   if (mqtt_steering_mutex != nullptr &&
@@ -5232,6 +5375,76 @@ static esp_err_t send_cjson(httpd_req_t *request, cJSON *root) {
   cJSON_free(body);
   cJSON_Delete(root);
   return result;
+}
+
+static cJSON *device_configuration_json() {
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddBoolToObject(root, "supported", true);
+  cJSON_AddStringToObject(root, "rateLimitScope", "topology-lock-mqtt-actions");
+  cJSON_AddStringToObject(root, "rateLimitUnit", "seconds");
+  cJSON_AddNumberToObject(
+      root,
+      "rateLimitDefaultSeconds",
+      TOPOLOGY_LOCK_ACTION_COOLDOWN_DEFAULT_SECONDS);
+  cJSON_AddNumberToObject(
+      root,
+      "rateLimitMinimumSeconds",
+      TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS);
+  cJSON_AddNumberToObject(
+      root,
+      "rateLimitMaximumSeconds",
+      TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS);
+  if (topology_lock_mutex != nullptr &&
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    cJSON_AddNumberToObject(
+        root,
+        "topologyLockRateLimitSeconds",
+        topology_lock_action_cooldown_seconds);
+    cJSON_AddNumberToObject(
+        root,
+        "topologyLockNextActionInSeconds",
+        (topology_lock_remaining_ms_locked() + 999) / 1000);
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  return root;
+}
+
+static esp_err_t device_configuration_get_handler(httpd_req_t *request) {
+  return send_cjson(request, device_configuration_json());
+}
+
+static esp_err_t device_configuration_post_handler(httpd_req_t *request) {
+  std::string body;
+  if (!read_request_json(request, body, 512)) {
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "A Topology Lock rate limit in seconds is required.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const cJSON *value = payload != nullptr
+                           ? cJSON_GetObjectItemCaseSensitive(
+                                 payload, "topologyLockRateLimitSeconds")
+                           : nullptr;
+  const bool integer = cJSON_IsNumber(value) &&
+                       value->valuedouble == static_cast<double>(value->valueint);
+  if (!integer || value->valueint < static_cast<int>(TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS) ||
+      value->valueint > static_cast<int>(TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS)) {
+    cJSON_Delete(payload);
+    return send_error_json(
+        request,
+        "400 Bad Request",
+        "Topology Lock rate limit must be an integer from 10 to 86400 seconds.");
+  }
+  const uint32_t requested = static_cast<uint32_t>(value->valueint);
+  cJSON_Delete(payload);
+  if (!set_topology_lock_cooldown_seconds(requested)) {
+    return send_error_json(
+        request,
+        "500 Internal Server Error",
+        "The Topology Lock rate limit could not be saved.");
+  }
+  return send_cjson(request, device_configuration_json());
 }
 
 static void add_parent_steering_health_json(cJSON *root) {
@@ -6220,6 +6433,10 @@ static void start_server() {
   register_handler("/api/topology", HTTP_GET, topology_handler);
   register_handler("/api/refresh", HTTP_POST, refresh_handler);
   register_handler("/api/connect", HTTP_POST, connect_handler);
+  register_handler(
+      "/api/device-configuration", HTTP_GET, device_configuration_get_handler);
+  register_handler(
+      "/api/device-configuration", HTTP_POST, device_configuration_post_handler);
   register_handler("/api/node-capabilities", HTTP_GET, capabilities_handler);
   register_handler("/api/node-sysinfo", HTTP_GET, node_sysinfo_handler);
   register_handler("/api/node-radio-info", HTTP_GET, node_radio_info_handler);
@@ -6277,6 +6494,7 @@ static void setup(
       static_cast<unsigned>(meshscope_web_assets::ASSET_COUNT),
       meshscope_web_assets::SOURCE_SHA256,
       static_cast<unsigned>(external_memory_size()));
+  load_topology_lock_cooldown_seconds();
   load_topology_lock();
   load_mqtt_mode();
   load_parent_steering_health();
@@ -6328,6 +6546,16 @@ static bool topology_lock_active_copy() {
   if (topology_lock_mutex != nullptr &&
       xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     value = topology_lock_enabled;
+    xSemaphoreGive(topology_lock_mutex);
+  }
+  return value;
+}
+
+static float topology_lock_cooldown_seconds_copy() {
+  float value = TOPOLOGY_LOCK_ACTION_COOLDOWN_DEFAULT_SECONDS;
+  if (topology_lock_mutex != nullptr &&
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    value = static_cast<float>(topology_lock_action_cooldown_seconds);
     xSemaphoreGive(topology_lock_mutex);
   }
   return value;
@@ -6479,6 +6707,16 @@ inline std::string meshscope_edge_last_update() {
 
 inline bool meshscope_edge_topology_lock_active() {
   return meshscope_edge::topology_lock_active_copy();
+}
+
+inline float meshscope_edge_topology_lock_rate_limit_seconds() {
+  return meshscope_edge::topology_lock_cooldown_seconds_copy();
+}
+
+inline void meshscope_edge_set_topology_lock_rate_limit_seconds(float seconds) {
+  if (!std::isfinite(seconds)) return;
+  meshscope_edge::set_topology_lock_cooldown_seconds(
+      static_cast<uint32_t>(std::lround(seconds)));
 }
 
 inline float meshscope_edge_topology_lock_issues() {

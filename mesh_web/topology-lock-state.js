@@ -12,7 +12,7 @@
     recoveryEnabled: true,
     recoveryAvailable: false,
     lockedAt: "",
-    cooldownSeconds: 300,
+    cooldownSeconds: 60,
     nextActionInSeconds: 0,
     confirmationsRequired: 3,
     monitorIntervalSeconds: 10,

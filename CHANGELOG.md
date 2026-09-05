@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Made the Topology Lock automatic MQTT action limit configurable from 10 to
+  86,400 seconds under **Device configuration** and as a Home Assistant number
+  entity. The ESP32 persists the value in NVS and defaults new installations to
+  60 seconds.
+- Changed multi-node recovery scheduling to follow the saved hierarchy from
+  the gateway toward the leaves. Eligible nodes at the same depth retain fair
+  round-robin ordering, and children whose desired Parent is offline remain
+  skipped without consuming the global action slot.
 - Fixed wired-backhaul topology semantics. MeshScope now renders Ethernet
   separately from `5GH`/`5GL`, labels Linksys's LLDP-derived wired Parent as
   unverified, and lets a saved Topology Lock mapping provide an explicit

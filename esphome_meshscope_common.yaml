@@ -69,6 +69,22 @@ binary_sensor:
     icon: mdi:lan-connect
     lambda: return meshscope_edge_mqtt_parent_available();
 
+number:
+  - platform: template
+    name: Topology Lock Action Rate Limit
+    id: meshscope_topology_lock_rate_limit
+    icon: mdi:timer-cog-outline
+    entity_category: config
+    unit_of_measurement: s
+    min_value: 10
+    max_value: 86400
+    step: 1
+    mode: box
+    lambda: return meshscope_edge_topology_lock_rate_limit_seconds();
+    set_action:
+      - lambda: meshscope_edge_set_topology_lock_rate_limit_seconds(x);
+    update_interval: 10s
+
 sensor:
   - platform: template
     name: Online Mesh Nodes

@@ -62,8 +62,8 @@ client identifier are deliberately excluded from this repository image._
    entities. There is no MeshScope cloud service or analytics endpoint.
 4. **Recover only when enabled.** Topology Lock compares saved and current
    parents. After three confirmed mismatches, and only when the desired parent
-   is online and the five-minute cooldown is clear, it queues one exact local
-   MQTT `BH/config` request and requires two fresh topology generations to
+   is online and the configured action rate limit is clear, it queues one exact
+   local MQTT `BH/config` request and requires two fresh topology generations to
    verify success. For a non-primary Parent, the child uses the opposite radio
    from that Parent's own uplink (`5GH` → `5GL`, or `5GL` → `5GH`).
 5. **Probe before writing.** An owner-built narrow-ACL firmware image exposes
@@ -174,7 +174,7 @@ flowchart LR
     Compare -->|"Mismatch"| Confirm["Confirm across 3 snapshots"]
     Confirm --> Parent{"Desired parent online?"}
     Parent -->|"No"| Wait["Wait; exact move cannot help"]
-    Parent -->|"Yes"| Cooldown{"5-minute cooldown clear?"}
+    Parent -->|"Yes"| Cooldown{"Configured action limit clear?"}
     Cooldown -->|"No"| Wait
     Cooldown -->|"Yes"| Radio["Choose opposite Parent uplink radio"]
     Radio --> MQTT["Publish exact MQTT BH/config"]
@@ -184,9 +184,10 @@ flowchart LR
 
 The node card changes color with compliance state and shows the next eligible
 recovery countdown directly on the topology. Recovery requires three
-confirmed snapshots, an online desired parent, and a global five-minute
-cooldown. A topology mismatch is handled with MQTT first; it never restarts
-the mismatched child. The separate Parent-health guard described below may
+confirmed snapshots, an online desired parent, and a configurable global
+action limit (60 seconds by default). A topology mismatch is handled with MQTT
+first; it never restarts the mismatched child. The separate Parent-health guard
+described below may
 restart a non-primary requested Parent only after repeated exact MQTT moves
 were published but could not be verified. Recovery never steers the primary
 node, an offline or wired child, or a child whose saved Parent is offline.
@@ -280,8 +281,8 @@ items remain pending, so C6 stays experimental.
 
 ESP32-C5 validation covered USB and OTA installation, full Client/STA mode,
 direct dashboard/API access without a login gate, persistent Topology Lock
-state, the three-snapshot mismatch gate, a single-node restart, the five-minute
-global cooldown, card colors, and the visible `MM:SS` countdown. Household
+state, the three-snapshot mismatch gate, a single-node restart, the configurable
+global action limit, card colors, and the visible `MM:SS` countdown. Household
 node names, addresses, and credentials are intentionally omitted.
 
 ### 1. Create a private local configuration
@@ -610,10 +611,13 @@ The ESP32 stores the lock in non-volatile storage and evaluates it after each
 successful ten-second topology collection. An automatic MQTT move is allowed
 only when Auto capability probing has succeeded (or Force on was selected),
 the wireless child and its saved parent are both online, and the mismatch has
-appeared in three consecutive snapshots. Automatic actions share a global
-five-minute cooldown, so at most one node can be moved in that period. If
-several nodes remain mismatched, the scheduler rotates among them instead of
-repeatedly favoring one node.
+appeared in three consecutive snapshots. Automatic actions share a persistent,
+globally configurable rate limit (60 seconds by default), so at most one node
+can be moved in that period. Change it under **Device configuration** in the
+dashboard or through the Home Assistant **Topology Lock Action Rate Limit**
+number entity. When several nodes remain mismatched, the scheduler restores the
+saved hierarchy from the gateway toward the leaves; nodes at the same depth
+rotate fairly.
 Recent attempts are displayed below the map, and Home Assistant receives
 **Topology Lock Active**, **Topology Lock Issues**, and **Topology Lock
 Summary** entities.
@@ -739,7 +743,7 @@ Parent-health target must independently pass the repeated-published-failure,
 online, non-primary, zero-online-mesh-children, and five-minute cooldown gates.
 Topology Lock first uses only the exact
 `network/<CHILD_UUID>/BH/config` MQTT topic after saved-parent-online,
-three-snapshot confirmation, radio, cycle, and global five-minute cooldown
+three-snapshot confirmation, radio, cycle, and configured global action-limit
 checks. Reset, firmware updates, and all other JNAP mutations are rejected
 before a router request is generated.
 
