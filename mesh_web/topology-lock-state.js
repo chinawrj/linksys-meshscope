@@ -16,7 +16,7 @@
     nextActionInSeconds: 0,
     confirmationsRequired: 3,
     monitorIntervalSeconds: 10,
-    summary: { total: 0, correct: 0, mismatch: 0, blocked: 0, offline: 0, wired: 0 },
+    summary: { total: 0, correct: 0, mismatch: 0, blocked: 0, offline: 0, wired: 0, unknown: 0 },
     nodes: [],
     history: [],
   });
@@ -193,6 +193,12 @@
           tone: "lock-blocked",
           label: `Waiting for ${item.expectedParentName}`,
           detail: "Expected parent is offline · MQTT move blocked",
+        };
+      case "data-unavailable":
+        return {
+          tone: "lock-offline",
+          label: "Live Parent unverified",
+          detail: `Linksys is rebuilding backhaul data · Desired ${item.expectedParentName}`,
         };
       default:
         return { tone: "lock-offline", label: "Node offline", detail: `Expected ${item.expectedParentName}` };

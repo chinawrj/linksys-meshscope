@@ -40,6 +40,10 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         for fragment in (
             "api:",
             "reboot_timeout: 5min",
+            "fast_connect:",
+            "enabled: true",
+            "storage: flash",
+            "post_connect_roaming: false",
             "encryption:",
             "ota:",
             "platform: sntp",
@@ -302,6 +306,45 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         ):
             self.assertIn(fragment, band)
         self.assertIn('"bandReason"', self.edge)
+
+    def test_invalid_backhaul_generation_serves_read_only_degraded_snapshot(self):
+        collect = self.edge.split("static bool collect_snapshot(", 1)[1].split(
+            "static void mqtt_set_capability", 1
+        )[0]
+        self.assertIn('strcmp(action, "nodes/diagnostics/GetBackhaulInfo")', collect)
+        self.assertIn("!response_is_ok(response)", collect)
+        self.assertIn("!accumulate_backhaul(response, stats_accumulator)", collect)
+        self.assertIn("caching a read-only degraded topology", collect)
+        self.assertNotIn("accumulate_neighbor_presence", collect)
+        self.assertIn("cJSON_GetArraySize(connections) > 0", self.edge)
+        self.assertIn("candidate.degraded = !backhaul_report_ok", collect)
+        collector = self.edge.split("static void collector_task(void *)", 1)[1].split(
+            "static esp_err_t send_json", 1
+        )[0]
+        self.assertIn("snapshot_actionable = !snapshot.degraded", collector)
+        self.assertIn("snapshot_updated && snapshot_actionable", collector)
+
+    def test_invalid_backhaul_report_does_not_trigger_active_perf_refresh(self):
+        self.assertNotIn("request_backhaul_report_recovery", self.edge)
+        self.assertNotIn("BACKHAUL_REPORT_RECOVERY_INTERVAL_MS", self.edge)
+
+    def test_ha_lock_issues_are_unknown_without_actionable_topology(self):
+        issue_count = self.edge.split(
+            "static int topology_lock_issue_count_copy()", 1
+        )[1].split("static std::string topology_lock_summary_copy()", 1)[0]
+        self.assertIn("!router_connected.load", issue_count)
+        self.assertIn("return -1", issue_count)
+        wrapper = self.edge.split(
+            "inline float meshscope_edge_topology_lock_issues()", 1
+        )[1].split("inline std::string meshscope_edge_topology_lock_summary()", 1)[0]
+        self.assertIn("issues < 0 ? NAN", wrapper)
+
+    def test_wifi_reconnect_prefers_the_last_working_mesh_ap(self):
+        wifi = self.common.split("\nwifi:\n", 1)[1].split("\napi:\n", 1)[0]
+        self.assertIn("fast_connect:", wifi)
+        self.assertIn("enabled: true", wifi)
+        self.assertIn("storage: flash", wifi)
+        self.assertIn("post_connect_roaming: false", wifi)
 
     def test_mqtt_cycle_guard_uses_locked_parent_for_wired_nodes(self):
         preflight = self.edge.split("static bool mqtt_preflight(\n", 2)[2].split(

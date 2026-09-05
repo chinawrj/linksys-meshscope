@@ -138,3 +138,13 @@ test("shows a blocked state when the desired parent is offline", () => {
   assert.match(view.label, /Studio/);
   assert.match(view.detail, /blocked/i);
 });
+
+test("labels degraded topology data as unverified instead of mismatched", () => {
+  const view = MeshTopologyLock.presentation({
+    status: "data-unavailable",
+    expectedParentName: "Studio",
+  });
+  assert.equal(view.tone, "lock-offline");
+  assert.match(view.label, /unverified/i);
+  assert.match(view.detail, /rebuilding/i);
+});

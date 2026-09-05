@@ -140,6 +140,7 @@ struct Snapshot {
   std::string updated_at;
   MeshStats stats;
   bool ready = false;
+  bool degraded = false;
 };
 
 struct HttpCapture {
@@ -2797,9 +2798,17 @@ static bool calculate_device_stats(
           observed.id = id;
           observed.name = device_name(device);
           observed.authority = authority;
-          observed.online = authority || accumulator.backhaul_ids.count(id) != 0;
           const cJSON *connections =
               cJSON_GetObjectItemCaseSensitive(device, "connections");
+          // GetNodeNeighborInfo is a cached radio scan and can retain an
+          // offline Node for minutes.  Device-list connections, unlike that
+          // report, disappear when Linksys considers an infrastructure Node
+          // offline, so they are the fallback liveness authority while the
+          // aggregate BackhaulInfo wrapper is broken.
+          observed.online =
+              authority || accumulator.backhaul_ids.count(id) != 0 ||
+              (cJSON_IsArray(connections) &&
+               cJSON_GetArraySize(connections) > 0);
           if (cJSON_IsArray(connections)) {
             const cJSON *connection = nullptr;
             cJSON_ArrayForEach(connection, connections) {
@@ -3753,7 +3762,8 @@ static void add_topology_lock_history_locked(TopologyLockAction action) {
 }
 
 static cJSON *topology_lock_json(
-    const std::vector<NodeObservation> &nodes) {
+    const std::vector<NodeObservation> &nodes,
+    bool observations_current = true) {
   cJSON *root = cJSON_CreateObject();
   if (root == nullptr) return nullptr;
   if (topology_lock_mutex == nullptr ||
@@ -3768,7 +3778,9 @@ static cJSON *topology_lock_json(
   cJSON_AddStringToObject(
       root,
       "state",
-      topology_lock_enabled ? "monitoring" : "unlocked");
+      topology_lock_enabled
+          ? (observations_current ? "monitoring" : "waiting-data")
+          : "unlocked");
   cJSON_AddStringToObject(root, "lockedAt", topology_lock_saved_at.c_str());
   MqttSteeringMode recovery_mode = MqttSteeringMode::AUTO;
   bool recovery_available = false;
@@ -3807,6 +3819,7 @@ static cJSON *topology_lock_json(
   int blocked = 0;
   int offline = 0;
   int wired = 0;
+  int unknown = 0;
   cJSON *items = cJSON_AddArrayToObject(root, "nodes");
   for (const auto &mapping : topology_lock_mappings) {
     const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
@@ -3817,7 +3830,10 @@ static cJSON *topology_lock_json(
             : 0;
     const bool steering = mqtt_operation_active_for_node(mapping.node_id);
     const char *status = "correct";
-    if (node == nullptr || !node->online) {
+    if (!observations_current) {
+      status = "data-unavailable";
+      unknown++;
+    } else if (node == nullptr || !node->online) {
       status = "node-offline";
       offline++;
     } else if (wired_connection_type(node->connection_type)) {
@@ -3893,6 +3909,7 @@ static cJSON *topology_lock_json(
   cJSON_AddNumberToObject(summary, "blocked", blocked);
   cJSON_AddNumberToObject(summary, "offline", offline);
   cJSON_AddNumberToObject(summary, "wired", wired);
+  cJSON_AddNumberToObject(summary, "unknown", unknown);
   cJSON *history = cJSON_AddArrayToObject(root, "history");
   for (const auto &action : topology_lock_history) {
     cJSON *item = cJSON_CreateObject();
@@ -4147,6 +4164,7 @@ static bool collect_snapshot(
   candidate.entries.reserve(sizeof(READ_ACTIONS) / sizeof(READ_ACTIONS[0]));
   bool devices_ok = false;
   bool stats_ok = true;
+  bool backhaul_report_ok = true;
   StatsAccumulator stats_accumulator;
   for (const char *action : READ_ACTIONS) {
     const bool is_device_list =
@@ -4194,7 +4212,18 @@ static bool collect_snapshot(
           stats_ok;
     } else if (
         strcmp(action, "nodes/diagnostics/GetBackhaulInfo") == 0) {
-      stats_ok = accumulate_backhaul(response, stats_accumulator) && stats_ok;
+      // Linksys can return _ErrorUnexpected here while a legacy node is
+      // rebooting or its wireless backhaul is reconverging.  Cache the other
+      // successful actions as a read-only degraded generation: device-list
+      // connections remain valid liveness evidence, while all Parent
+      // relationships stay explicitly unverified.
+      if (!response_is_ok(response) ||
+          !accumulate_backhaul(response, stats_accumulator)) {
+        ESP_LOGW(
+            TAG,
+            "BackhaulInfo was incomplete; caching a read-only degraded topology while Linksys rebuilds the report");
+        backhaul_report_ok = false;
+      }
     } else if (strcmp(action, "devicelist/GetDevices3") == 0) {
       devices_ok = response_is_ok(response);
       stats_ok =
@@ -4250,6 +4279,7 @@ static bool collect_snapshot(
   }
   candidate.updated_at = iso_timestamp();
   candidate.ready = true;
+  candidate.degraded = !backhaul_report_ok;
   return true;
 }
 
@@ -4632,6 +4662,7 @@ static void collector_task(void *) {
   while (true) {
     std::vector<NodeObservation> lock_observations;
     bool snapshot_updated = false;
+    bool snapshot_actionable = false;
     uint32_t snapshot_generation = 0;
     if (!wifi_connected()) {
       router_connected.store(false, std::memory_order_release);
@@ -4654,9 +4685,10 @@ static void collector_task(void *) {
         lock_observations = candidate.nodes;
         snapshot = std::move(candidate);
         snapshot_generation = snapshot.generation;
+        snapshot_actionable = !snapshot.degraded;
         xSemaphoreGive(snapshot_mutex);
         snapshot_updated = true;
-        router_connected.store(true, std::memory_order_release);
+        router_connected.store(snapshot_actionable, std::memory_order_release);
         ESP_LOGI(
             TAG,
             "Topology generation %u cached; free=%u external=%u",
@@ -4669,7 +4701,7 @@ static void collector_task(void *) {
       router_connected.store(false, std::memory_order_release);
     }
     if (memory_locked) xSemaphoreGive(memory_mutex);
-    if (snapshot_updated) {
+    if (snapshot_updated && snapshot_actionable) {
       mqtt_verify_operation(lock_observations, snapshot_generation);
       evaluate_parent_steering_health(lock_observations);
       evaluate_topology_lock(lock_observations);
@@ -4729,16 +4761,19 @@ static esp_err_t status_handler(httpd_req_t *request) {
   uint32_t generation = 0;
   std::string cached_at;
   bool ready = false;
+  bool degraded = false;
   if (xSemaphoreTake(snapshot_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
     generation = snapshot.generation;
     cached_at = snapshot.updated_at;
     ready = snapshot.ready;
+    degraded = snapshot.degraded;
     xSemaphoreGive(snapshot_mutex);
   }
   const bool connected = router_connected.load(std::memory_order_acquire);
   cJSON *root = cJSON_CreateObject();
   cJSON_AddBoolToObject(root, "connected", connected);
   cJSON_AddBoolToObject(root, "snapshotReady", ready);
+  cJSON_AddBoolToObject(root, "topologyDegraded", degraded);
   cJSON_AddBoolToObject(root, "demo", false);
   cJSON_AddBoolToObject(root, "managedConnection", true);
   cJSON_AddStringToObject(root, "router", router_host.c_str());
@@ -4830,7 +4865,7 @@ static esp_err_t topology_handler(httpd_req_t *request) {
   httpd_resp_set_hdr(request, "Connection", "close");
   httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
   const std::string ip = edge_ip();
-  cJSON *lock = topology_lock_json(snapshot.nodes);
+  cJSON *lock = topology_lock_json(snapshot.nodes, !snapshot.degraded);
   char *serialized_lock = cJSON_PrintUnformatted(lock);
   cJSON_Delete(lock);
   cJSON *phy_links = backhaul_phy_json();
@@ -4842,6 +4877,8 @@ static esp_err_t topology_handler(httpd_req_t *request) {
       "\",\"edgeAddress\":\"" + ip +
       "\",\"routerConnected\":" +
       (router_connected.load(std::memory_order_acquire) ? "true" : "false") +
+      ",\"topologyDegraded\":" +
+      (snapshot.degraded ? "true" : "false") +
       ",\"generation\":" + std::to_string(snapshot.generation) +
       ",\"clientDetails\":\"" +
       client_details_name(active_client_details) +
@@ -6222,7 +6259,9 @@ static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
 static esp_err_t topology_lock_get_handler(httpd_req_t *request) {
   return send_cjson(
       request,
-      topology_lock_json(current_node_observations()));
+      topology_lock_json(
+          current_node_observations(),
+          router_connected.load(std::memory_order_acquire)));
 }
 
 static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
@@ -6298,7 +6337,11 @@ static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
           "The topology lock could not be saved.");
     }
     App.wake_loop_threadsafe();
-    return send_cjson(request, topology_lock_json(observations));
+    return send_cjson(
+        request,
+        topology_lock_json(
+            observations,
+            router_connected.load(std::memory_order_acquire)));
   }
 
   const cJSON *nodes = cJSON_GetObjectItemCaseSensitive(payload, "nodes");
@@ -6384,7 +6427,11 @@ static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
       TAG,
       "Topology lock applied to %u child nodes",
       static_cast<unsigned>(applied_count));
-  return send_cjson(request, topology_lock_json(observations));
+  return send_cjson(
+      request,
+      topology_lock_json(
+          observations,
+          router_connected.load(std::memory_order_acquire)));
 }
 
 static esp_err_t restart_handler(httpd_req_t *request) {
@@ -6654,6 +6701,7 @@ static float topology_lock_cooldown_seconds_copy() {
 }
 
 static int topology_lock_issue_count_copy() {
+  if (!router_connected.load(std::memory_order_acquire)) return -1;
   const std::vector<NodeObservation> nodes = current_node_observations();
   int issues = 0;
   if (topology_lock_mutex != nullptr &&
@@ -6676,6 +6724,7 @@ static int topology_lock_issue_count_copy() {
 static std::string topology_lock_summary_copy() {
   const int issues = topology_lock_issue_count_copy();
   if (!topology_lock_active_copy()) return "Recovery off";
+  if (issues < 0) return "Monitoring paused · waiting for valid topology";
   if (issues == 0) return "Monitoring · all parents correct";
   char output[64];
   snprintf(
@@ -6812,8 +6861,8 @@ inline void meshscope_edge_set_topology_lock_rate_limit_seconds(float seconds) {
 }
 
 inline float meshscope_edge_topology_lock_issues() {
-  return static_cast<float>(
-      meshscope_edge::topology_lock_issue_count_copy());
+  const int issues = meshscope_edge::topology_lock_issue_count_copy();
+  return issues < 0 ? NAN : static_cast<float>(issues);
 }
 
 inline std::string meshscope_edge_topology_lock_summary() {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Publish a clearly labeled, read-only degraded topology when Linksys returns
+  an invalid `GetBackhaulInfo` response during node reboot or mesh
+  reconvergence. Device-list connections keep Node and Client liveness useful,
+  while live Parent relationships remain explicitly unverified and all
+  automatic steering is paused. MeshScope does not automatically invoke
+  Linksys' active `RefreshSlaveBackhaulData` performance test.
+- Show every offline Node in the topology's horizontally scrollable offline
+  strip instead of hiding entries behind a non-interactive “more” count.
+- Prefer ESPHome's persisted fast-connect path after the first successful Wi-Fi
+  association. This reduces full beacon scans during mesh reconvergence and
+  avoids the ESP32-C5 driver path observed crashing in `scan_parse_beacon`.
+
 - Fixed Topology Lock round-robin starvation during long MQTT verification.
   The scheduler now advances and persists its per-depth cursor only after a
   request is actually queued; scans blocked by another active operation no

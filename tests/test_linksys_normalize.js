@@ -142,6 +142,57 @@ test("normalizes only ESP32 envelopes and preserves Python responses", () => {
   assert.equal(result.meta.router, "10.0.0.1");
 });
 
+test("renders a read-only desired layout while Linksys rebuilds BackhaulInfo", () => {
+  const degradedRaw = structuredClone(raw);
+  degradedRaw["nodes/diagnostics/GetBackhaulInfo"] = {
+    result: "_ErrorUnexpected",
+    error: "ap_bssid is nil",
+  };
+  degradedRaw["devicelist/GetDevices3"].output.devices.find(
+    (item) => item.deviceID === "child",
+  ).connections = [{ macAddress: "00:11:22:33:44:55", ipAddress: "10.0.0.2" }];
+  const result = normalize("10.0.0.1", degradedRaw, {
+    routerConnected: false,
+    topologyDegraded: true,
+    topologyLock: {
+      enabled: true,
+      nodes: [{ nodeId: "child", expectedParentId: "main" }],
+    },
+  });
+  const child = result.nodes.find((item) => item.id === "child");
+  assert.equal(result.meta.topologyDegraded, true);
+  assert.equal(child.online, true);
+  assert.equal(child.parentId, "main");
+  assert.equal(child.parentName, "Main");
+  assert.equal(child.parentSource, "topology-lock-degraded-assignment");
+  assert.equal(child.parentConfidence, "desired-unverified");
+});
+
+test("does not treat a stale neighbor scan as online in degraded mode", () => {
+  const degradedRaw = structuredClone(raw);
+  degradedRaw["nodes/diagnostics/GetBackhaulInfo"] = {
+    result: "_ErrorUnexpected",
+    error: "ap_bssid is nil",
+  };
+  degradedRaw["devicelist/GetDevices3"].output.devices.find(
+    (item) => item.deviceID === "child",
+  ).connections = [];
+  degradedRaw["nodes/diagnostics/GetNodeNeighborInfo"] = response({
+    nodeNeighborDevices: [{ deviceUUID: "child", neighborNodes: [] }],
+  });
+  const result = normalize("10.0.0.1", degradedRaw, {
+    routerConnected: false,
+    topologyDegraded: true,
+  });
+  assert.equal(result.nodes.find((item) => item.id === "child").online, false);
+  assert.equal(result.nodes.find((item) => item.id === "child").parentId, null);
+  assert.equal(
+    result.nodes.find((item) => item.id === "child").parentSource,
+    "linksys-backhaul-unavailable",
+  );
+  assert.equal(result.nodes.find((item) => item.id === "child").speedMbps, null);
+});
+
 test("uses a saved wired layout instead of trusting an ambiguous LLDP parent", () => {
   const wiredRaw = structuredClone(raw);
   wiredRaw["devicelist/GetDevices3"].output.devices.push({

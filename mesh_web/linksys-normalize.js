@@ -89,6 +89,8 @@
     const deviceInfo = outputOf(raw, "core/GetDeviceInfo");
     const deviceOutput = outputOf(raw, "devicelist/GetDevices3");
     const devices = (deviceOutput.devices || []).filter((item) => item && typeof item === "object");
+    const backhaulResponse = raw?.["nodes/diagnostics/GetBackhaulInfo"] || {};
+    const topologyDegraded = edgeMeta.topologyDegraded === true || backhaulResponse.result !== "OK";
     const backhaul = (outputOf(raw, "nodes/diagnostics/GetBackhaulInfo").backhaulDevices || [])
       .filter((item) => item && typeof item === "object");
     const mainConnections = (
@@ -175,7 +177,7 @@
       // stale). A saved Topology Lock mapping therefore doubles as the user's
       // explicit wired-layout assignment. It is display-only for Ethernet and
       // never triggers MQTT wireless steering.
-      const lockedParentId = isWired
+      const lockedParentId = (isWired || topologyDegraded)
         ? lockedParentById.get(String(deviceId).toUpperCase()) || null
         : null;
       const parentId = lockedParentId || reportedParentId;
@@ -193,7 +195,11 @@
         location: props.userDeviceLocation || friendlyName(device),
         role: device.isAuthority ? "Primary node" : "Child node",
         isAuthority: Boolean(device.isAuthority),
-        online: Boolean(device.isAuthority || backhaulById.has(deviceId)),
+        online: Boolean(
+          device.isAuthority ||
+          backhaulById.has(deviceId) ||
+          (topologyDegraded && deviceConnections.length),
+        ),
         model: model.modelNumber || "Linksys Velop",
         description: model.description || "",
         hardwareVersion: model.hardwareVersion ?? null,
@@ -207,12 +213,20 @@
         reportedParentIpAddress: reportedParentIp ?? null,
         reportedParentId,
         parentSource: lockedParentId
-          ? "topology-lock-wired-assignment"
+          ? topologyDegraded
+            ? "topology-lock-degraded-assignment"
+            : "topology-lock-wired-assignment"
+          : topologyDegraded
+            ? "linksys-backhaul-unavailable"
           : isWired
             ? "linksys-lldp-reported"
             : "linksys-parent-ip",
         parentConfidence: lockedParentId
-          ? "manual"
+          ? topologyDegraded
+            ? "desired-unverified"
+            : "manual"
+          : topologyDegraded
+            ? "unavailable"
           : isWired
             ? "firmware-reported-unverified"
             : "firmware-reported",
@@ -319,6 +333,7 @@
         edgeHosted: true,
         edgeAddress: edgeMeta.edgeAddress || null,
         routerConnected: edgeMeta.routerConnected !== false,
+        topologyDegraded,
         clientDetails: edgeMeta.clientDetails || "full",
         topologyLock: edgeMeta.topologyLock || null,
         backhaulPhyLinks: edgeMeta.backhaulPhyLinks || [],

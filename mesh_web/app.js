@@ -76,6 +76,7 @@ function compactNumber(value, digits = 0) {
 }
 
 function formatLinkRate(value) {
+  if (value === null || value === undefined || value === "") return "—";
   const rate = Number(value);
   if (!Number.isFinite(rate)) return "—";
   if (rate >= 1000) return `${compactNumber(rate / 1000, 2)} Gbps`;
@@ -197,9 +198,12 @@ function updateRefreshLabel() {
   }
   chip.classList.toggle("demo", state.topology?.meta?.demo === true);
   const routerOffline = state.topology?.meta?.routerConnected === false;
-  chip.classList.toggle("error", routerOffline || status.mode === "error");
-  $("#liveText").textContent = routerOffline
-    ? "Router offline · Last cached data"
+  const topologyDegraded = state.topology?.meta?.topologyDegraded === true;
+  chip.classList.toggle("error", (routerOffline && !topologyDegraded) || status.mode === "error");
+  $("#liveText").textContent = topologyDegraded
+    ? "Topology rebuilding · Read-only"
+    : routerOffline
+      ? "Router offline · Last cached data"
     : state.topology?.meta?.demo
       ? `Demo · ${status.text}`
       : status.text;
@@ -506,9 +510,12 @@ function healthScore(data) {
 function renderSummary(data) {
   const { summary, network, meta } = data;
   const routerOffline = meta.routerConnected === false;
+  const topologyDegraded = meta.topologyDegraded === true;
   $("#routerLabel").textContent = meta.router;
   $("#heroCopy").textContent = meta.demo
     ? "Explore a complete offline topology, backhaul quality, and Client/STA interactions without connecting to or changing a router."
+    : topologyDegraded
+      ? "Linksys is rebuilding an incomplete backhaul report. MeshScope is showing known Nodes and the saved desired layout; live Parent relationships remain unverified."
     : routerOffline
       ? "The router is currently unreachable. MeshScope is showing the last complete topology and will update automatically after recovery."
       : meta.clientDetails === "nodes-only"
@@ -516,12 +523,16 @@ function renderSummary(data) {
       : "See every Velop node, backhaul link, and connected device in real time. Your data stays between this device and your router.";
   $("#networkStatus").textContent = meta.demo
     ? "Offline demo data"
+    : topologyDegraded
+      ? "Topology rebuilding"
     : routerOffline
       ? "Router offline"
       : network.wanStatus === "Connected"
         ? "Operating normally"
         : network.wanStatus || "Status unknown";
-  $("#lastUpdated").textContent = routerOffline
+  $("#lastUpdated").textContent = topologyDegraded
+    ? `Degraded snapshot at ${formatTime(meta.updatedAt)}`
+    : routerOffline
     ? `Last cached at ${formatTime(meta.updatedAt)}`
     : `${meta.demo ? "No router connection · " : ""}Updated at ${formatTime(meta.updatedAt)}`;
   $("#statNodes").textContent = `${summary.nodesOnline}/${summary.nodesTotal}`;
@@ -716,6 +727,22 @@ function renderTopologyLock() {
     return;
   }
   const summary = lock.summary;
+  const unknown = Number(summary.unknown || 0);
+  if (unknown) {
+    recoveryChip.textContent = "Recovery: Paused · Waiting for Linksys data";
+    recoveryChip.className = "topology-recovery-chip unavailable";
+    $("#topologyLockIcon").textContent = "◇";
+    $("#topologyLockTitle").textContent = "Live Parent relationships are unverified";
+    $("#topologyLockMode").textContent = "PAUSED";
+    $("#topologyLockDescription").textContent =
+      "Linksys is rebuilding its backhaul report. The saved desired layout remains visible, but MeshScope will not steer or count mismatches until fresh Parent data returns.";
+    $("#editTopologyLockButton").textContent = "Edit after live data returns";
+    $("#editTopologyLockButton").disabled = true;
+    $("#topologyLockStats").innerHTML =
+      `<span class="blocked"><strong>${unknown}</strong> awaiting live Parent data</span>`;
+    return;
+  }
+  $("#editTopologyLockButton").disabled = false;
   const attention = Number(summary.mismatch || 0) + Number(summary.blocked || 0) + Number(summary.offline || 0);
   const remaining = topologyLockRemaining();
   recoveryChip.textContent = summary.mismatch
@@ -1007,8 +1034,9 @@ function renderTopology(data) {
       topologyLockRemaining(),
       state.topologyLock.confirmationsRequired,
     );
-    const currentParentName = node.actualParentName || node.parentName || "Main";
-    const desiredParentName = node.parentName || "Main";
+    const parentUnavailable = node.parentSource === "linksys-backhaul-unavailable";
+    const currentParentName = node.actualParentName || node.parentName || (parentUnavailable ? "Unknown Parent" : "Main");
+    const desiredParentName = node.parentName || (parentUnavailable ? "Unknown Parent" : "Main");
     const draggable = state.topologyLockEditing && !node.isAuthority;
     const steeringOperation = MeshMqttParentSteering.operationForNode(
       state.parentSteering.operation,
@@ -1042,7 +1070,7 @@ function renderTopology(data) {
         <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "No IP")}</div>
         ${node.isAuthority ? "" : state.topologyLockEditing
           ? `<div class="node-parent desired">Desired ↳ ${escapeHtml(desiredParentName)}</div><div class="node-parent current">Current ↳ ${escapeHtml(currentParentName)} · ${escapeHtml(isWired ? "Ethernet · manual layout" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`
-          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(isWired ? node.parentSource === "topology-lock-wired-assignment" ? "Ethernet · manual" : "Ethernet · Linksys report" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`}
+          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || (parentUnavailable ? "Unknown Parent" : "Main"))} · ${escapeHtml(node.parentSource === "topology-lock-degraded-assignment" ? "Desired Parent · live link unverified" : parentUnavailable ? "Live link unverified" : isWired ? node.parentSource === "topology-lock-wired-assignment" ? "Ethernet · manual" : "Ethernet · Linksys report" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`}
         <div class="node-stats">
           <div><span>Clients</span><strong>${node.clientCount}</strong></div>
           <div><span>${node.isAuthority ? "Status" : isWired ? "Ethernet link" : "Hop throughput"}</span><strong>${node.isAuthority ? "Online" : formatLinkRate(node.speedMbps)}</strong></div>
@@ -1058,7 +1086,6 @@ function renderTopology(data) {
   }
   if (offline.length) {
     html += `<div class="offline-strip"><strong>${offline.length} offline nodes</strong>${offline
-      .slice(0, 5)
       .map((node) => {
         const lockItem = MeshTopologyLock.statusForNode(state.topologyLock, node.id);
         const lockView = MeshTopologyLock.presentation(
@@ -1068,7 +1095,7 @@ function renderTopology(data) {
         );
         return `<button class="offline-node-chip text-button ${lockView?.tone || ""}" data-node-id="${escapeHtml(node.id)}" type="button"><b>${escapeHtml(node.name)}</b>${lockView ? `<small>${escapeHtml(lockView.label)}</small>` : ""}</button>`;
       })
-      .join("")}${offline.length > 5 ? `<span>${offline.length - 5} more</span>` : ""}</div>`;
+      .join("")}</div>`;
   }
   map.innerHTML = html;
   applyTopologyLayoutPositions(map);

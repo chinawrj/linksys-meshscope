@@ -35,6 +35,12 @@ wifi:
   ssid: "${meshscope_wifi_ssid}"
   password: "${meshscope_wifi_password}"
   power_save_mode: NONE
+  # Remember the last successful mesh AP and channel. This lets ESPHome try a
+  # direct reconnect before scanning every beacon again when the Linksys mesh
+  # is reconverging (and avoids a known-fragile ESP32-C5 scan path).
+  fast_connect:
+    enabled: true
+    storage: flash
   post_connect_roaming: false
   reboot_timeout: 5min
 
