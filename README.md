@@ -33,7 +33,13 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.7.1 highlight:** The ESP32 dashboard now opens directly without a
+> **v0.8.0 highlight:** A clearer workspace for desktop and iPhone. Switch
+> between **Topology**, **Clients**, and **Recovery**; search nodes or show only
+> those needing attention. Phones open a readable Node list with all the same
+> metrics as the graph. Node details put Clients and Actions one tap away,
+> and graph links now follow each card's actual height.
+>
+> The ESP32 dashboard opens directly without a
 > username, password, unlock screen, or session cookie. Keep it on a trusted
 > LAN or behind an authorized WireGuard peer because reachable users can use
 > every control shown on the page. Topology Lock restores the exact saved
@@ -41,7 +47,7 @@ client identifier are deliberately excluded from this repository image._
 > otherwise idle requested Parent after repeated accepted-but-unverified
 > moves. Every wireless Node now shows both the Linksys measured hop throughput
 > and its latest MQTT PHY sample. The topology automatically uses the browser
-> width and confines scrolling to the map only when complete cards cannot fit.
+> width; Fit graph and Expand view help explore larger networks.
 > Generated Linksys IMG files are never distributed.
 
 > MeshScope is an independent community project and is not affiliated with or
@@ -141,7 +147,45 @@ Client/Device table, client names, MAC addresses, client IP addresses, UUIDs,
 and serial numbers. Use demo mode when an issue report needs a client-list
 example.
 
+## Find your way around
+
+The three workspace buttons keep monitoring separate from configuration.
+Switching views, searching, opening details, and editing a draft never sends a
+steering or restart command.
+
+| What you want to do | Where to go |
+| --- | --- |
+| Understand the mesh structure | **Topology → Graph**; choose **Fit graph** for the whole map or **Expand view** for more room |
+| Find one node quickly | **Topology → Find a node**; search a name, model, IP, parent name, or band |
+| Troubleshoot an issue | Tap **Needs attention**; offline nodes, weak signals, and current recovery problems appear together |
+| See clients attached to a node | Select that node → **Clients**; the Overview tab also previews its clients |
+| Compare all clients | **Clients**; filter by node, Online / All records, or search name, IP, and MAC |
+| Move one wireless node | Select the node → **Actions → Change parent**, then choose the target Parent and radio in Recovery |
+| Measure a hop or restart a node | Select the node → **Actions**; the restart action still applies immediately to the selected node |
+| Keep a desired structure | **Recovery → Edit desired topology**; drag cards on a PC or use the two selectors on a phone |
+| Read technical evidence | Select the node → **Details** for addresses, sample sources/timestamps, firmware, and steering counters |
+| Change automatic action spacing | **Device configuration** at the top right; the unit is seconds and the default is 60 |
+
+On iPhone-sized screens, Topology starts in **Node list**. Cards follow the
+parent hierarchy and retain all graph metrics, including mesh-child counts,
+parent correctness, and live recovery countdowns. The Graph remains available
+with a tap. The Client table becomes vertical cards, so none of its columns
+requires horizontal scrolling. Node details open as a full-width panel.
+
+On a PC, the graph opens by default. **100%** restores readable full-size cards
+after fitting a large network. **Network details** opens the health score and
+gateway information; **Link legend** explains the colors. Healthy steering
+history stays in Details and Recovery rather than appearing as permanent
+warning cards.
+
+Automatic refresh preserves the current workspace, filters, selected detail
+tab, and configuration edits. A degraded or cached snapshot carries an explicit
+notice, and unverified Parent data cannot be used for a manual move.
+
 ## Topology Lock: visual guide
+
+The screenshots below show an earlier dashboard layout. In v0.8.0, open the
+**Recovery** workspace to find the same topology editor and parent controls.
 
 ### 1. See the path that traffic is really taking
 
@@ -581,16 +625,17 @@ marked as a manual layout assignment. Ethernet assignments are never sent to
 the wireless MQTT steering path, and their original Linksys parent IP remains
 visible in Node details for troubleshooting.
 
-The topology panel uses the full browser width and reacts immediately when its
-container changes size. It expands hierarchy spacing on wide screens, compacts
-safe gaps on medium screens, and keeps horizontal scrolling inside the map on
-narrow screens where full 220-pixel diagnostic cards physically cannot fit.
-The rest of the dashboard never becomes wider than the browser viewport.
+The topology panel uses the browser width and reacts when its container changes
+size. It measures each 280-pixel card before placing nodes and connecting their
+centers, so recovery messages cannot displace the link endpoints. **Fit graph**
+fits the complete diagram inside the available map area; **100%** restores the
+original card size. Phones default to a vertical Node list. The rest of the
+dashboard never becomes wider than the browser viewport.
 
 ### Topology Lock
 
-Topology Lock is available on the ESP32-hosted page. Select **Edit & lock
-topology** to capture the current live structure. On a desktop browser, drag a
+Topology Lock is available on the ESP32-hosted page. Open **Recovery** and
+select **Edit & lock topology** to capture the current live structure. On a desktop browser, drag a
 child card onto its desired parent; on touch devices or with a keyboard, use
 the child and desired-parent selectors. The preview keeps the current `5GH` or
 `5GL` link visible beside the proposed relationship. Nothing is sent to a
@@ -618,7 +663,7 @@ dashboard or through the Home Assistant **Topology Lock Action Rate Limit**
 number entity. When several nodes remain mismatched, the scheduler restores the
 saved hierarchy from the gateway toward the leaves; nodes at the same depth
 rotate fairly.
-Recent attempts are displayed below the map, and Home Assistant receives
+Recent attempts are displayed in Recovery, and Home Assistant receives
 **Topology Lock Active**, **Topology Lock Issues**, and **Topology Lock
 Summary** entities.
 
@@ -800,7 +845,8 @@ node --test \
   tests/test_detail_data.js \
   tests/test_node_restart_state.js \
   tests/test_topology_lock_state.js \
-  tests/test_linksys_normalize.js
+  tests/test_linksys_normalize.js \
+  tests/test_workspace.js
 ```
 
 After changing `mesh_web/`, regenerate the assets embedded in the ESP32 build:
@@ -813,6 +859,20 @@ python3 tools/generate_esp32_meshscope_assets.py --check
 CI checks Python and JavaScript syntax, runs every unit test, validates the
 ESPHome configurations, fully compiles and links C3, C5, and C6 firmware, and
 confirms that embedded assets match the web source.
+
+For offline PC / phone UI checks, the synthetic preview below serves the same
+gzip bundle and Content Security Policy as ESP32. All write endpoints are
+local simulations; no router is contacted. Change `--scenario` to `degraded`,
+`offline`, or `nodes-only` to exercise those states.
+
+```bash
+python3 tests/serve_workspace_preview.py --port 8766 --scenario recovery
+```
+
+When updating an existing ESP32 installation, pull the release, regenerate the
+web assets, and rebuild/OTA using **your existing private local YAML**. Updating
+the repository alone does not update the webpage embedded in a running ESP32.
+Do not flash a `.ci.yaml` build; it contains compile-only placeholder settings.
 
 ## Contributing
 

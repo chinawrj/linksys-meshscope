@@ -45,6 +45,7 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+let workspace;
 
 const typeIcons = {
   phone: "▯",
@@ -133,6 +134,7 @@ function openConnectModal() {
     state.modalReturnFocus = document.activeElement;
   }
   $("#connectModal").classList.remove("hidden");
+  workspace?.syncDialogs();
   requestAnimationFrame(() => {
     (state.managedConnection ? $("#connectButton") : $("#passwordInput")).focus();
   });
@@ -142,6 +144,7 @@ function closeConnectModal() {
   if (!state.topology) return;
   $("#connectModal").classList.add("hidden");
   $("#connectError").textContent = "";
+  workspace?.syncDialogs();
   state.modalReturnFocus?.focus?.();
   state.modalReturnFocus = null;
 }
@@ -208,6 +211,7 @@ function updateRefreshLabel() {
       ? `Demo · ${status.text}`
       : status.text;
   updateTopologyLockCountdown();
+  workspace?.updateNotice();
 }
 
 function scheduleAutoRefresh() {
@@ -324,7 +328,8 @@ function renderParentSteering() {
   $("#parentSteeringBand").value = state.parentSteeringBand;
 
   const operationActive = MeshMqttParentSteering.isOperationActive(report.operation);
-  const controlsDisabled = !report.effectiveEnabled || state.parentSteeringBusy || operationActive;
+  const liveDataUnavailable = state.topology?.meta?.topologyDegraded || state.topology?.meta?.routerConnected === false;
+  const controlsDisabled = !report.effectiveEnabled || state.parentSteeringBusy || operationActive || liveDataUnavailable;
   childSelect.disabled = controlsDisabled || !children.length;
   parentSelect.disabled = controlsDisabled || !parents.length;
   $("#parentSteeringBand").disabled = controlsDisabled || !children.length;
@@ -341,7 +346,8 @@ function renderParentSteering() {
       ? "Request in progress"
       : "Move node";
   $("#parentSteeringValidation").textContent =
-    report.effectiveEnabled && !operationActive && children.length ? (validation.valid ? "" : validation.error) : "";
+    liveDataUnavailable ? "Wait for verified live Parent data before moving a node."
+      : report.effectiveEnabled && !operationActive && children.length ? (validation.valid ? "" : validation.error) : "";
 
   const operationView = MeshMqttParentSteering.operationPresentation(report.operation);
   const operationElement = $("#parentSteeringOperation");
@@ -437,6 +443,10 @@ function scheduleParentSteeringRefreshes() {
 async function submitParentSteering(event) {
   event.preventDefault();
   if (state.parentSteeringBusy) return;
+  if (state.topology?.meta?.topologyDegraded || state.topology?.meta?.routerConnected === false) {
+    $("#parentSteeringValidation").textContent = "Wait for verified live Parent data before moving a node.";
+    return;
+  }
   const request = parentSteeringRequest();
   const validation = MeshMqttParentSteering.validateRequest(
     state.topology?.nodes || [],
@@ -488,11 +498,15 @@ async function submitParentSteering(event) {
 }
 
 function focusParentSteering(node) {
-  if (node && !node.isAuthority) state.parentSteeringSelectedChildId = node.id;
+  if (node && !node.isAuthority) {
+    state.parentSteeringSelectedChildId = node.id;
+    const locked = state.topologyLock.enabled && MeshTopologyLock.statusForNode(state.topologyLock, node.id);
+    state.parentSteeringSelectedParentId = locked?.expectedParentId || null;
+  }
   if (node?.isAuthority) state.parentSteeringSelectedParentId = node.id;
   closeDetail();
   renderParentSteering();
-  $("#parentSteeringPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+  workspace?.focusRecovery("#parentSteeringPanel");
   requestAnimationFrame(() => $(node?.isAuthority ? "#parentSteeringChild" : "#parentSteeringParent").focus());
 }
 
@@ -537,8 +551,8 @@ function renderSummary(data) {
     : `${meta.demo ? "No router connection · " : ""}Updated at ${formatTime(meta.updatedAt)}`;
   $("#statNodes").textContent = `${summary.nodesOnline}/${summary.nodesTotal}`;
   $("#statNodesSub").textContent = `${summary.nodesTotal - summary.nodesOnline} offline nodes`;
-  $("#statClients").textContent = compactNumber(summary.clientsOnline);
-  $("#statClientsSub").textContent = `${summary.clientsKnown} known device records`;
+  $("#statClients").textContent = meta.clientDetails === "nodes-only" ? "—" : compactNumber(summary.clientsOnline);
+  $("#statClientsSub").textContent = meta.clientDetails === "nodes-only" ? "Client collection is off" : `${summary.clientsKnown} known device records`;
   $("#statBackhaul").textContent = summary.backhaulMbps ? `${compactNumber(summary.backhaulMbps)}M` : "—";
   $("#statBackhaulSub").textContent = "Sum of latest child-to-parent hop measurements";
   $("#statAttention").textContent = compactNumber(summary.weakNodes + (summary.nodesTotal - summary.nodesOnline));
@@ -612,7 +626,7 @@ function updateTopologyLockCountdown() {
   $$("[data-topology-lock-countdown]").forEach((element) => {
     element.textContent = remaining > 0
       ? `Move in ${MeshTopologyLock.duration(remaining)}`
-      : "MQTT move on next confirmed refresh";
+      : "Awaiting fresh confirmation";
   });
   const countdown = $("#topologyLockCountdown");
   if (countdown) {
@@ -797,6 +811,7 @@ function beginTopologyLockEdit() {
     : "Keep recovery off";
   renderTopologyLock();
   renderTopology(state.topology);
+  workspace?.focusRecovery();
 }
 
 function cancelTopologyLockEdit() {
@@ -908,27 +923,12 @@ async function disableTopologyLock() {
   }
 }
 
-function layoutNodes(nodes, availableWidth = 0) {
-  const lockExpanded = state.topologyLockEditing || state.topologyLock.enabled;
-  const steeringExpanded = Boolean(
-    state.parentSteering.operation &&
-    nodes.some((node) => MeshMqttParentSteering.sameId(
-      node.id,
-      state.parentSteering.operation.childId,
-    )),
-  );
-  const healthExpanded = nodes.some((node) => {
-    const health = MeshMqttParentSteering.healthForNode(
-      state.parentSteering,
-      node.id,
-    );
-    return Boolean(MeshMqttParentSteering.healthCardPresentation(health));
-  });
-  const nodeHeight = 124 + Number(lockExpanded) * 60 +
-    Number(steeringExpanded) * 60 + Number(healthExpanded) * 82;
+function layoutNodes(nodes, availableWidth = 0, nodeHeights = {}) {
   return MeshTopologyLayout.compute(nodes, {
-    nodeHeight,
-    rowGap: nodeHeight > 124 ? 38 : 30,
+    nodeWidth: 280,
+    nodeHeight: 218,
+    nodeHeights,
+    rowGap: 30,
     availableWidth,
   });
 }
@@ -964,8 +964,73 @@ function applyTopologyLayoutPositions(map) {
   });
 }
 
+function nodeCardHtml(node, list = false) {
+    const isWired = MeshTopologyLock.isWired(node);
+    const tone = node.quality?.tone || "";
+    const restart = state.nodeRestarts.get(node.id);
+    const lockItem = state.topologyLockEditing
+      ? null
+      : MeshTopologyLock.statusForNode(state.topologyLock, node.id);
+    const lockPresentation = MeshTopologyLock.presentation(
+      lockItem,
+      topologyLockRemaining(),
+      state.topologyLock.confirmationsRequired,
+    );
+    const parentUnavailable = node.parentSource === "linksys-backhaul-unavailable";
+    const currentParentName = node.actualParentName || node.parentName || (parentUnavailable ? "Unknown Parent" : "Main");
+    const desiredParentName = node.parentName || (parentUnavailable ? "Unknown Parent" : "Main");
+    const draggable = state.topologyLockEditing && !node.isAuthority;
+    const steeringOperation = MeshMqttParentSteering.operationForNode(
+      state.parentSteering.operation,
+      node.id,
+    );
+    const steeringPresentation = steeringOperation?.state === "verified" ? null : MeshMqttParentSteering.operationPresentation(steeringOperation);
+    const steeringTone = steeringPresentation?.tone || "";
+    const steeringHealth = MeshMqttParentSteering.healthForNode(
+      state.parentSteering,
+      node.id,
+    );
+    // Retain historical steering evidence in the detail drawer, but do not
+    // present a stale wireless-steering alert on a currently wired node.
+    const healthPresentation = isWired
+      ? null
+      : MeshMqttParentSteering.healthCardPresentation(steeringHealth);
+    const healthTone = healthPresentation?.tone || "";
+    const phyAge = node.phyRateAgeSeconds !== null && node.phyRateAgeSeconds !== undefined
+      ? `${compactNumber(node.phyRateAgeSeconds)} seconds old`
+      : "sample age unavailable";
+    const phyTitle = node.phyRateMbps !== null && node.phyRateMbps !== undefined
+      ? `${isWired ? "Ethernet port" : "Child backhaul"} PHY from MQTT BH/status · ${node.phyRateRaw || formatLinkRate(node.phyRateMbps)} · ${phyAge}${node.phyRateStale ? " · stale" : ""}`
+      : `Waiting for the Node's MQTT BH/status ${isWired ? "Ethernet port" : "backhaul"} PHY sample`;
+    return `
+      <button class="mesh-node ${list ? "list-node" : ""} ${!node.online ? "node-offline" : ""} ${node.isAuthority ? "master" : ""} ${isWired ? "wired" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""} ${healthPresentation ? `parent-health-expanded parent-health-${escapeHtml(healthTone)}` : ""}"
+        data-layout-left="${node.x}" data-layout-top="${node.y}" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
+        <div class="node-title">
+          <strong>${escapeHtml(node.name)}</strong>
+          <span class="node-role">${node.isAuthority ? "GATEWAY" : "NODE"}</span>
+        </div>
+        <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "No IP")}</div>
+        ${node.isAuthority ? "" : state.topologyLockEditing
+          ? `<div class="node-parent desired">Desired ↳ ${escapeHtml(desiredParentName)}</div><div class="node-parent current">Current ↳ ${escapeHtml(currentParentName)} · ${escapeHtml(isWired ? "Ethernet · manual layout" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`
+          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || (parentUnavailable ? "Unknown Parent" : "Main"))} · ${escapeHtml(node.parentSource === "topology-lock-degraded-assignment" ? "Desired Parent · live link unverified" : parentUnavailable ? "Live link unverified" : isWired ? node.parentSource === "topology-lock-wired-assignment" ? "Ethernet · manual" : "Ethernet · Linksys report" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`}
+        <div class="node-stats">
+          <div><span>Clients</span><strong>${state.topology.meta?.clientDetails === "nodes-only" ? "—" : node.clientCount ?? "—"}</strong></div>
+          <div><span>${node.isAuthority ? "Status" : isWired ? "Ethernet link" : "Hop throughput"}</span><strong>${node.isAuthority ? (node.online ? "Online" : "Offline") : formatLinkRate(node.speedMbps)}</strong></div>
+          <div class="node-phy ${node.phyRateStale ? "stale" : ""}" title="${escapeHtml(phyTitle)}"><span>${isWired ? "Port PHY" : "PHY rate"}</span><strong>${node.isAuthority ? "—" : formatLinkRate(node.phyRateMbps)}</strong></div>
+          <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : isWired ? '<span class="wired-link-icon" aria-hidden="true">↔</span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : isWired ? "Ethernet" : `${node.rssi ?? "—"} dBm`}</small></div>
+        </div>
+        <div class="node-children-summary">${node.online ? "● Online" : "○ Offline"} · ${state.topology.nodes.filter((child) => child.online && child.parentId === node.id).length} mesh children <span>View details ›</span></div>
+        ${lockPresentation ? `<div class="node-lock-status ${escapeHtml(lockPresentation.tone)}"><i aria-hidden="true">${lockItem.status === "correct" ? "◆" : lockItem.status === "parent-offline" ? "◇" : "↻"}</i><span><strong ${lockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(lockPresentation.label)}</strong><small>${escapeHtml(lockPresentation.detail)}</small></span></div>` : ""}
+        ${steeringPresentation ? `<div class="node-parent-steering-status ${escapeHtml(steeringTone)}"><i aria-hidden="true">${steeringTone === "verified" ? "✓" : steeringTone === "failed" ? "!" : "↻"}</i><span><strong>${escapeHtml(steeringPresentation.label)}</strong><small>${escapeHtml(steeringPresentation.detail)}</small></span></div>` : ""}
+        ${healthPresentation ? `<div class="node-parent-health-status ${escapeHtml(healthTone)}"><i aria-hidden="true">${healthTone === "healthy" ? "✓" : healthTone === "blocked" ? "!" : healthTone === "restarting" ? "↻" : "#"}</i><span><strong ${healthPresentation.remaining ? `data-parent-health-countdown data-parent-health-child="${escapeHtml(node.id)}"` : ""}>${escapeHtml(healthPresentation.label)}</strong><small>${escapeHtml(healthPresentation.detail)}</small><small class="health-reason">${escapeHtml(healthPresentation.reason)}</small></span></div>` : ""}
+        ${draggable ? `<div class="node-drag-hint">Drag onto desired parent</div>` : ""}
+        ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
+      </button>`;
+}
+
 function renderTopology(data) {
   const map = $("#meshMap");
+  const focusedNode = map.contains(document.activeElement) ? document.activeElement.dataset.nodeId : null;
   const scroller = $(".map-scroll");
   if (state.topologyAnimationFrame) {
     cancelAnimationFrame(state.topologyAnimationFrame);
@@ -979,10 +1044,24 @@ function renderTopology(data) {
     Math.floor((scroller?.clientWidth || state.topologyViewportWidth || 0) - 12),
   );
   state.topologyViewportWidth = scroller?.clientWidth || state.topologyViewportWidth;
-  const layout = layoutNodes(displayNodes, availableWidth);
+  // Measure styled cards before tree placement. Different recovery states can
+  // have different heights; fixed-height link anchors drift off the cards.
+  const measure = document.createElement("div");
+  measure.className = "topology-measure";
+  measure.setAttribute("aria-hidden", "true");
+  measure.inert = true;
+  measure.innerHTML = displayNodes.filter((node) => node.online).map((node) => nodeCardHtml(node)).join("");
+  document.body.append(measure);
+  const nodeHeights = Object.fromEntries([...measure.children].map((card) => [card.dataset.nodeId, card.offsetHeight]));
+  measure.remove();
+  const layout = layoutNodes(displayNodes, availableWidth, nodeHeights);
   const { positions, edges, root, nodeWidth, nodeHeight } = layout;
   const offline = data.nodes.filter((node) => !node.online);
-  if (!positions.length || !root) return;
+  if (!positions.length || !root) {
+    map.innerHTML = '<div class="map-empty"><strong>No online gateway in this snapshot</strong><p>Use Node list to inspect all known nodes, including offline nodes.</p></div>';
+    workspace?.topologyRendered({ width: availableWidth || 620, height: 280 });
+    return;
+  }
   map.style.width = `${layout.width}px`;
   map.style.minWidth = `${layout.width}px`;
   map.style.height = `${layout.height}px`;
@@ -990,11 +1069,11 @@ function renderTopology(data) {
     "needed",
     layout.contentWidth > availableWidth + 2,
   );
-  const internetY = root.y + nodeHeight / 2 - 38;
+  const internetY = root.y + root.height / 2 - 38;
   const wanEdge = {
     id: "internet->gateway",
-    sourcePoint: { x: 110, y: root.y + nodeHeight / 2 },
-    targetPoint: { x: root.x, y: root.y + nodeHeight / 2 },
+    sourcePoint: { x: 110, y: root.y + root.height / 2 },
+    targetPoint: { x: root.x, y: root.y + root.height / 2 },
     band: "WAN",
     speedMbps: null,
     tone: "wan",
@@ -1022,68 +1101,7 @@ function renderTopology(data) {
   html += edgeLabelHtml(wanEdge);
   for (const edge of edges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
   for (const edge of currentPreviewEdges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
-  for (const node of positions) {
-    const isWired = MeshTopologyLock.isWired(node);
-    const tone = node.quality?.tone || "";
-    const restart = state.nodeRestarts.get(node.id);
-    const lockItem = state.topologyLockEditing
-      ? null
-      : MeshTopologyLock.statusForNode(state.topologyLock, node.id);
-    const lockPresentation = MeshTopologyLock.presentation(
-      lockItem,
-      topologyLockRemaining(),
-      state.topologyLock.confirmationsRequired,
-    );
-    const parentUnavailable = node.parentSource === "linksys-backhaul-unavailable";
-    const currentParentName = node.actualParentName || node.parentName || (parentUnavailable ? "Unknown Parent" : "Main");
-    const desiredParentName = node.parentName || (parentUnavailable ? "Unknown Parent" : "Main");
-    const draggable = state.topologyLockEditing && !node.isAuthority;
-    const steeringOperation = MeshMqttParentSteering.operationForNode(
-      state.parentSteering.operation,
-      node.id,
-    );
-    const steeringPresentation = MeshMqttParentSteering.operationPresentation(steeringOperation);
-    const steeringTone = steeringPresentation?.tone || "";
-    const steeringHealth = MeshMqttParentSteering.healthForNode(
-      state.parentSteering,
-      node.id,
-    );
-    // Retain historical steering evidence in the detail drawer, but do not
-    // present a stale wireless-steering alert on a currently wired node.
-    const healthPresentation = isWired
-      ? null
-      : MeshMqttParentSteering.healthCardPresentation(steeringHealth);
-    const healthTone = healthPresentation?.tone || "";
-    const phyAge = node.phyRateAgeSeconds !== null && node.phyRateAgeSeconds !== undefined
-      ? `${compactNumber(node.phyRateAgeSeconds)} seconds old`
-      : "sample age unavailable";
-    const phyTitle = node.phyRateMbps !== null && node.phyRateMbps !== undefined
-      ? `${isWired ? "Ethernet port" : "Child backhaul"} PHY from MQTT BH/status · ${node.phyRateRaw || formatLinkRate(node.phyRateMbps)} · ${phyAge}${node.phyRateStale ? " · stale" : ""}`
-      : `Waiting for the Node's MQTT BH/status ${isWired ? "Ethernet port" : "backhaul"} PHY sample`;
-    html += `
-      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${isWired ? "wired" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""} ${healthPresentation ? `parent-health-expanded parent-health-${escapeHtml(healthTone)}` : ""}"
-        data-layout-left="${node.x}" data-layout-top="${node.y}" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
-        <div class="node-title">
-          <strong>${escapeHtml(node.name)}</strong>
-          <span class="node-role">${node.isAuthority ? "GATEWAY" : "NODE"}</span>
-        </div>
-        <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "No IP")}</div>
-        ${node.isAuthority ? "" : state.topologyLockEditing
-          ? `<div class="node-parent desired">Desired ↳ ${escapeHtml(desiredParentName)}</div><div class="node-parent current">Current ↳ ${escapeHtml(currentParentName)} · ${escapeHtml(isWired ? "Ethernet · manual layout" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`
-          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || (parentUnavailable ? "Unknown Parent" : "Main"))} · ${escapeHtml(node.parentSource === "topology-lock-degraded-assignment" ? "Desired Parent · live link unverified" : parentUnavailable ? "Live link unverified" : isWired ? node.parentSource === "topology-lock-wired-assignment" ? "Ethernet · manual" : "Ethernet · Linksys report" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`}
-        <div class="node-stats">
-          <div><span>Clients</span><strong>${node.clientCount}</strong></div>
-          <div><span>${node.isAuthority ? "Status" : isWired ? "Ethernet link" : "Hop throughput"}</span><strong>${node.isAuthority ? "Online" : formatLinkRate(node.speedMbps)}</strong></div>
-          <div class="node-phy ${node.phyRateStale ? "stale" : ""}" title="${escapeHtml(phyTitle)}"><span>${isWired ? "Port PHY" : "PHY rate"}</span><strong>${node.isAuthority ? "—" : formatLinkRate(node.phyRateMbps)}</strong></div>
-          <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : isWired ? '<span class="wired-link-icon" aria-hidden="true">↔</span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : isWired ? "Ethernet" : `${node.rssi ?? "—"} dBm`}</small></div>
-        </div>
-        ${lockPresentation ? `<div class="node-lock-status ${escapeHtml(lockPresentation.tone)}"><i aria-hidden="true">${lockItem.status === "correct" ? "◆" : lockItem.status === "parent-offline" ? "◇" : "↻"}</i><span><strong ${lockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(lockPresentation.label)}</strong><small>${escapeHtml(lockPresentation.detail)}</small></span></div>` : ""}
-        ${steeringPresentation ? `<div class="node-parent-steering-status ${escapeHtml(steeringTone)}"><i aria-hidden="true">${steeringTone === "verified" ? "✓" : steeringTone === "failed" ? "!" : "↻"}</i><span><strong>${escapeHtml(steeringPresentation.label)}</strong><small>${escapeHtml(steeringPresentation.detail)}</small></span></div>` : ""}
-        ${healthPresentation ? `<div class="node-parent-health-status ${escapeHtml(healthTone)}"><i aria-hidden="true">${healthTone === "healthy" ? "✓" : healthTone === "blocked" ? "!" : healthTone === "restarting" ? "↻" : "#"}</i><span><strong ${healthPresentation.remaining ? `data-parent-health-countdown data-parent-health-child="${escapeHtml(node.id)}"` : ""}>${escapeHtml(healthPresentation.label)}</strong><small>${escapeHtml(healthPresentation.detail)}</small><small class="health-reason">${escapeHtml(healthPresentation.reason)}</small></span></div>` : ""}
-        ${draggable ? `<div class="node-drag-hint">Drag onto desired parent</div>` : ""}
-        ${restart ? `<div class="node-operation"><i aria-hidden="true">↻</i><span>${escapeHtml(MeshNodeRestartState.label(restart))}</span></div>` : ""}
-      </button>`;
-  }
+  for (const node of positions) html += nodeCardHtml(node);
   if (offline.length) {
     html += `<div class="offline-strip"><strong>${offline.length} offline nodes</strong>${offline
       .map((node) => {
@@ -1105,16 +1123,17 @@ function renderTopology(data) {
       ...edge,
       sourcePoint: {
         x: edge.source.x + nodeWidth,
-        y: edge.source.y + nodeHeight / 2,
+        y: edge.source.y + edge.source.height / 2,
       },
       targetPoint: {
         x: edge.target.x,
-        y: edge.target.y + nodeHeight / 2,
+        y: edge.target.y + edge.target.height / 2,
       },
     })),
   ];
-  requestAnimationFrame(() => startTopologyCanvas(canvasEdges, layout.width, layout.height));
-  $$("[data-node-id]").forEach((button) => {
+  workspace?.topologyRendered(layout);
+  if (!workspace || workspace.graphVisible()) requestAnimationFrame(() => startTopologyCanvas(canvasEdges, layout.width, layout.height));
+  map.querySelectorAll("[data-node-id]").forEach((button) => {
     button.addEventListener("click", () => {
       if (Date.now() < state.suppressNodeClickUntil) return;
       const node = data.nodes.find((item) => item.id === button.dataset.nodeId);
@@ -1122,6 +1141,7 @@ function renderTopology(data) {
     });
   });
   if (state.topologyLockEditing) wireTopologyLockDragDrop(data);
+  if (focusedNode) [...map.querySelectorAll("[data-node-id]")].find((card) => card.dataset.nodeId === focusedNode)?.focus({ preventScroll: true });
   updateTopologyLockCountdown();
   updateParentHealthCountdown();
 }
@@ -1167,11 +1187,11 @@ function wireTopologyLockDragDrop(data) {
 function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
   const from = edge.sourcePoint || {
     x: edge.source.x + nodeWidth,
-    y: edge.source.y + nodeHeight / 2,
+    y: edge.source.y + (edge.source.height || nodeHeight) / 2,
   };
   const to = edge.targetPoint || {
     x: edge.target.x,
-    y: edge.target.y + nodeHeight / 2,
+    y: edge.target.y + (edge.target.height || nodeHeight) / 2,
   };
   const midX = (from.x + to.x) / 2;
   const midY = (from.y + to.y) / 2;
@@ -1191,7 +1211,7 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
 
 function startTopologyCanvas(edges, width, height) {
   const canvas = $("#topologyCanvas");
-  if (!canvas) return;
+  if (!canvas || (workspace && !workspace.graphVisible())) return;
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
@@ -1262,7 +1282,7 @@ function startTopologyCanvas(edges, width, height) {
       }
       context.restore();
     });
-    if (!reduceMotion) state.topologyAnimationFrame = requestAnimationFrame(draw);
+    if (!reduceMotion && (!workspace || workspace.graphVisible())) state.topologyAnimationFrame = requestAnimationFrame(draw);
   }
   draw();
 }
@@ -1271,6 +1291,7 @@ function filteredClients() {
   if (!state.topology) return [];
   const query = state.search.trim().toLowerCase();
   return state.topology.clients.filter((client) => {
+    if (!MeshWorkspace.clientMatchesNode(client, state.clientNodeFilter)) return false;
     if (state.filter === "online" && !client.online) return false;
     if (!query) return true;
     return [client.name, client.ipAddress, client.macAddress, client.model, client.nodeName]
@@ -1283,9 +1304,13 @@ function renderClients() {
   const visible = clients.slice(0, state.visibleRows);
   $("#clientRows").innerHTML = visible.length
     ? visible.map(clientRowHtml).join("")
-    : `<tr><td colspan="7" class="empty-row">No matching clients.</td></tr>`;
+    : `<tr><td colspan="7" class="empty-row">${state.topology?.meta?.clientDetails === "nodes-only" ? "Client details are not collected on this device in nodes-only mode. Node topology is still available." : "No matching clients. Try All records, another node, or a different search."}</td></tr>`;
   $("#clientCountLabel").textContent = `Showing ${visible.length} of ${clients.length} devices`;
   $("#loadMoreButton").hidden = visible.length >= clients.length;
+  $("#clientRows").querySelectorAll("tr").forEach((row) => {
+    if (row.children.length !== 7) return;
+    ["Device", "Connected node", "Connection", "Signal", "Rate", "IP address", "Details"].forEach((label, index) => { row.children[index].dataset.label = label; });
+  });
   $$("[data-client-id]").forEach((button) => {
     button.addEventListener("click", () => {
       const client = state.topology.clients.find((item) => item.id === button.dataset.clientId);
@@ -1301,10 +1326,10 @@ function clientRowHtml(client) {
   return `
     <tr>
       <td>
-        <div class="device-cell">
+        <button class="device-cell client-name-button" type="button" data-client-id="${escapeHtml(client.id)}" aria-label="View ${escapeHtml(client.name)}">
           <span class="device-icon" aria-hidden="true">${typeIcons[client.type] || typeIcons.device}</span>
           <div><strong>${escapeHtml(client.name)}</strong><span>${escapeHtml(client.model || client.manufacturer || client.type)}</span></div>
-        </div>
+        </button>
       </td>
       <td><span class="node-chip">${escapeHtml(client.nodeName || "—")}</span></td>
       <td><span class="connection-chip">${escapeHtml(client.online ? client.band || (client.rssi === null ? "Ethernet" : "Wi‑Fi") : "History")}</span></td>
@@ -1342,6 +1367,8 @@ function nodeClientHtml(client) {
 }
 
 function openDetail(item, kind) {
+  const fresh = state.detailSelection?.id !== item.id || state.detailSelection?.kind !== kind;
+  const focusedId = $("#detailDrawer").contains(document.activeElement) ? document.activeElement.id : null;
   if (!$("#detailDrawer").classList.contains("open")) {
     state.detailReturnFocus = document.activeElement;
   }
@@ -1370,6 +1397,9 @@ function openDetail(item, kind) {
     MeshMqttParentSteering.healthPresentation(steeringHealth);
   const parentNode = isNode ? null : MeshDetailData.nodeForClient(state.topology, item);
   const nodeRows = isNode ? MeshDetailData.nodeDetailRows(item, compactNumber) : null;
+  if (nodeRows && state.topology.meta?.clientDetails === "nodes-only") {
+    nodeRows.metrics = nodeRows.metrics.map(([label, value]) => [label, label === "Connected clients" ? "Not collected" : value]);
+  }
   const hopTest = isNode ? state.hopTests.get(item.id) : null;
   const metrics = isNode
     ? nodeRows.metrics
@@ -1522,6 +1552,8 @@ function openDetail(item, kind) {
   $("#detailBackdrop").classList.add("open");
   $("#detailDrawer").classList.add("open");
   $("#detailDrawer").setAttribute("aria-hidden", "false");
+  workspace?.enhanceDetail(item, kind, fresh);
+  if (!fresh && focusedId) document.getElementById(focusedId)?.focus({ preventScroll: true });
   if (isNode && item.online && item.ipAddress) loadNodeProbe(item, detailToken);
 }
 
@@ -1651,12 +1683,20 @@ function reconcileNodeRestarts(data) {
 }
 
 function closeDetail() {
+  if (!$("#detailDrawer").classList.contains("open")) return;
+  const selection = state.detailSelection;
   state.detailToken += 1;
   state.detailSelection = null;
   $("#detailBackdrop").classList.remove("open");
   $("#detailDrawer").classList.remove("open");
   $("#detailDrawer").setAttribute("aria-hidden", "true");
-  state.detailReturnFocus?.focus?.();
+  workspace?.syncDialogs();
+  if (state.detailReturnFocus?.isConnected) state.detailReturnFocus.focus({ preventScroll: true });
+  else {
+    const card = $$("[data-node-id], [data-client-id]").find((element) =>
+      (element.dataset.nodeId === selection?.id || element.dataset.clientId === selection?.id) && element.getClientRects().length);
+    (card || $("[data-workspace][aria-current]")).focus({ preventScroll: true });
+  }
   state.detailReturnFocus = null;
 }
 
@@ -1687,7 +1727,6 @@ function render(data) {
       closeDetail();
     }
   }
-  $("#connectModal").classList.add("hidden");
   scheduleAutoRefresh();
   // Parent health can change in the ESP32 worker without a browser-originated
   // operation. Refresh the small state document with every topology refresh so
@@ -1739,6 +1778,7 @@ async function loadInitialData() {
 }
 
 async function initialize() {
+  workspace = MeshWorkspace.create({ state, escapeHtml, nodeCardHtml, openDetail, renderClients, renderTopology });
   wireEvents();
   observeTopologyWidth();
   state.topologyLockTimer = setInterval(() => {
@@ -1791,6 +1831,8 @@ function wireEvents() {
         body: JSON.stringify(body),
       });
       $("#passwordInput").value = "";
+      $("#connectModal").classList.add("hidden");
+      workspace.syncDialogs();
       render(data);
       toast(state.managedConnection
         ? "Device configuration saved"
@@ -1811,7 +1853,7 @@ function wireEvents() {
   $("#applyTopologyLockButton").addEventListener("click", applyTopologyLock);
   $("#unlockTopologyButton").addEventListener("click", disableTopologyLock);
   $("#topologyRecoveryChip").addEventListener("click", () => {
-    $("#topologyLockPanel").scrollIntoView({ behavior: "smooth", block: "center" });
+    workspace.focusRecovery();
   });
   $("#topologyLockAcknowledgement").addEventListener("change", (event) => {
     state.topologyLockAcknowledged = event.target.checked;

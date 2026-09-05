@@ -28,7 +28,8 @@
   function nodeDetailRows(node, formatNumber = (value) => String(value ?? "—")) {
     const connection = String(node.connectionType || "").trim().toLowerCase();
     const isWired = node.isWired === true || connection === "wired" || connection === "ethernet";
-    const phyRate = Number(node.phyRateMbps);
+    const phyRate = node.phyRateMbps === null || node.phyRateMbps === undefined || node.phyRateMbps === ""
+      ? NaN : Number(node.phyRateMbps);
     const formattedPhyRate = Number.isFinite(phyRate)
       ? phyRate >= 1000
         ? `${formatNumber(phyRate / 1000, 2)} Gbps`

@@ -1,6 +1,30 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-09-05
+
+- Reorganized the dashboard into **Topology**, **Clients**, and **Recovery**
+  workspaces. Summary cards open the relevant view; network details and the
+  link legend remain available on demand.
+- Added a searchable, parent-grouped Node list with a Needs attention filter.
+  Phones default to the list; desktop browsers default to the graph. Both
+  views use the same Node card renderer and retain parent state, countdowns,
+  5GH/5GL, channel, hop throughput, PHY, RSSI, and online mesh-child counts.
+- Added Fit graph, 100%, and Expand view controls. Tree layout now measures
+  each card's actual height so alerts do not detach link anchors or cause
+  overlapping cards, and healthy nodes do not inherit large empty cards.
+- Organized Node details into Overview, Clients, Actions, and Details tabs,
+  including parent/child navigation and a client preview on the first tap.
+  All original identity fields, capabilities, samples, and steering counters
+  remain available.
+- Made the Client table readable as vertical cards on iPhone-sized screens,
+  retaining every field and adding a node filter. Improved touch targets,
+  input sizes, dialog focus, keyboard navigation, and reduced-motion behavior.
+- Preserved open configuration forms, edited values, detail tabs, and scroll
+  positions across automatic refresh. Missing PHY values remain unknown
+  instead of being converted to a zero rate.
+- Added an offline ESP32-style preview with synthetic recovery, degraded,
+  offline, and nodes-only scenarios. It exercises the actual gzip bundle
+  under the ESP32 Content Security Policy without contacting a router.
 
 - Publish a clearly labeled, read-only degraded topology when Linksys returns
   an invalid `GetBackhaulInfo` response during node reboot or mesh

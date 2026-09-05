@@ -65,3 +65,19 @@ test("uses the canonical Ethernet link type on a wired topology edge", () => {
   assert.equal(layout.edges[0].band, "Ethernet");
   assert.equal(layout.edges[0].source.id, "main");
 });
+
+test("variable-height recovery cards stay aligned with their links and never overlap", () => {
+  const heights = {main:180,big:265,road:390,door:265,parent:210,yard:265};
+  const layout = compute(nodes, {nodeHeights:heights,rowGap:30});
+  const byId = new Map(layout.positions.map(node => [node.id,node]));
+  const center = node => node.y + node.height / 2;
+  assert.equal(center(byId.get('big')), center(byId.get('road')));
+  assert.equal(center(byId.get('door')), center(byId.get('parent')));
+  for (const a of layout.positions) {
+    assert.equal(a.height, heights[a.id]);
+    for (const b of layout.positions) {
+      if (a.id === b.id || a.depth !== b.depth) continue;
+      assert.ok(a.y + a.height <= b.y || b.y + b.height <= a.y);
+    }
+  }
+});

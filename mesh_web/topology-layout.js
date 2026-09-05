@@ -48,27 +48,38 @@
       list.sort((a, b) => a.name.localeCompare(b.name, "en-US", { numeric: true }));
     }
 
-    let leafCursor = top;
     let maxDepth = 0;
     const placed = new Map();
+    const heights = new Map(online.map((node) => [node.id, Math.max(1, Number(options.nodeHeights?.[node.id]) || nodeHeight)]));
+    const subtreeHeights = new Map();
+    function measure(node) {
+      const childNodes = children.get(node.id) || [];
+      const childrenHeight = childNodes.reduce((sum, child) => sum + measure(child), 0) + Math.max(0, childNodes.length - 1) * rowGap;
+      const height = Math.max(heights.get(node.id), childrenHeight);
+      subtreeHeights.set(node.id, height);
+      return height;
+    }
+    measure(rootNode);
 
-    function place(node, depth) {
+    function place(node, depth, subtreeTop) {
       maxDepth = Math.max(maxDepth, depth);
       const childNodes = children.get(node.id) || [];
-      let y;
-      if (!childNodes.length) {
-        y = leafCursor;
-        leafCursor += nodeHeight + rowGap;
-      } else {
-        const childPositions = childNodes.map((child) => place(child, depth + 1));
-        const first = childPositions[0];
-        const last = childPositions[childPositions.length - 1];
-        y = (first.y + last.y) / 2;
+      const height = heights.get(node.id);
+      const subtreeHeight = subtreeHeights.get(node.id);
+      const y = subtreeTop + (subtreeHeight - height) / 2;
+      if (childNodes.length) {
+        const childrenHeight = childNodes.reduce((sum, child) => sum + subtreeHeights.get(child.id), 0) + (childNodes.length - 1) * rowGap;
+        let cursor = subtreeTop + (subtreeHeight - childrenHeight) / 2;
+        for (const child of childNodes) {
+          place(child, depth + 1, cursor);
+          cursor += subtreeHeights.get(child.id) + rowGap;
+        }
       }
       const value = {
         ...node,
         parentId: parentById.get(node.id) || node.parentId,
         depth,
+        height,
         x: left + depth * (nodeWidth + columnGap),
         y,
       };
@@ -76,7 +87,7 @@
       return value;
     }
 
-    place(rootNode, 0);
+    place(rootNode, 0, top);
     const positions = online.map((node) => placed.get(node.id)).filter(Boolean);
     let responsiveColumnGap = columnGap;
     if (maxDepth > 0 && availableWidth > 0) {
@@ -105,7 +116,7 @@
       }));
     const usedHeight = Math.max(
       nodeHeight + top * 2,
-      ...positions.map((node) => node.y + nodeHeight + top),
+      ...positions.map((node) => node.y + node.height + top),
     );
     const contentWidth = left + maxDepth * columnStep + nodeWidth + 36;
     return {

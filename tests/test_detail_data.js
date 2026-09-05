@@ -84,6 +84,13 @@ test("preserves every existing node metric and identity field", () => {
   assert.equal(rows.details[8][1], "2026-08-30T08:00:00Z");
 });
 
+test("missing PHY data stays unknown instead of displaying a zero rate", () => {
+  for (const value of [null, undefined, ""]) {
+    const row = nodeDetailRows({phyRateMbps:value}).metrics.find(([label]) => label === "Link PHY rate");
+    assert.equal(row[1], "—");
+  }
+});
+
 test("labels wired rate fields and preserves the unverified Linksys parent evidence", () => {
   const rows = nodeDetailRows({
     online: true,

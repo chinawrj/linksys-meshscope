@@ -194,7 +194,8 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("#settingsButton::after", css)
         self.assertNotIn("\n  .button-quiet::after", css)
         self.assertNotIn(".legend {\n    display: none;", css)
-        self.assertIn("Swipe horizontally to explore the complete topology.", html)
+        self.assertIn('data-topology-view="list"', html)
+        self.assertIn('id="graphFit"', html)
         self.assertIn(".map-scroll-hint", css)
 
     def test_topology_positions_remain_compatible_with_strict_csp(self):
