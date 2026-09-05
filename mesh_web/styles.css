@@ -3308,7 +3308,8 @@ button.stat-card:hover { border-color: #9bbcad; background: #fbfdfc; }
 .client-name-button:hover strong { color: var(--blue); }
 .client-name-button strong { font-size: 14px; }
 .row-detail { min-width: 44px; min-height: 44px; }
-.detail-drawer { width: min(540px, 100%); height: 100dvh; padding: 0 24px 28px; overscroll-behavior: contain; }
+.detail-drawer { width: min(540px, 100%); height: 100dvh; padding: 0 24px 28px; overscroll-behavior: contain; transform: none; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity 150ms ease; }
+.detail-drawer.open { transform: none; opacity: 1; visibility: visible; pointer-events: auto; }
 .detail-drawer .modal-close { position: sticky; top: 12px; float: right; z-index: 4; min-width: 44px; min-height: 44px; background: white; box-shadow: 0 1px 5px #15332215; }
 .detail-head { padding: 26px 42px 18px 0; }
 .detail-type-icon { display: none; }
