@@ -110,6 +110,25 @@ test("shows exact MQTT steering and disabled recovery states", () => {
   }).label, /MQTT capability/i);
 });
 
+test("allows a manual wired layout while labeling it unverified", () => {
+  const wiredNodes = [
+    ...nodes,
+    { id: "wired", name: "LivingRoom", online: true, isAuthority: false, parentId: "yard", connectionType: "Wired" },
+  ];
+  const draft = MeshTopologyLock.draftFrom(wiredNodes, null);
+  const moved = MeshTopologyLock.move(wiredNodes, draft, "wired", "main");
+  assert.equal(moved.valid, true);
+  assert.equal(moved.draft.wired, "main");
+  assert.deepEqual(MeshTopologyLock.presentation({
+    status: "wired-manual",
+    expectedParentName: "Main",
+  }), {
+    tone: "lock-wired",
+    label: "Ethernet parent assigned",
+    detail: "Main · Manual layout, not auto-verified",
+  });
+});
+
 test("shows a blocked state when the desired parent is offline", () => {
   const view = MeshTopologyLock.presentation({
     status: "parent-offline",

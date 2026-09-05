@@ -553,6 +553,14 @@ Each wireless Node shows two deliberately separate link rates. **Hop
 throughput** is Linksys JNAP `GetBackhaulInfo.speedMbps`, an active Thrulay
 measurement from that child Node to its immediate Parent. It is a per-hop
 measurement, not end-to-end throughput to the gateway or Internet.
+Open any wireless, non-primary Node's detail drawer and select **Measure Child → Parent
+now** to request a fresh sample. MeshScope publishes the firmware-defined
+`network/<node UUID>/speed` MQTT command with the current Parent's
+`<IP>:5003` target, waits for Linksys to run Thrulay, and refreshes the page at
+bounded intervals. The button enters a waiting state until JNAP reports a new
+sample timestamp; requests for the same Node are limited to one per minute.
+The test traffic travels upstream from the child Node's Thrulay client to the
+Parent Node's server, with acknowledgements in the reverse direction.
 **PHY rate** is the child Node's current wireless backhaul bitrate from MQTT
 `network/<node UUID>/BH/status` (`phyRate_2`, with `phyRate` retained as the
 human-readable raw value). The ESP32 asks for one PHY sample after boot and no
@@ -561,6 +569,16 @@ backhaul status workflow merely to refresh an instantaneous value. The
 topology link label, Node card, and Node details all show the result; samples
 older than two minutes are explicitly marked stale instead of being presented
 as current.
+
+Wired Nodes use a different model. Linksys exposes `connectionType: Wired`
+and derives `parentIPAddress` through its LLDP helper, but on a switched LAN
+that address can identify another root-accessible Node instead of the physical
+cable path. MeshScope therefore labels the firmware value as **unverified**.
+Assign the wired Node to the known physical upstream in the Topology Lock
+editor; that saved relationship controls the diagram and remains explicitly
+marked as a manual layout assignment. Ethernet assignments are never sent to
+the wireless MQTT steering path, and their original Linksys parent IP remains
+visible in Node details for troubleshooting.
 
 The topology panel uses the full browser width and reacts immediately when its
 container changes size. It expands hierarchy spacing on wide screens, compacts

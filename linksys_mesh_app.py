@@ -38,6 +38,7 @@ WEB_ROOT = APP_ROOT / "mesh_web"
 DEFAULT_ROUTER = "192.168.1.1"
 JNAP_PREFIX = "http://linksys.com/jnap/"
 NODE_RESTART_COOLDOWN_SECONDS = 90
+HOP_TEST_COOLDOWN_SECONDS = 60
 READ_ONLY_ACTIONS = {
     "core/CheckAdminPassword": {},
     "core/GetDeviceInfo": {},
@@ -87,6 +88,7 @@ class MeshState:
         self.cache_at = 0.0
         self.node_probe_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self.node_restart_cooldowns: dict[str, float] = {}
+        self.hop_test_cooldowns: dict[str, float] = {}
         self.mqtt_capability_cache: tuple[float, dict[str, Any]] | None = None
         self.mqtt_parent_mode = "auto"
         self.lock = threading.RLock()
@@ -110,6 +112,7 @@ class MeshState:
             self.cache_at = time.monotonic()
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
+            self.hop_test_cooldowns.clear()
             self.mqtt_capability_cache = None
             self.mqtt_parent_mode = "auto"
             return copy.deepcopy(self.cache)
@@ -135,6 +138,7 @@ class MeshState:
             self.cache_at = 0.0
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
+            self.hop_test_cooldowns.clear()
             self.mqtt_capability_cache = None
             self.mqtt_parent_mode = "auto"
         return self.refresh(force=True)
@@ -148,6 +152,7 @@ class MeshState:
             self.cache_at = 0.0
             self.node_probe_cache.clear()
             self.node_restart_cooldowns.clear()
+            self.hop_test_cooldowns.clear()
             self.mqtt_capability_cache = None
             self.mqtt_parent_mode = "auto"
 
@@ -443,6 +448,33 @@ class MeshState:
             self.mqtt_parent_mode = clean
             self.mqtt_capability_cache = None
         return self.mqtt_parent_capability(force=clean != "force-off")
+
+    def refresh_hop_throughput(self, node_id: str) -> dict[str, Any]:
+        """Trigger the selected child Node's existing Thrulay test to its Parent."""
+        if self.demo:
+            raise RouterError("Demo mode never sends a hop-test request.")
+        clean_id = (node_id or "").strip()
+        if not clean_id:
+            raise RouterError("Node ID is required.")
+        with self.lock:
+            if not self.session.connected:
+                raise RouterError("No router is connected.")
+            if self.mqtt_parent_mode == "force-off":
+                raise RouterError("MQTT operations are forced off.")
+            last_request = self.hop_test_cooldowns.get(clean_id.casefold())
+            if last_request and time.monotonic() - last_request < HOP_TEST_COOLDOWN_SECONDS:
+                raise RouterError("This Node's hop test was requested recently. Wait for the result.")
+            host = self.session.host
+        topology = self.refresh(force=True)
+        try:
+            result = linksys_mqtt_parent.trigger_hop_throughput(host, topology, clean_id)
+        except linksys_mqtt_parent.MQTTParentError as exc:
+            raise RouterError(str(exc)) from exc
+        with self.lock:
+            self.hop_test_cooldowns[clean_id.casefold()] = time.monotonic()
+            self.cache = None
+            self.cache_at = 0.0
+        return result
 
     def steer_node_parent(self, child_id: str, parent_id: str, band: str) -> dict[str, Any]:
         """Publish one guarded exact-Parent request through the router broker."""
@@ -988,8 +1020,16 @@ def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, A
             (str(item.get("ipAddress")) for item in device_connections if item.get("ipAddress")),
             str(backhaul_item.get("ipAddress") or ""),
         )
-        parent_ip = backhaul_item.get("parentIPAddress")
-        parent_id = ip_to_node.get(str(parent_ip)) if parent_ip else None
+        reported_parent_ip = backhaul_item.get("parentIPAddress")
+        connection_type = backhaul_item.get("connectionType") or (
+            "Gateway" if device.get("isAuthority") else None
+        )
+        is_wired = not device.get("isAuthority") and str(connection_type or "").casefold() in (
+            "wired",
+            "ethernet",
+        )
+        parent_id = ip_to_node.get(str(reported_parent_ip)) if reported_parent_ip else None
+        parent_ip = reported_parent_ip
         wireless = backhaul_item.get("wirelessConnectionInfo") or {}
         rssi = wireless.get("stationRSSI")
         if rssi in (None, 0):
@@ -1016,13 +1056,21 @@ def normalize_topology(host: str, raw: dict[str, dict[str, Any]]) -> dict[str, A
                 "ipAddress": ip_address or None,
                 "parentId": parent_id,
                 "parentIpAddress": parent_ip,
-                "connectionType": backhaul_item.get("connectionType") or (
-                    "Gateway" if device.get("isAuthority") else None
-                ),
+                "reportedParentIpAddress": reported_parent_ip,
+                "reportedParentId": parent_id,
+                "parentSource": "linksys-lldp-reported" if is_wired else "linksys-parent-ip",
+                "parentConfidence": "firmware-reported-unverified"
+                if is_wired
+                else "firmware-reported",
+                "connectionType": connection_type,
+                "isWired": is_wired,
+                "linkType": "Ethernet" if is_wired else wireless.get("radioID") or connection_type,
                 "band": wireless.get("radioID"),
                 "channel": wireless.get("channel"),
                 "rssi": rssi,
-                "quality": signal_quality(rssi),
+                "quality": {"label": "Wired", "score": 100, "tone": "wired"}
+                if is_wired
+                else signal_quality(rssi),
                 "speedMbps": float(backhaul_item["speedMbps"])
                 if backhaul_item.get("speedMbps")
                 else None,
@@ -1214,6 +1262,13 @@ class MeshRequestHandler(BaseHTTPRequestHandler):
             if route == "/api/restart-node":
                 body = self.read_json()
                 self.send_json(STATE.restart_node(str(body.get("nodeId") or "")))
+                return
+            if route == "/api/refresh-hop-throughput":
+                body = self.read_json()
+                self.send_json(
+                    STATE.refresh_hop_throughput(str(body.get("nodeId") or "")),
+                    HTTPStatus.ACCEPTED,
+                )
                 return
             if route == "/api/steer-node-parent":
                 body = self.read_json()

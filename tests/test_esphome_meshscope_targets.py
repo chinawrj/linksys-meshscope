@@ -128,6 +128,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"/api/node-sysinfo"',
             '"/api/node-radio-info"',
             '"/api/restart-node"',
+            '"/api/refresh-hop-throughput"',
             '"/api/node-steering-mode"',
             '"/api/topology-lock"',
             '"/api/mqtt-parent-steering"',
@@ -223,6 +224,8 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "queue_topology_lock_mqtt_operation(",
             'mqtt_operation.origin = "topology-lock"',
             "restart_cooldowns.find(mapping.node_id)",
+            'status = "wired-manual"',
+            "wired_connection_type(node->connection_type)",
         ):
             self.assertIn(fragment, self.edge)
         self.assertRegex(
@@ -243,6 +246,14 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         )[0]
         self.assertIn("queue_topology_lock_mqtt_operation", evaluate)
         self.assertNotIn('"core/Reboot"', evaluate)
+        self.assertIn("wired_connection_type(node->connection_type)", evaluate)
+
+    def test_wired_nodes_cannot_run_wireless_hop_refresh(self):
+        handler = self.edge.split("static esp_err_t mqtt_hop_test_handler(", 1)[1].split(
+            "static esp_err_t mqtt_steer_handler(", 1
+        )[0]
+        self.assertIn("wired_connection_type(child.connection_type)", handler)
+        self.assertIn("wireless Thrulay refresh is not applicable", handler)
 
     def test_client_details_are_adaptive_and_explicit(self):
         for fragment in (

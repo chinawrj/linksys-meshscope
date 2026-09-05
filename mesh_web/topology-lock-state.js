@@ -16,7 +16,7 @@
     nextActionInSeconds: 0,
     confirmationsRequired: 3,
     monitorIntervalSeconds: 10,
-    summary: { total: 0, correct: 0, mismatch: 0, blocked: 0, offline: 0 },
+    summary: { total: 0, correct: 0, mismatch: 0, blocked: 0, offline: 0, wired: 0 },
     nodes: [],
     history: [],
   });
@@ -34,6 +34,11 @@
 
   function onlineTopology(nodes) {
     return (nodes || []).filter((node) => node.online);
+  }
+
+  function isWired(node) {
+    const connection = String(node?.connectionType || "").trim().toLowerCase();
+    return node?.isWired === true || connection === "wired" || connection === "ethernet";
   }
 
   function draftFrom(nodes, lockValue) {
@@ -141,6 +146,12 @@
     switch (item.status) {
       case "correct":
         return { tone: "lock-correct", label: "Parent correct", detail: `Locked to ${item.expectedParentName}` };
+      case "wired-manual":
+        return {
+          tone: "lock-wired",
+          label: "Ethernet parent assigned",
+          detail: `${item.expectedParentName} · Manual layout, not auto-verified`,
+        };
       case "confirming":
         return {
           tone: "lock-confirming",
@@ -199,5 +210,6 @@
     remainingSeconds,
     duration,
     presentation,
+    isWired,
   };
 });

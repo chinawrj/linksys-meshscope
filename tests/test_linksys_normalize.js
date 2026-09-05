@@ -141,3 +141,63 @@ test("normalizes only ESP32 envelopes and preserves Python responses", () => {
   assert.equal(result.meta.edgeHosted, true);
   assert.equal(result.meta.router, "10.0.0.1");
 });
+
+test("uses a saved wired layout instead of trusting an ambiguous LLDP parent", () => {
+  const wiredRaw = structuredClone(raw);
+  wiredRaw["devicelist/GetDevices3"].output.devices.push({
+    deviceID: "wired",
+    friendlyName: "LivingRoom",
+    nodeType: "Slave",
+    model: { modelNumber: "MX5300" },
+    connections: [{ macAddress: "00:00:00:00:00:04", ipAddress: "10.0.0.4" }],
+  });
+  wiredRaw["nodes/diagnostics/GetBackhaulInfo"].output.backhaulDevices.push({
+    deviceUUID: "wired",
+    ipAddress: "10.0.0.4",
+    parentIPAddress: "10.0.0.2",
+    connectionType: "Wired",
+    speedMbps: "1024",
+  });
+
+  const result = normalize("10.0.0.1", wiredRaw, {
+    topologyLock: {
+      enabled: true,
+      nodes: [{ nodeId: "wired", expectedParentId: "main" }],
+    },
+    backhaulPhyLinks: [{ nodeId: "WIRED", rateMbps: 1000, rawRate: "1 Gb/s" }],
+  });
+  const wired = result.nodes.find((item) => item.id === "wired");
+
+  assert.equal(wired.parentId, "main");
+  assert.equal(wired.parentName, "Main");
+  assert.equal(wired.parentIpAddress, "10.0.0.1");
+  assert.equal(wired.reportedParentId, "child");
+  assert.equal(wired.reportedParentIpAddress, "10.0.0.2");
+  assert.equal(wired.parentSource, "topology-lock-wired-assignment");
+  assert.equal(wired.parentConfidence, "manual");
+  assert.equal(wired.linkType, "Ethernet");
+  assert.equal(wired.quality.label, "Wired");
+  assert.equal(wired.speedMbps, 1024);
+  assert.equal(wired.phyRateMbps, 1000);
+});
+
+test("preserves the Linksys LLDP parent as unverified when no wired layout is saved", () => {
+  const wiredRaw = structuredClone(raw);
+  wiredRaw["devicelist/GetDevices3"].output.devices.push({
+    deviceID: "wired",
+    friendlyName: "LivingRoom",
+    nodeType: "Slave",
+    model: { modelNumber: "MX5300" },
+    connections: [{ ipAddress: "10.0.0.4" }],
+  });
+  wiredRaw["nodes/diagnostics/GetBackhaulInfo"].output.backhaulDevices.push({
+    deviceUUID: "wired",
+    ipAddress: "10.0.0.4",
+    parentIPAddress: "10.0.0.2",
+    connectionType: "Wired",
+  });
+  const wired = normalize("10.0.0.1", wiredRaw).nodes.find((item) => item.id === "wired");
+  assert.equal(wired.parentId, "child");
+  assert.equal(wired.parentSource, "linksys-lldp-reported");
+  assert.equal(wired.parentConfidence, "firmware-reported-unverified");
+});

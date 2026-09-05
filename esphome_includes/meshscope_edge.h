@@ -50,6 +50,7 @@ static constexpr size_t COMPRESSION_WINDOW = 8 * 1024;
 static constexpr size_t COMPRESSION_HASH_SIZE = 2048;
 static constexpr uint32_t REFRESH_INTERVAL_MS = 10000;
 static constexpr uint32_t RESTART_COOLDOWN_MS = 90000;
+static constexpr uint32_t HOP_TEST_COOLDOWN_MS = 60 * 1000;
 static constexpr uint32_t TOPOLOGY_LOCK_ACTION_COOLDOWN_MS = 5 * 60 * 1000;
 static constexpr uint8_t TOPOLOGY_LOCK_CONFIRMATIONS = 3;
 static constexpr size_t TOPOLOGY_LOCK_MAX_NODES = 32;
@@ -309,6 +310,7 @@ static httpd_handle_t server = nullptr;
 static std::atomic<bool> force_refresh{false};
 static std::atomic<bool> router_connected{false};
 static std::map<std::string, uint32_t> restart_cooldowns;
+static std::map<std::string, uint32_t> hop_test_cooldowns;
 static bool topology_lock_enabled = false;
 static std::string topology_lock_saved_at;
 static std::vector<LockedParent> topology_lock_mappings;
@@ -430,6 +432,11 @@ static std::string ascii_lower(std::string value) {
       value.begin(),
       [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
   return value;
+}
+
+static bool wired_connection_type(const std::string &value) {
+  const std::string normalized = ascii_lower(value);
+  return normalized == "wired" || normalized == "ethernet";
 }
 
 static std::string ascii_upper(std::string value) {
@@ -3683,6 +3690,7 @@ static cJSON *topology_lock_json(
   int mismatch = 0;
   int blocked = 0;
   int offline = 0;
+  int wired = 0;
   cJSON *items = cJSON_AddArrayToObject(root, "nodes");
   for (const auto &mapping : topology_lock_mappings) {
     const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
@@ -3696,6 +3704,14 @@ static cJSON *topology_lock_json(
     if (node == nullptr || !node->online) {
       status = "node-offline";
       offline++;
+    } else if (wired_connection_type(node->connection_type)) {
+      wired++;
+      // An Ethernet path cannot be safely verified from JNAP alone: the
+      // firmware derives parentIPAddress via LLDP and can report another
+      // root-accessible peer behind a switch. Treat the saved mapping as a
+      // manual layout assignment and never feed it to wireless MQTT recovery.
+      status = "wired-manual";
+      correct++;
     } else if (parent == nullptr || !parent->online) {
       status = "parent-offline";
       blocked++;
@@ -3760,6 +3776,7 @@ static cJSON *topology_lock_json(
   cJSON_AddNumberToObject(summary, "mismatch", mismatch);
   cJSON_AddNumberToObject(summary, "blocked", blocked);
   cJSON_AddNumberToObject(summary, "offline", offline);
+  cJSON_AddNumberToObject(summary, "wired", wired);
   cJSON *history = cJSON_AddArrayToObject(root, "history");
   for (const auto &action : topology_lock_history) {
     cJSON *item = cJSON_CreateObject();
@@ -3808,6 +3825,7 @@ static void evaluate_topology_lock(
     const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
     if (node == nullptr || parent == nullptr || !node->online ||
         !parent->online || node->authority ||
+        wired_connection_type(node->connection_type) ||
         node->parent_id == mapping.parent_id) {
       topology_lock_mismatch_counts[mapping.node_id] = 0;
       continue;
@@ -3833,6 +3851,7 @@ static void evaluate_topology_lock(
       const NodeObservation *parent = find_observed_node(nodes, mapping.parent_id);
       if (node == nullptr || parent == nullptr || !node->online ||
           !parent->online || node->authority ||
+          wired_connection_type(node->connection_type) ||
           node->parent_id == mapping.parent_id ||
           mqtt_operation_active_for_node(mapping.node_id) ||
           topology_lock_mismatch_counts[mapping.node_id] <
@@ -5662,6 +5681,144 @@ static esp_err_t mqtt_blacklist_cancel_handler(httpd_req_t *request) {
       "202 Accepted");
 }
 
+static esp_err_t mqtt_hop_test_handler(httpd_req_t *request) {
+  std::string body;
+  if (!read_request_json(request, body, 512)) {
+    return send_error_json(
+        request, "400 Bad Request", "A Node ID is required.");
+  }
+  cJSON *payload = cJSON_ParseWithLength(body.c_str(), body.size());
+  const char *node_id = payload != nullptr ? json_string(payload, "nodeId") : nullptr;
+  const std::string requested_id = node_id ?: "";
+  cJSON_Delete(payload);
+  if (requested_id.empty() || requested_id.size() > 128) {
+    return send_error_json(
+        request, "400 Bad Request", "A valid Node ID is required.");
+  }
+
+  NodeObservation child;
+  NodeObservation parent;
+  bool found_child = false;
+  bool found_parent = false;
+  const std::vector<NodeObservation> nodes = current_node_observations();
+  for (const auto &node : nodes) {
+    if (same_node_id(node.id, requested_id)) {
+      child = node;
+      found_child = true;
+    }
+  }
+  if (!found_child || !child.online) {
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "The selected Node is offline or absent from the current topology.");
+  }
+  if (child.authority || child.parent_id.empty()) {
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "The primary Node has no upstream mesh Parent to test.");
+  }
+  if (wired_connection_type(child.connection_type)) {
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "A wired Node uses its Ethernet link status; wireless Thrulay refresh is not applicable.");
+  }
+  for (const auto &node : nodes) {
+    if (same_node_id(node.id, child.parent_id)) {
+      parent = node;
+      found_parent = true;
+      break;
+    }
+  }
+  if (!found_parent || !parent.online || !private_ipv4(parent.ip)) {
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "The current Parent is offline or has no usable private IP address.");
+  }
+
+  const std::string cooldown_key = ascii_lower(child.id);
+  if (mqtt_steering_mutex == nullptr ||
+      xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    return send_error_json(
+        request,
+        "503 Service Unavailable",
+        "The MQTT worker is temporarily busy.");
+  }
+  if (mqtt_mode == MqttSteeringMode::FORCE_OFF ||
+      (mqtt_mode == MqttSteeringMode::AUTO && !mqtt_available)) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return send_error_json(
+        request,
+        "409 Conflict",
+        mqtt_mode == MqttSteeringMode::FORCE_OFF
+            ? "MQTT operations are forced off."
+            : "Automatic detection has not confirmed the required router MQTT ACL.");
+  }
+  const auto cooldown = hop_test_cooldowns.find(cooldown_key);
+  if (cooldown != hop_test_cooldowns.end() &&
+      uptime_ms() - cooldown->second < HOP_TEST_COOLDOWN_MS) {
+    xSemaphoreGive(mqtt_steering_mutex);
+    return send_error_json(
+        request,
+        "409 Conflict",
+        "This Node's hop test was requested recently. Wait for the result.");
+  }
+  hop_test_cooldowns[cooldown_key] = uptime_ms();
+  xSemaphoreGive(mqtt_steering_mutex);
+
+  const std::string topic =
+      "network/" + ascii_upper(child.id) + "/speed";
+  const std::string target = parent.ip + ":5003";
+  MqttWireSession session;
+  std::string error;
+  bool saw_devinfo = false;
+  const bool accepted =
+      session.connect_to_router(error) &&
+      session.subscribe_devinfo(error) &&
+      session.publish(
+          topic,
+          target,
+          saw_devinfo,
+          nullptr,
+          "",
+          "5GH",
+          error);
+  if (!accepted) {
+    if (xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      hop_test_cooldowns.erase(cooldown_key);
+      xSemaphoreGive(mqtt_steering_mutex);
+    }
+    return send_error_json(
+        request,
+        "502 Bad Gateway",
+        error.empty() ? "The MQTT hop-test request failed." : error.c_str());
+  }
+
+  cJSON *response = cJSON_CreateObject();
+  cJSON_AddBoolToObject(response, "accepted", true);
+  cJSON_AddStringToObject(response, "topic", topic.c_str());
+  cJSON_AddStringToObject(response, "target", target.c_str());
+  cJSON_AddStringToObject(response, "direction", "child-to-parent");
+  cJSON_AddStringToObject(response, "protocol", "thrulay");
+  cJSON_AddStringToObject(response, "requestedAt", iso_timestamp().c_str());
+  cJSON *child_json = cJSON_AddObjectToObject(response, "child");
+  cJSON_AddStringToObject(child_json, "id", child.id.c_str());
+  cJSON_AddStringToObject(child_json, "name", child.name.c_str());
+  cJSON *parent_json = cJSON_AddObjectToObject(response, "parent");
+  cJSON_AddStringToObject(parent_json, "id", parent.id.c_str());
+  cJSON_AddStringToObject(parent_json, "name", parent.name.c_str());
+  cJSON_AddStringToObject(parent_json, "ipAddress", parent.ip.c_str());
+  char *serialized = cJSON_PrintUnformatted(response);
+  const esp_err_t result = send_json(
+      request, serialized ?: "{}", "202 Accepted");
+  cJSON_free(serialized);
+  cJSON_Delete(response);
+  return result;
+}
+
 static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
   std::string body;
   if (!read_request_json(request, body, 1024)) {
@@ -6079,6 +6236,8 @@ static void start_server() {
       "/api/mqtt-temporary-blacklist/cancel",
       HTTP_POST,
       mqtt_blacklist_cancel_handler);
+  register_handler(
+      "/api/refresh-hop-throughput", HTTP_POST, mqtt_hop_test_handler);
   register_handler("/api/steer-node-parent", HTTP_POST, mqtt_steer_handler);
   httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, not_found_handler);
   ESP_LOGI(TAG, "MeshScope HTTP server started on port 80");

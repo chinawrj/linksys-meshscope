@@ -54,6 +54,11 @@
     return { label: "Weak", score, tone: "bad" };
   }
 
+  function isWiredConnection(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return normalized === "wired" || normalized === "ethernet";
+  }
+
   function deviceType(device) {
     const model = device?.model || {};
     const values = [
@@ -105,6 +110,13 @@
         .filter((item) => item && item.nodeId)
         .map((item) => [String(item.nodeId).toUpperCase(), item]),
     );
+    const lockedParentById = new Map(
+      edgeMeta.topologyLock?.enabled === true && Array.isArray(edgeMeta.topologyLock.nodes)
+        ? edgeMeta.topologyLock.nodes
+            .filter((item) => item?.nodeId && item?.expectedParentId)
+            .map((item) => [String(item.nodeId).toUpperCase(), String(item.expectedParentId)])
+        : [],
+    );
 
     const backhaulById = new Map(backhaul.map((item) => [item.deviceUUID, item]));
     const nodeIds = new Set(
@@ -152,8 +164,24 @@
       const backhaulItem = backhaulById.get(deviceId) || {};
       const connectionWithIp = deviceConnections.find((item) => item?.ipAddress);
       const ipAddress = String(connectionWithIp?.ipAddress || backhaulItem.ipAddress || "");
-      const parentIp = backhaulItem.parentIPAddress;
-      const parentId = parentIp ? ipToNode.get(String(parentIp)) || null : null;
+      const reportedParentIp = backhaulItem.parentIPAddress;
+      const connectionType = backhaulItem.connectionType || (device.isAuthority ? "Gateway" : null);
+      const isWired = !device.isAuthority && isWiredConnection(connectionType);
+      const reportedParentId = reportedParentIp
+        ? ipToNode.get(String(reportedParentIp)) || null
+        : null;
+      // Wired parentIPAddress is produced from the firmware's LLDP helper, but
+      // on switched LANs it can select a merely root-accessible peer (or remain
+      // stale). A saved Topology Lock mapping therefore doubles as the user's
+      // explicit wired-layout assignment. It is display-only for Ethernet and
+      // never triggers MQTT wireless steering.
+      const lockedParentId = isWired
+        ? lockedParentById.get(String(deviceId).toUpperCase()) || null
+        : null;
+      const parentId = lockedParentId || reportedParentId;
+      const resolvedParent = parentId ? devicesById.get(parentId) : null;
+      const parentIp = resolvedParent?.connections?.find((item) => item?.ipAddress)?.ipAddress
+        || (lockedParentId ? null : reportedParentIp);
       const wireless = backhaulItem.wirelessConnectionInfo || {};
       const backhaulPhy = backhaulPhyById.get(String(deviceId).toUpperCase()) || {};
       let rssi = wireless.stationRSSI;
@@ -176,11 +204,27 @@
         ipAddress: ipAddress || null,
         parentId,
         parentIpAddress: parentIp ?? null,
-        connectionType: backhaulItem.connectionType || (device.isAuthority ? "Gateway" : null),
+        reportedParentIpAddress: reportedParentIp ?? null,
+        reportedParentId,
+        parentSource: lockedParentId
+          ? "topology-lock-wired-assignment"
+          : isWired
+            ? "linksys-lldp-reported"
+            : "linksys-parent-ip",
+        parentConfidence: lockedParentId
+          ? "manual"
+          : isWired
+            ? "firmware-reported-unverified"
+            : "firmware-reported",
+        connectionType,
+        isWired,
+        linkType: isWired ? "Ethernet" : wireless.radioID ?? connectionType ?? null,
         band: wireless.radioID ?? null,
         channel: wireless.channel ?? null,
         rssi: rssi ?? null,
-        quality: signalQuality(rssi),
+        quality: isWired
+          ? { label: "Wired", score: 100, tone: "wired" }
+          : signalQuality(rssi),
         speedMbps: backhaulItem.speedMbps ? Number(backhaulItem.speedMbps) : null,
         phyRateMbps: Number.isFinite(Number(backhaulPhy.rateMbps))
           ? Number(backhaulPhy.rateMbps)
@@ -334,5 +378,6 @@
     outputOf,
     propertyMap,
     signalQuality,
+    isWiredConnection,
   };
 });

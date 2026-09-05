@@ -37,6 +37,7 @@ const state = {
   detailToken: 0,
   detailSelection: null,
   nodeRestarts: new Map(),
+  hopTests: new Map(),
   managedConnection: false,
   modalReturnFocus: null,
   detailReturnFocus: null,
@@ -635,10 +636,11 @@ function renderTopologyLockEditor() {
     state.topologyLockSelectedNodeId = children[0].id;
   }
   const child = children.find((node) => node.id === state.topologyLockSelectedNodeId);
+  const childIsWired = MeshTopologyLock.isWired(child);
   const nodeSelect = $("#topologyLockNodeSelect");
   const parentSelect = $("#topologyLockParentSelect");
   nodeSelect.innerHTML = children
-    .map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)}</option>`)
+    .map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)}${MeshTopologyLock.isWired(node) ? " · Ethernet" : ""}</option>`)
     .join("");
   nodeSelect.value = child.id;
   parentSelect.innerHTML = online
@@ -646,6 +648,10 @@ function renderTopologyLockEditor() {
     .map((node) => `<option value="${escapeHtml(node.id)}">${escapeHtml(node.name)}${node.isAuthority ? " · Gateway" : ""}</option>`)
     .join("");
   parentSelect.value = state.topologyLockDraft[child.id] || "";
+  parentSelect.disabled = false;
+  parentSelect.title = childIsWired
+    ? "Ethernet Parent is a manual layout assignment; Linksys cannot reliably verify it across every switched LAN."
+    : "Choose the desired wireless Parent.";
   const valid = MeshTopologyLock.validate(state.topology.nodes, state.topologyLockDraft);
   $("#topologyLockValidation").textContent = state.topologyLockDraftError || (valid.valid ? "" : valid.error);
   $("#applyTopologyLockButton").disabled =
@@ -712,13 +718,16 @@ function renderTopologyLock() {
     ? "At least one desired parent is offline or MQTT recovery is disabled, so affected moves are blocked."
     : summary.mismatch
       ? "Parent differences are being confirmed. Eligible child nodes are moved with exact MQTT Parent Steering, one at a time under the five-minute global limit."
-      : "Every monitored online node currently has the desired parent.";
+      : summary.wired
+        ? `Every monitored online node currently has the desired parent. ${summary.wired} Ethernet node${summary.wired === 1 ? " uses" : "s use"} a manual display assignment and ${summary.wired === 1 ? "is" : "are"} excluded from wireless MQTT recovery.`
+        : "Every monitored online node currently has the desired parent.";
   $("#editTopologyLockButton").textContent = "Edit desired topology";
   $("#topologyLockStats").innerHTML = `
     <span class="correct"><strong>${summary.correct}</strong> correct</span>
     <span class="mismatch"><strong>${summary.mismatch}</strong> mismatch</span>
     <span class="blocked"><strong>${summary.blocked}</strong> blocked</span>
     <span class="offline"><strong>${summary.offline}</strong> offline</span>
+    <span class="wired"><strong>${summary.wired || 0}</strong> Ethernet</span>
     <span id="topologyLockCountdown"><strong>↻</strong> ${summary.mismatch ? (topologyLockRemaining() ? `Next action ${MeshTopologyLock.duration(topologyLockRemaining())}` : "Action window open") : "No action queued"}</span>`;
   $("#topologyLockHistory").innerHTML = `
     <strong>Recent automatic actions</strong>
@@ -972,6 +981,7 @@ function renderTopology(data) {
   for (const edge of edges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
   for (const edge of currentPreviewEdges) html += edgeLabelHtml(edge, nodeWidth, nodeHeight);
   for (const node of positions) {
+    const isWired = MeshTopologyLock.isWired(node);
     const tone = node.quality?.tone || "";
     const restart = state.nodeRestarts.get(node.id);
     const lockItem = state.topologyLockEditing
@@ -995,16 +1005,20 @@ function renderTopology(data) {
       state.parentSteering,
       node.id,
     );
-    const healthPresentation = MeshMqttParentSteering.healthCardPresentation(steeringHealth);
+    // Retain historical steering evidence in the detail drawer, but do not
+    // present a stale wireless-steering alert on a currently wired node.
+    const healthPresentation = isWired
+      ? null
+      : MeshMqttParentSteering.healthCardPresentation(steeringHealth);
     const healthTone = healthPresentation?.tone || "";
     const phyAge = node.phyRateAgeSeconds !== null && node.phyRateAgeSeconds !== undefined
       ? `${compactNumber(node.phyRateAgeSeconds)} seconds old`
       : "sample age unavailable";
     const phyTitle = node.phyRateMbps !== null && node.phyRateMbps !== undefined
-      ? `Child backhaul PHY from MQTT BH/status · ${node.phyRateRaw || formatLinkRate(node.phyRateMbps)} · ${phyAge}${node.phyRateStale ? " · stale" : ""}`
-      : "Waiting for the child Node's MQTT BH/status PHY sample";
+      ? `${isWired ? "Ethernet port" : "Child backhaul"} PHY from MQTT BH/status · ${node.phyRateRaw || formatLinkRate(node.phyRateMbps)} · ${phyAge}${node.phyRateStale ? " · stale" : ""}`
+      : `Waiting for the Node's MQTT BH/status ${isWired ? "Ethernet port" : "backhaul"} PHY sample`;
     html += `
-      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""} ${healthPresentation ? `parent-health-expanded parent-health-${escapeHtml(healthTone)}` : ""}"
+      <button class="mesh-node ${node.isAuthority ? "master" : ""} ${isWired ? "wired" : ""} ${tone === "warn" || tone === "bad" ? "weak" : ""} ${restart ? "restarting" : ""} ${lockPresentation?.tone || ""} ${draggable ? "lock-draggable" : ""} ${state.topologyLockEditing || state.topologyLock.enabled ? "lock-expanded" : ""} ${steeringPresentation ? `parent-steering-expanded parent-steering-${escapeHtml(steeringTone)}` : ""} ${healthPresentation ? `parent-health-expanded parent-health-${escapeHtml(healthTone)}` : ""}"
         data-layout-left="${node.x}" data-layout-top="${node.y}" data-node-id="${escapeHtml(node.id)}" type="button" ${draggable ? 'draggable="true"' : ""}>
         <div class="node-title">
           <strong>${escapeHtml(node.name)}</strong>
@@ -1012,13 +1026,13 @@ function renderTopology(data) {
         </div>
         <div class="node-meta">${escapeHtml(node.model)} · ${escapeHtml(node.ipAddress || "No IP")}</div>
         ${node.isAuthority ? "" : state.topologyLockEditing
-          ? `<div class="node-parent desired">Desired ↳ ${escapeHtml(desiredParentName)}</div><div class="node-parent current">Current ↳ ${escapeHtml(currentParentName)} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`
-          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(node.band || "Mesh")}${node.channel ? ` ch ${node.channel}` : ""}</div>`}
+          ? `<div class="node-parent desired">Desired ↳ ${escapeHtml(desiredParentName)}</div><div class="node-parent current">Current ↳ ${escapeHtml(currentParentName)} · ${escapeHtml(isWired ? "Ethernet · manual layout" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`
+          : `<div class="node-parent">↳ ${escapeHtml(node.parentName || "Main")} · ${escapeHtml(isWired ? node.parentSource === "topology-lock-wired-assignment" ? "Ethernet · manual" : "Ethernet · Linksys report" : node.band || "Mesh")}${!isWired && node.channel ? ` ch ${node.channel}` : ""}</div>`}
         <div class="node-stats">
           <div><span>Clients</span><strong>${node.clientCount}</strong></div>
-          <div><span>${node.isAuthority ? "Status" : "Hop throughput"}</span><strong>${node.isAuthority ? "Online" : `${compactNumber(node.speedMbps)} Mbps`}</strong></div>
-          <div class="node-phy ${node.phyRateStale ? "stale" : ""}" title="${escapeHtml(phyTitle)}"><span>PHY rate</span><strong>${node.isAuthority ? "—" : formatLinkRate(node.phyRateMbps)}</strong></div>
-          <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : `${node.rssi ?? "—"} dBm`}</small></div>
+          <div><span>${node.isAuthority ? "Status" : isWired ? "Ethernet link" : "Hop throughput"}</span><strong>${node.isAuthority ? "Online" : formatLinkRate(node.speedMbps)}</strong></div>
+          <div class="node-phy ${node.phyRateStale ? "stale" : ""}" title="${escapeHtml(phyTitle)}"><span>${isWired ? "Port PHY" : "PHY rate"}</span><strong>${node.isAuthority ? "—" : formatLinkRate(node.phyRateMbps)}</strong></div>
+          <div class="node-signal">${node.isAuthority ? '<span class="signal-bars level-4"><i></i><i></i><i></i><i></i></span>' : isWired ? '<span class="wired-link-icon" aria-hidden="true">↔</span>' : signalBars(node.rssi, tone)}<small>${node.isAuthority ? "WAN" : isWired ? "Ethernet" : `${node.rssi ?? "—"} dBm`}</small></div>
         </div>
         ${lockPresentation ? `<div class="node-lock-status ${escapeHtml(lockPresentation.tone)}"><i aria-hidden="true">${lockItem.status === "correct" ? "◆" : lockItem.status === "parent-offline" ? "◇" : "↻"}</i><span><strong ${lockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(lockPresentation.label)}</strong><small>${escapeHtml(lockPresentation.detail)}</small></span></div>` : ""}
         ${steeringPresentation ? `<div class="node-parent-steering-status ${escapeHtml(steeringTone)}"><i aria-hidden="true">${steeringTone === "verified" ? "✓" : steeringTone === "failed" ? "!" : "↻"}</i><span><strong>${escapeHtml(steeringPresentation.label)}</strong><small>${escapeHtml(steeringPresentation.detail)}</small></span></div>` : ""}
@@ -1292,6 +1306,7 @@ function openDetail(item, kind) {
   state.detailSelection = { id: item.id, kind };
   const detailToken = ++state.detailToken;
   const isNode = kind === "node";
+  const itemIsWired = isNode && MeshTopologyLock.isWired(item);
   const attachedClients = isNode
     ? MeshDetailData.clientsForNode(state.topology, item)
     : [];
@@ -1313,6 +1328,7 @@ function openDetail(item, kind) {
     MeshMqttParentSteering.healthPresentation(steeringHealth);
   const parentNode = isNode ? null : MeshDetailData.nodeForClient(state.topology, item);
   const nodeRows = isNode ? MeshDetailData.nodeDetailRows(item, compactNumber) : null;
+  const hopTest = isNode ? state.hopTests.get(item.id) : null;
   const metrics = isNode
     ? nodeRows.metrics
     : [
@@ -1351,8 +1367,8 @@ function openDetail(item, kind) {
       .map(([label, value]) => `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
       .join("")}</div>
     ${topologyLockPresentation ? `<section class="node-lock-detail ${escapeHtml(topologyLockPresentation.tone)}"><span aria-hidden="true">◆</span><div><small>TOPOLOGY LOCK</small><strong ${topologyLockItem.status === "cooldown" ? "data-topology-lock-countdown" : ""}>${escapeHtml(topologyLockPresentation.label)}</strong><p>${escapeHtml(topologyLockPresentation.detail)}</p></div></section>` : ""}
-    ${steeringHealthPresentation ? `<section class="node-steering-health-detail ${escapeHtml(steeringHealthPresentation.tone)}">
-      <div class="node-steering-health-heading"><span aria-hidden="true">#</span><div><small>PARENT STEERING HEALTH</small><strong>${escapeHtml(steeringHealthPresentation.label)}</strong><p>${escapeHtml(steeringHealthPresentation.reason)}</p></div></div>
+    ${steeringHealthPresentation ? `<section class="node-steering-health-detail ${escapeHtml(itemIsWired ? "historical" : steeringHealthPresentation.tone)}">
+      <div class="node-steering-health-heading"><span aria-hidden="true">#</span><div><small>${itemIsWired ? "HISTORICAL WIRELESS STEERING" : "PARENT STEERING HEALTH"}</small><strong>${escapeHtml(itemIsWired ? "Inactive while Ethernet is connected" : steeringHealthPresentation.label)}</strong><p>${escapeHtml(itemIsWired ? "These counters are retained for diagnosis, but they cannot trigger wireless recovery while this Node uses Ethernet." : steeringHealthPresentation.reason)}</p></div></div>
       <div class="node-steering-health-grid">
         <div><span>Requested Parent</span><strong>${escapeHtml(steeringHealth.targetParentName || steeringHealth.targetParentId || "—")}</strong></div>
         <div><span>Band / target</span><strong>${escapeHtml(steeringHealth.band || "—")}${steeringHealth.lastTargetChannel ? ` · ch ${steeringHealth.lastTargetChannel}` : ""}</strong></div>
@@ -1400,6 +1416,27 @@ function openDetail(item, kind) {
               <button class="node-restart-button" id="restartMeshButton" type="button" hidden>Restart ${escapeHtml(item.name)} now</button>
             </div>
           </article>
+          <article class="node-capability ${item.isAuthority || itemIsWired ? "unverified" : item.online ? "available" : "unavailable"}">
+            <i aria-hidden="true">⇡</i>
+            <div>
+              <span>${itemIsWired ? "Ethernet link measurement" : "Child → Parent hop throughput"}</span>
+              <strong id="nodeHopTestLabel">${item.isAuthority
+                ? "Gateway · No upstream mesh Parent"
+                : itemIsWired
+                  ? `${formatLinkRate(item.speedMbps)} · Linksys Ethernet status`
+                : hopTest
+                  ? "Thrulay request accepted · Waiting for a fresh sample"
+                  : `${item.speedMbps ? `${compactNumber(item.speedMbps)} Mbps` : "No current sample"} · Upstream test direction`}</strong>
+              <small id="nodeHopTestDetail">${item.isAuthority
+                ? "The primary Node is the end of the mesh backhaul path."
+                : itemIsWired
+                  ? "Wireless Thrulay refresh is not applicable. The Node is attached to Main/LAN through Ethernet."
+                : `Runs the Linksys firmware's existing Thrulay client on ${escapeHtml(item.name)} toward ${escapeHtml(item.parentName || "its current Parent")}; this is not an Internet speed test.`}</small>
+              ${!item.isAuthority && !itemIsWired && item.online
+                ? `<button class="node-hop-test-button" id="refreshHopThroughputButton" type="button" ${hopTest ? "disabled" : ""}>${hopTest ? "Waiting for result…" : "Measure Child → Parent now"}</button>`
+                : ""}
+            </div>
+          </article>
           <article class="node-capability ${escapeHtml(capabilityReport.localManagement.status)}" id="nodeDirectProbe">
             <i aria-hidden="true">⌘</i>
             <div>
@@ -1410,7 +1447,7 @@ function openDetail(item, kind) {
             </div>
           </article>
         </div>
-        ${item.online ? `<button class="node-parent-steering-button" id="openParentSteeringButton" type="button">${item.isAuthority ? "Use this gateway in Exact Parent Steering" : "Move this node with Exact Parent Steering"}</button>` : ""}
+        ${item.online && !itemIsWired ? `<button class="node-parent-steering-button" id="openParentSteeringButton" type="button">${item.isAuthority ? "Use this gateway in Exact Parent Steering" : "Move this node with Exact Parent Steering"}</button>` : itemIsWired ? '<p class="node-feasibility-note">Exact Parent Steering is disabled while this Node uses Ethernet; its topology path is Main/LAN.</p>' : ""}
         <p class="node-feasibility-note">The hidden entry point is <code>https://&lt;node-ip&gt;/ca</code>; after login, the firmware opens <code>#casupport</code>. Restart requests go directly to the selected node's local endpoint.</p>
       </section>` : ""}
     ${isNode ? `
@@ -1438,6 +1475,8 @@ function openDetail(item, kind) {
   });
   $("#detailBackToNode")?.addEventListener("click", () => openDetail(parentNode, "node"));
   $("#openParentSteeringButton")?.addEventListener("click", () => focusParentSteering(item));
+  $("#refreshHopThroughputButton")?.addEventListener("click", (event) =>
+    refreshHopThroughput(item, event.currentTarget));
   $("#detailBackdrop").classList.add("open");
   $("#detailDrawer").classList.add("open");
   $("#detailDrawer").setAttribute("aria-hidden", "false");
@@ -1517,6 +1556,49 @@ async function restartNode(node, button) {
   }
 }
 
+async function refreshHopThroughput(node, button) {
+  if (state.hopTests.has(node.id)) return;
+  const pending = {
+    requestedAt: Date.now(),
+    previousTimestamp: node.timestamp || null,
+  };
+  state.hopTests.set(node.id, pending);
+  button.disabled = true;
+  button.textContent = "Requesting Thrulay test…";
+  try {
+    const result = await api("/api/refresh-hop-throughput", {
+      method: "POST",
+      body: JSON.stringify({ nodeId: node.id }),
+    });
+    button.textContent = "Waiting for result…";
+    const label = $("#nodeHopTestLabel");
+    if (label) label.textContent = "Thrulay request accepted · Waiting for a fresh sample";
+    toast(`${result.child?.name || node.name} → ${result.parent?.name || node.parentName || "Parent"} Thrulay test requested`);
+    [15000, 45000, 90000].forEach((delay) => {
+      window.setTimeout(() => refresh(true), delay);
+    });
+  } catch (error) {
+    state.hopTests.delete(node.id);
+    button.disabled = false;
+    button.textContent = "Measure Child → Parent now";
+    toast(error.message);
+  }
+}
+
+function reconcileHopTests(data) {
+  const now = Date.now();
+  for (const [nodeId, test] of state.hopTests) {
+    const node = data.nodes.find((candidate) => candidate.id === nodeId);
+    if (node?.timestamp && node.timestamp !== test.previousTimestamp) {
+      state.hopTests.delete(nodeId);
+      toast(`${node.name} → ${node.parentName || "Parent"} hop throughput updated to ${compactNumber(node.speedMbps)} Mbps`);
+    } else if (now - test.requestedAt >= 120000) {
+      state.hopTests.delete(nodeId);
+      toast(`${node?.name || "Node"} did not publish a fresh hop sample yet`);
+    }
+  }
+}
+
 function reconcileNodeRestarts(data) {
   const events = MeshNodeRestartState.reconcile(state.nodeRestarts, data.nodes);
   for (const event of events) {
@@ -1540,6 +1622,7 @@ function render(data) {
   const detailSelection = state.detailSelection;
   const detailScrollTop = $("#detailDrawer").scrollTop;
   reconcileNodeRestarts(data);
+  reconcileHopTests(data);
   state.topology = data;
   setTopologyLock(data.meta?.topologyLock);
   state.parentSteering.operation = MeshMqttParentSteering.reconcileOperation(

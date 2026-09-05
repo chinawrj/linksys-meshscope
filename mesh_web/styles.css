@@ -785,6 +785,7 @@ button {
 }
 
 .node-lock-status.lock-correct { background: var(--mint-soft); color: var(--mint); }
+.node-lock-status.lock-wired { background: #f6ead3; color: #98601f; }
 .node-lock-status.lock-confirming { background: var(--amber-soft); color: #9b6825; }
 .node-lock-status.lock-cooldown,
 .node-lock-status.lock-ready { background: var(--coral-soft); color: #a53b31; }
@@ -841,6 +842,18 @@ button {
   color: var(--muted);
   font-size: 7px;
   white-space: nowrap;
+}
+
+.wired-link-icon {
+  display: block;
+  color: #b9772b;
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 16px;
+}
+
+.mesh-node.wired {
+  border-color: #d5a25f;
 }
 
 .node-stats span {
@@ -919,6 +932,12 @@ button {
 .edge-label.band-5gl {
   border-color: #bdd8cd;
   background: #eff7f2;
+}
+
+.edge-label.band-ethernet {
+  border-color: #dfbd8e;
+  background: #fbf2e3;
+  color: #98601f;
 }
 
 .edge-label.band-lock {
@@ -2622,6 +2641,30 @@ footer {
 .node-restart-button:disabled {
   cursor: wait;
   opacity: 0.6;
+}
+
+.node-hop-test-button {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border: 1px solid #7fb3c5;
+  border-radius: 9px;
+  background: var(--blue-soft);
+  color: var(--blue);
+  font: inherit;
+  font-size: 8px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.node-hop-test-button:hover,
+.node-hop-test-button:focus-visible {
+  background: #d6ebf2;
+  outline: 2px solid rgba(23, 107, 135, 0.13);
+}
+
+.node-hop-test-button:disabled {
+  cursor: wait;
+  opacity: 0.64;
 }
 
 .node-parent-steering-button {

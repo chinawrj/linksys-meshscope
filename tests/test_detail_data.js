@@ -61,6 +61,7 @@ test("preserves every existing node metric and identity field", () => {
       parentName: "Patio",
       band: "5GL",
       channel: 48,
+      timestamp: "2026-08-30T08:00:00Z",
       firmwareVersion: "2.1.20.216892",
       hardwareVersion: "2",
       serialNumber: "test-serial",
@@ -74,11 +75,37 @@ test("preserves every existing node metric and identity field", () => {
   );
   assert.deepEqual(
     rows.details.map(([label]) => label),
-    ["Model", "IP address", "MAC address", "Parent node", "Backhaul band", "Channel", "PHY source", "PHY raw value", "PHY sample age", "Firmware version", "Hardware version", "Serial number"],
+    ["Model", "IP address", "MAC address", "Connection type", "Parent node", "Backhaul band", "Channel", "Hop source", "Hop sample time", "PHY source", "PHY raw value", "PHY sample age", "Firmware version", "Hardware version", "Serial number"],
   );
   assert.equal(rows.metrics[2][1], "199 Mbps");
   assert.equal(rows.metrics[3][1], "1.73 Gbps");
-  assert.equal(rows.details[3][1], "Patio");
+  assert.equal(rows.details[4][1], "Patio");
+  assert.match(rows.details[7][1], /Child → Parent Thrulay/);
+  assert.equal(rows.details[8][1], "2026-08-30T08:00:00Z");
+});
+
+test("labels wired rate fields and preserves the unverified Linksys parent evidence", () => {
+  const rows = nodeDetailRows({
+    online: true,
+    clientCount: 1,
+    connectionType: "Wired",
+    isWired: true,
+    speedMbps: 1024,
+    phyRateMbps: 1000,
+    quality: { label: "Wired" },
+    model: "MX5300",
+    ipAddress: "10.37.1.122",
+    parentName: "Main",
+    parentIpAddress: "10.37.1.1",
+    reportedParentIpAddress: "10.37.1.12",
+    parentSource: "topology-lock-wired-assignment",
+  });
+  assert.equal(rows.metrics[2][0], "Ethernet link");
+  assert.equal(rows.metrics[3][0], "Port PHY rate");
+  assert.equal(rows.metrics[4][1], "Ethernet · No RF signal");
+  assert.equal(rows.details.find(([label]) => label === "Parent node")[1], "Main");
+  assert.match(rows.details.find(([label]) => label === "Wired parent basis")[1], /Manual/);
+  assert.match(rows.details.find(([label]) => label === "Linksys-reported wired parent IP")[1], /10\.37\.1\.12/);
 });
 
 test("reports automatic parent status and internal steering evidence without claiming web control", () => {

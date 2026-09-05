@@ -387,6 +387,55 @@ def publish_parent_request(host: str, child_id: str, target: RadioTarget) -> dic
     }
 
 
+def trigger_hop_throughput(
+    host: str,
+    topology: dict[str, Any],
+    child_id: str,
+) -> dict[str, Any]:
+    """Ask one Linksys child to rerun its existing Thrulay test to its Parent."""
+    child = _find_node(topology, child_id)
+    if child.get("isAuthority"):
+        raise MQTTParentError("The primary Node has no upstream mesh Parent to test")
+    if not child.get("online"):
+        raise MQTTParentError("The selected Node is offline")
+    if str(child.get("connectionType") or "").casefold() in ("wired", "ethernet"):
+        raise MQTTParentError(
+            "A wired Node uses Ethernet link status; wireless Thrulay refresh is not applicable"
+        )
+    parent_id = str(child.get("parentId") or "")
+    if not parent_id:
+        raise MQTTParentError("The selected Node has no current Parent")
+    parent = _find_node(topology, parent_id)
+    if not parent.get("online"):
+        raise MQTTParentError("The selected Node's current Parent is offline")
+    parent_ip = str(parent.get("ipAddress") or "").strip()
+    if not parent_ip:
+        raise MQTTParentError("The current Parent has no management IP address")
+
+    wire_uuid = str(child.get("id") or "").upper()
+    topic = f"network/{wire_uuid}/speed"
+    target = f"{parent_ip}:5003"
+    try:
+        with MQTTClient(host, timeout=6.0, client_prefix="meshscope-hop") as client:
+            client.publish(topic, target, qos=1)
+    except (TimeoutError, OSError) as exc:
+        raise MQTTParentError(f"MQTT hop-test request failed: {exc}") from exc
+    return {
+        "accepted": True,
+        "topic": topic,
+        "target": target,
+        "direction": "child-to-parent",
+        "protocol": "thrulay",
+        "requestedAt": utc_now(),
+        "child": {"id": child.get("id"), "name": child.get("name")},
+        "parent": {
+            "id": parent.get("id"),
+            "name": parent.get("name"),
+            "ipAddress": parent_ip,
+        },
+    }
+
+
 def steer_parent(
     host: str,
     topology: dict[str, Any],

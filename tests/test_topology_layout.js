@@ -55,3 +55,13 @@ test("uses the browser width, compacts safe gaps, and scrolls only when cards ca
   assert.ok(narrow.contentWidth > 360);
   assert.equal(narrow.width, narrow.contentWidth);
 });
+
+test("uses the canonical Ethernet link type on a wired topology edge", () => {
+  const wiredNodes = [
+    { id: "main", name: "Main", online: true, isAuthority: true },
+    { id: "wired", name: "LivingRoom", online: true, parentId: "main", connectionType: "Wired", linkType: "Ethernet" },
+  ];
+  const layout = compute(wiredNodes);
+  assert.equal(layout.edges[0].band, "Ethernet");
+  assert.equal(layout.edges[0].source.id, "main");
+});

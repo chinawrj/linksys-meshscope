@@ -88,6 +88,7 @@ class LinksysMQTTParentTests(unittest.TestCase):
             "online": True,
             "isAuthority": True,
             "parentId": None,
+            "ipAddress": "192.168.1.1",
         }
         self.yard = {
             "id": "22222222-2222-4222-8222-222222222222",
@@ -162,6 +163,34 @@ class LinksysMQTTParentTests(unittest.TestCase):
         self.assertEqual(self.child["id"].upper(), document["uuid"])
         self.assertEqual("02:11:22:33:44:55", document["data"]["bssid"])
         self.assertTrue(report["accepted"])
+
+    def test_hop_test_targets_current_parent_with_upstream_direction(self):
+        client = mock.MagicMock()
+        client.__enter__.return_value = client
+        with mock.patch.object(mqtt_parent, "MQTTClient", return_value=client):
+            report = mqtt_parent.trigger_hop_throughput(
+                "192.0.2.1", self.topology, self.child["id"]
+            )
+        client.publish.assert_called_once_with(
+            f"network/{self.child['id'].upper()}/speed",
+            "192.168.1.1:5003",
+            qos=1,
+        )
+        self.assertEqual("child-to-parent", report["direction"])
+        self.assertEqual("thrulay", report["protocol"])
+
+    def test_hop_test_rejects_gateway(self):
+        with self.assertRaisesRegex(mqtt_parent.MQTTParentError, "no upstream"):
+            mqtt_parent.trigger_hop_throughput(
+                "192.0.2.1", self.topology, self.main["id"]
+            )
+
+    def test_hop_test_rejects_wired_node(self):
+        self.child["connectionType"] = "Wired"
+        with self.assertRaisesRegex(mqtt_parent.MQTTParentError, "wired Node"):
+            mqtt_parent.trigger_hop_throughput(
+                "192.0.2.1", self.topology, self.child["id"]
+            )
 
 
 if __name__ == "__main__":

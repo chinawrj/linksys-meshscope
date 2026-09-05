@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Fixed wired-backhaul topology semantics. MeshScope now renders Ethernet
+  separately from `5GH`/`5GL`, labels Linksys's LLDP-derived wired Parent as
+  unverified, and lets a saved Topology Lock mapping provide an explicit
+  display assignment (for example, LivingRoom → Main). Wired assignments never
+  trigger wireless MQTT steering or Thrulay refreshes, while the raw
+  Linksys-reported Parent IP remains visible for diagnosis.
+- Added a per-Node **Measure Child → Parent now** action to refresh Linksys's
+  existing Thrulay hop-throughput sample over MQTT without changing the
+  topology. The UI identifies the upstream direction, current Parent, source,
+  sample timestamp, waiting state, and bounded follow-up refreshes.
+- Added ESP32 and desktop `/api/refresh-hop-throughput` implementations with
+  online child/Parent validation, current-Parent targeting, MQTT Force-off
+  enforcement, QoS-1 broker acknowledgement, and a one-minute per-Node
+  cooldown.
+
 ## v0.7.1 — 2026-08-10
 
 - Removed the ESP32 dashboard password, unlock modal, RAM session store,

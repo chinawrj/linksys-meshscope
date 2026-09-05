@@ -95,7 +95,7 @@
         id: `${node.parentId}->${node.id}`,
         source: placed.get(node.parentId) || placed.get(rootNode.id),
         target: node,
-        band: node.band || node.connectionType || "Mesh",
+        band: node.linkType || node.band || node.connectionType || "Mesh",
         speedMbps: node.speedMbps,
         phyRateMbps: node.phyRateMbps,
         phyRateStale: node.phyRateStale,
