@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed Topology Lock round-robin starvation during long MQTT verification.
+  The scheduler now advances and persists its per-depth cursor only after a
+  request is actually queued; scans blocked by another active operation no
+  longer cause the same node to be selected repeatedly.
+- Fixed a false cycle rejection when steering a wireless child toward a wired
+  Parent. MQTT preflight now uses the Topology Lock's explicit wired layout for
+  cycle detection instead of Linksys's ambiguous LLDP-derived wired Parent.
+- Added evidence-based radio fallback for wired Parents. Topology Lock reuses a
+  previously verified band, alternates `5GL`/`5GH` after an exact request fails,
+  and exposes the selection reason with each MQTT operation.
 - Made the Topology Lock automatic MQTT action limit configurable from 10 to
   86,400 seconds under **Device configuration** and as a Home Assistant number
   entity. The ESP32 persists the value in NVS and defaults new installations to

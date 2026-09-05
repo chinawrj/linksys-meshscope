@@ -214,6 +214,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "TOPOLOGY_LOCK_CONFIRMATIONS = 3",
             'TOPOLOGY_LOCK_NVS_NAMESPACE = "meshscope_lock"',
             'TOPOLOGY_LOCK_COOLDOWN_NVS_KEY = "cooldown_s"',
+            '"lastSelectedNodeId"',
             "persist_topology_lock_locked()",
             "persist_topology_lock_cooldown_seconds(",
             "load_topology_lock_cooldown_seconds()",
@@ -256,6 +257,11 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "!topology_lock_expected_parent_settled_locked(nodes, mapping)",
             evaluate,
         )
+        selected_update = evaluate.index(
+            "topology_lock_last_selected_node_id = selected.node_id"
+        )
+        queued_check = evaluate.index("if (!queued)")
+        self.assertGreater(selected_update, queued_check)
 
         html = WEB_HTML.read_text(encoding="utf-8")
         app = WEB_APP.read_text(encoding="utf-8")
@@ -270,8 +276,10 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("meshscope_edge_set_topology_lock_rate_limit_seconds(x)", self.common)
 
     def test_topology_lock_uses_opposite_parent_backhaul_radio(self):
-        self.assertIn('parent_uplink == "5GH") return "5GL"', self.edge)
-        self.assertIn('parent_uplink == "5GL") return "5GH"', self.edge)
+        self.assertIn('parent_uplink == "5GH"', self.edge)
+        self.assertIn('return "5GL"', self.edge)
+        self.assertIn('parent_uplink == "5GL"', self.edge)
+        self.assertIn('return "5GH"', self.edge)
         self.assertIn("parent.authority", self.edge)
         evaluate = self.edge.split("static void evaluate_topology_lock(", 1)[1].split(
             "static bool collect_snapshot(", 1
@@ -279,6 +287,38 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("queue_topology_lock_mqtt_operation", evaluate)
         self.assertNotIn('"core/Reboot"', evaluate)
         self.assertIn("wired_connection_type(node->connection_type)", evaluate)
+
+    def test_wired_parent_radio_alternates_after_failure(self):
+        band = self.edge.split(
+            "static std::string topology_lock_recovery_band_locked(", 1
+        )[1].split("static bool queue_topology_lock_mqtt_operation", 1)[0]
+        for fragment in (
+            "wired_connection_type(parent.connection_type)",
+            "parent_steering_health.find",
+            "prior->second.consecutive_failures > 0",
+            'prior->second.band == "5GL" ? "5GH" : "5GL"',
+            'reason = "wired-parent-alternate-after-failure"',
+            'reason = "wired-parent-last-verified-band"',
+        ):
+            self.assertIn(fragment, band)
+        self.assertIn('"bandReason"', self.edge)
+
+    def test_mqtt_cycle_guard_uses_locked_parent_for_wired_nodes(self):
+        preflight = self.edge.split("static bool mqtt_preflight(\n", 2)[2].split(
+            "static esp_err_t mqtt_parent_get_handler", 1
+        )[0]
+        for fragment in (
+            "locked_wired_parents",
+            "wired_connection_type(mapped_node->connection_type)",
+            "locked_parent->second",
+            "effective_parent_id",
+            'error = "The requested Parent is a descendant of the child Node"',
+        ):
+            self.assertIn(fragment, preflight)
+        self.assertLess(
+            preflight.index("effective_parent_id"),
+            preflight.index("The requested Parent is a descendant"),
+        )
 
     def test_wired_nodes_cannot_run_wireless_hop_refresh(self):
         handler = self.edge.split("static esp_err_t mqtt_hop_test_handler(", 1)[1].split(

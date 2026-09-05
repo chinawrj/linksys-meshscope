@@ -243,6 +243,7 @@ struct MqttSteeringOperation {
   std::string parent_name;
   std::string previous_parent_id;
   std::string band;
+  std::string band_reason;
   std::string method = "auto";
   std::string child_station_bssid;
   std::string child_station_band;
@@ -3361,19 +3362,47 @@ static bool mqtt_preflight(
     NodeObservation &parent,
     std::string &error);
 
-static std::string topology_lock_recovery_band(
+static std::string topology_lock_recovery_band_locked(
     const NodeObservation &child,
-    const NodeObservation &parent) {
+    const NodeObservation &parent,
+    std::string &reason) {
   const std::string parent_uplink = ascii_upper(parent.backhaul_band);
-  if (!parent.authority && parent_uplink == "5GH") return "5GL";
-  if (!parent.authority && parent_uplink == "5GL") return "5GH";
+  if (!parent.authority && parent_uplink == "5GH") {
+    reason = "opposite-parent-uplink";
+    return "5GL";
+  }
+  if (!parent.authority && parent_uplink == "5GL") {
+    reason = "opposite-parent-uplink";
+    return "5GH";
+  }
+  if (wired_connection_type(parent.connection_type)) {
+    const auto prior = parent_steering_health.find(ascii_lower(child.id));
+    if (prior != parent_steering_health.end() &&
+        same_node_id(prior->second.target_parent_id, parent.id) &&
+        (prior->second.band == "5GL" || prior->second.band == "5GH")) {
+      if (prior->second.consecutive_failures > 0) {
+        reason = "wired-parent-alternate-after-failure";
+        return prior->second.band == "5GL" ? "5GH" : "5GL";
+      }
+      if (prior->second.successful_moves > 0 &&
+          !prior->second.last_success_at.empty()) {
+        reason = "wired-parent-last-verified-band";
+        return prior->second.band;
+      }
+    }
+  }
   const std::string child_uplink = ascii_upper(child.backhaul_band);
+  reason = parent.authority
+               ? "gateway-preserve-child-band"
+               : "wired-parent-preserve-child-band";
   return child_uplink == "5GL" ? "5GL" : "5GH";
 }
 
 static bool queue_topology_lock_mqtt_operation(
     const NodeObservation &child,
     const NodeObservation &parent,
+    const std::string &band,
+    const std::string &band_reason,
     std::string &error) {
   if (mqtt_steering_mutex == nullptr ||
       xSemaphoreTake(mqtt_steering_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
@@ -3410,7 +3439,8 @@ static bool queue_topology_lock_mqtt_operation(
   mqtt_operation.parent_id = parent.id;
   mqtt_operation.parent_name = parent.name;
   mqtt_operation.previous_parent_id = child.parent_id;
-  mqtt_operation.band = topology_lock_recovery_band(child, parent);
+  mqtt_operation.band = band;
+  mqtt_operation.band_reason = band_reason;
   mqtt_operation.method = "bh-config";
   mqtt_operation.child_station_bssid = child.station_bssid;
   mqtt_operation.child_station_band = child.backhaul_band;
@@ -3535,6 +3565,10 @@ static bool persist_topology_lock_locked() {
       root,
       "lastActionUnknownTime",
       topology_lock_last_action_unknown_time);
+  cJSON_AddStringToObject(
+      root,
+      "lastSelectedNodeId",
+      topology_lock_last_selected_node_id.c_str());
   cJSON *nodes = cJSON_AddArrayToObject(root, "nodes");
   for (const auto &mapping : topology_lock_mappings) {
     cJSON *item = cJSON_CreateObject();
@@ -3612,6 +3646,11 @@ static void load_topology_lock() {
   topology_lock_enabled =
       json_bool(root, "enabled") && !topology_lock_mappings.empty();
   topology_lock_saved_at = json_string(root, "lockedAt") ?: "";
+  const char *last_selected = json_string(root, "lastSelectedNodeId");
+  topology_lock_last_selected_node_id =
+      last_selected != nullptr && strlen(last_selected) <= 128
+          ? last_selected
+          : "";
   const cJSON *last_action =
       cJSON_GetObjectItemCaseSensitive(root, "lastActionEpoch");
   if (cJSON_IsNumber(last_action) && last_action->valuedouble > 0) {
@@ -3942,6 +3981,9 @@ static void evaluate_topology_lock(
   }
   LockedParent selected;
   NodeObservation selected_node;
+  NodeObservation selected_parent;
+  std::string selected_band;
+  std::string selected_band_reason;
   const uint32_t remaining_ms = topology_lock_remaining_ms_locked();
   for (const auto &mapping : topology_lock_mappings) {
     const NodeObservation *node = find_observed_node(nodes, mapping.node_id);
@@ -4002,10 +4044,12 @@ static void evaluate_topology_lock(
       if (!selected.node_id.empty() && depth >= selected_depth) continue;
       selected = mapping;
       selected_node = *node;
+      selected_parent = *parent;
       selected_depth = depth;
     }
     if (!selected.node_id.empty()) {
-      topology_lock_last_selected_node_id = selected.node_id;
+      selected_band = topology_lock_recovery_band_locked(
+          selected_node, selected_parent, selected_band_reason);
     }
   }
   xSemaphoreGive(topology_lock_mutex);
@@ -4027,6 +4071,8 @@ static void evaluate_topology_lock(
   const bool queued = queue_topology_lock_mqtt_operation(
       checked_child,
       checked_parent,
+      selected_band,
+      selected_band_reason,
       error);
   if (!queued) {
     ESP_LOGW(TAG, "Topology lock MQTT request not queued: %s", error.c_str());
@@ -4034,6 +4080,7 @@ static void evaluate_topology_lock(
   }
 
   if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+    topology_lock_last_selected_node_id = selected.node_id;
     topology_lock_action_seen_this_boot = true;
     topology_lock_last_action_uptime_ms = uptime_ms();
     topology_lock_last_action_epoch = wall_clock_epoch();
@@ -4059,11 +4106,12 @@ static void evaluate_topology_lock(
   }
   ESP_LOGI(
       TAG,
-      "Topology lock queued MQTT steering for %s: current parent=%s expected parent=%s band=%s",
+      "Topology lock queued MQTT steering for %s: current parent=%s expected parent=%s band=%s reason=%s",
       checked_child.name.c_str(),
       checked_child.parent_id.c_str(),
       checked_parent.id.c_str(),
-      topology_lock_recovery_band(checked_child, checked_parent).c_str());
+      selected_band.c_str(),
+      selected_band_reason.c_str());
 }
 
 static bool collect_snapshot(
@@ -5586,6 +5634,8 @@ static cJSON *mqtt_parent_steering_json() {
   cJSON_AddStringToObject(operation, "parentId", mqtt_operation.parent_id.c_str());
   cJSON_AddStringToObject(operation, "parentName", mqtt_operation.parent_name.c_str());
   cJSON_AddStringToObject(operation, "band", mqtt_operation.band.c_str());
+  cJSON_AddStringToObject(
+      operation, "bandReason", mqtt_operation.band_reason.c_str());
   cJSON_AddStringToObject(operation, "method", mqtt_operation.method.c_str());
   cJSON_AddStringToObject(
       operation,
@@ -5734,13 +5784,37 @@ static bool mqtt_preflight(
     error = "The Node is already connected to the requested Parent";
     return false;
   }
+  std::map<std::string, std::string> locked_wired_parents;
+  if (topology_lock_mutex == nullptr ||
+      xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    error = "Topology Lock is temporarily busy";
+    return false;
+  }
+  if (topology_lock_enabled) {
+    for (const auto &mapping : topology_lock_mappings) {
+      const NodeObservation *mapped_node =
+          find_observed_node(nodes, mapping.node_id);
+      if (mapped_node == nullptr ||
+          !wired_connection_type(mapped_node->connection_type)) {
+        continue;
+      }
+      locked_wired_parents[ascii_lower(mapping.node_id)] = mapping.parent_id;
+    }
+  }
+  xSemaphoreGive(topology_lock_mutex);
   std::set<std::string> descendants;
   std::vector<std::string> pending{ascii_lower(child.id)};
   while (!pending.empty()) {
     const std::string current = pending.back();
     pending.pop_back();
     for (const auto &node : nodes) {
-      if (!same_node_id(node.parent_id, current)) continue;
+      const auto locked_parent =
+          locked_wired_parents.find(ascii_lower(node.id));
+      const std::string &effective_parent_id =
+          locked_parent != locked_wired_parents.end()
+              ? locked_parent->second
+              : node.parent_id;
+      if (!same_node_id(effective_parent_id, current)) continue;
       const std::string candidate = ascii_lower(node.id);
       if (descendants.insert(candidate).second) pending.push_back(candidate);
     }
@@ -6121,6 +6195,7 @@ static esp_err_t mqtt_steer_handler(httpd_req_t *request) {
   mqtt_operation.parent_name = parent.name;
   mqtt_operation.previous_parent_id = child.parent_id;
   mqtt_operation.band = requested_band;
+  mqtt_operation.band_reason = "manual-selection";
   mqtt_operation.method = requested_method;
   mqtt_operation.child_station_bssid = child.station_bssid;
   mqtt_operation.child_station_band = child.backhaul_band;
@@ -6200,15 +6275,19 @@ static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
     const std::string previous_saved_at = topology_lock_saved_at;
     const std::vector<LockedParent> previous_mappings =
         topology_lock_mappings;
+    const std::string previous_last_selected =
+        topology_lock_last_selected_node_id;
     topology_lock_enabled = false;
     topology_lock_saved_at.clear();
     topology_lock_mappings.clear();
+    topology_lock_last_selected_node_id.clear();
     topology_lock_mismatch_counts.clear();
     const bool saved = persist_topology_lock_locked();
     if (!saved) {
       topology_lock_enabled = previous_enabled;
       topology_lock_saved_at = previous_saved_at;
       topology_lock_mappings = previous_mappings;
+      topology_lock_last_selected_node_id = previous_last_selected;
     }
     xSemaphoreGive(topology_lock_mutex);
     cJSON_Delete(payload);
@@ -6269,9 +6348,21 @@ static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
   const std::string previous_saved_at = topology_lock_saved_at;
   const std::vector<LockedParent> previous_mappings =
       topology_lock_mappings;
+  const std::string previous_last_selected =
+      topology_lock_last_selected_node_id;
   topology_lock_enabled = true;
   topology_lock_saved_at = iso_timestamp();
   topology_lock_mappings = std::move(mappings);
+  const bool last_selected_still_present = std::any_of(
+      topology_lock_mappings.begin(),
+      topology_lock_mappings.end(),
+      [&](const LockedParent &mapping) {
+        return same_node_id(
+            mapping.node_id, topology_lock_last_selected_node_id);
+      });
+  if (!last_selected_still_present) {
+    topology_lock_last_selected_node_id.clear();
+  }
   const size_t applied_count = topology_lock_mappings.size();
   topology_lock_mismatch_counts.clear();
   const bool saved = persist_topology_lock_locked();
@@ -6279,6 +6370,7 @@ static esp_err_t topology_lock_post_handler(httpd_req_t *request) {
     topology_lock_enabled = previous_enabled;
     topology_lock_saved_at = previous_saved_at;
     topology_lock_mappings = previous_mappings;
+    topology_lock_last_selected_node_id = previous_last_selected;
   }
   xSemaphoreGive(topology_lock_mutex);
   if (!saved) {
