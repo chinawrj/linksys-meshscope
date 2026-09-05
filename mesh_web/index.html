@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#workspaceNav">Skip to network workspace</a>
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="#" aria-label="MeshScope home">
@@ -46,7 +47,7 @@
         <section class="hero" aria-labelledby="pageTitle">
           <div>
             <p class="eyebrow">HOME MESH / <span id="routerLabel">192.168.1.1</span></p>
-            <h1 id="pageTitle">Your network, at a glance.</h1>
+            <h1 id="pageTitle">Your mesh network</h1>
             <p class="hero-copy" id="heroCopy">
               See every Velop node, backhaul link, and connected device in real time. Your data stays between this device and your router.
             </p>
@@ -59,56 +60,78 @@
         </section>
 
         <section class="stat-grid" aria-label="Network summary">
-          <article class="stat-card stat-blue">
+          <button type="button" class="stat-card stat-blue" id="summaryNodes" aria-label="View all mesh nodes">
             <span class="stat-icon" aria-hidden="true">◎</span>
             <div><strong id="statNodes">—</strong><span>Online nodes</span></div>
             <small id="statNodesSub">Waiting for data</small>
-          </article>
-          <article class="stat-card stat-mint">
+          </button>
+          <button type="button" class="stat-card stat-mint" id="summaryClients" aria-label="View connected clients">
             <span class="stat-icon" aria-hidden="true">⌁</span>
             <div><strong id="statClients">—</strong><span>Online clients</span></div>
             <small id="statClientsSub">Waiting for data</small>
-          </article>
+          </button>
           <article class="stat-card stat-amber">
             <span class="stat-icon" aria-hidden="true">↯</span>
-            <div><strong id="statBackhaul">—</strong><span>Total backhaul</span></div>
+            <div><strong id="statBackhaul">—</strong><span>Total hop throughput</span></div>
             <small id="statBackhaulSub">Waiting for data</small>
           </article>
-          <article class="stat-card stat-coral">
+          <button type="button" class="stat-card stat-coral" id="summaryAttention" aria-label="View nodes that need attention">
             <span class="stat-icon" aria-hidden="true">!</span>
             <div><strong id="statAttention">—</strong><span>Needs attention</span></div>
             <small id="statAttentionSub">Waiting for data</small>
-          </article>
+          </button>
         </section>
 
-        <section class="dashboard-grid">
-          <article class="panel topology-panel">
+        <nav class="workspace-nav" id="workspaceNav" aria-label="Network workspace">
+          <button type="button" data-workspace="topology" aria-current="page">Topology <span id="navNodeCount">—</span></button>
+          <button type="button" data-workspace="clients">Clients <span id="navClientCount">—</span></button>
+          <button type="button" data-workspace="recovery">Recovery <span id="navRecoveryState">Off</span></button>
+          <span class="workspace-hint">Select a node to inspect its links and clients</span>
+        </nav>
+        <div class="workspace-notice" id="workspaceNotice" role="status" hidden></div>
+
+        <section class="dashboard-grid" id="networkWorkspace">
+          <article class="panel topology-panel" id="topologyPanel">
             <div class="panel-heading">
               <div>
                 <p class="section-kicker">LIVE MAP</p>
-                <h2>Mesh Topology</h2>
+                <h2 id="topologyTitle">Mesh topology</h2>
               </div>
               <div class="topology-heading-tools">
                 <button class="topology-recovery-chip" id="topologyRecoveryChip" type="button">Recovery: Off · Set up</button>
-                <div class="legend" aria-label="Topology legend">
+                <details class="legend-disclosure"><summary>Link legend</summary><div class="legend" aria-label="Topology legend">
                   <span><i class="legend-line band-high"></i>5GH high-band backhaul</span>
                   <span><i class="legend-line band-low"></i>5GL low-band backhaul</span>
+                  <span><i class="legend-line band-ethernet"></i>Ethernet backhaul</span>
                   <span><i class="legend-dot online"></i>Online</span>
                   <span><i class="legend-dot warning"></i>Weak signal</span>
                   <span><i class="legend-dot offline"></i>Offline</span>
-                </div>
+                </div></details>
               </div>
             </div>
-            <p class="map-scroll-hint">Swipe horizontally to explore the complete topology.</p>
+            <div class="topology-toolbar">
+              <div class="view-switch" role="group" aria-label="Topology view">
+                <button type="button" data-topology-view="graph" aria-pressed="true">Graph</button>
+                <button type="button" data-topology-view="list" aria-pressed="false">Node list</button>
+              </div>
+              <label class="search-field node-search"><span aria-hidden="true">⌕</span><input id="nodeSearch" type="search" placeholder="Find a node…" aria-label="Search nodes by name, model or IP" /></label>
+              <button type="button" class="attention-filter" id="nodeAttentionFilter" aria-pressed="false">Needs attention <span id="nodeAttentionCount">0</span></button>
+              <button type="button" class="button button-quiet" id="healthToggle" aria-expanded="false" aria-controls="healthPanel">Network details</button>
+            </div>
+            <div class="node-view-summary"><span id="nodeViewSummary">Waiting for topology</span><button class="text-button" id="clearNodeFilters" type="button" hidden>Clear filters</button><span id="graphTools"><button class="text-button" id="graphFit" type="button">Fit graph</button><button class="text-button" id="graphActualSize" type="button">100%</button></span><button class="text-button" id="focusTopology" type="button" aria-pressed="false">Expand view</button></div>
+            <div class="node-list" id="nodeList" hidden></div>
+            <p class="map-scroll-hint">Scroll to explore, or choose Fit graph to see every link.</p>
             <div class="map-scroll">
-              <div class="mesh-map" id="meshMap" aria-live="polite">
+              <div class="map-stage" id="mapStage"><div class="mesh-map" id="meshMap" aria-label="Mesh topology diagram">
                 <div class="map-empty">
                   <span class="empty-orbit" aria-hidden="true"></span>
                   <strong>Connect to build the live topology</strong>
                   <p>The gateway, child nodes, and backhaul links will appear here.</p>
                 </div>
-              </div>
+              </div></div>
             </div>
+            <div class="recovery-workspace" id="recoveryWorkspace" hidden>
+            <div class="recovery-intro"><p class="section-kicker">PARENT CONTROL</p><h2>Keep the connections you want.</h2><p>Move one node now, or save a desired topology for automatic recovery. Current status and countdowns stay on the topology.</p></div>
             <section class="topology-lock-panel" id="topologyLockPanel" aria-labelledby="topologyLockTitle">
               <div class="topology-lock-summary">
                 <span class="topology-lock-icon" id="topologyLockIcon" aria-hidden="true">◇</span>
@@ -146,7 +169,7 @@
                 </div>
                 <label class="topology-lock-warning">
                   <input id="topologyLockAcknowledgement" type="checkbox" />
-                  <span><strong>Enable automatic topology recovery?</strong> After three confirmed mismatches, MeshScope sends an exact MQTT Parent request and verifies the result across two fresh topology generations. The node and its clients may disconnect briefly while wireless backhaul reconnects. MeshScope sends at most one automatic request every five minutes.</span>
+                  <span id="topologyLockRateLimitNotice"><strong>Enable automatic topology recovery?</strong> After three confirmed mismatches, MeshScope sends an exact MQTT Parent request and verifies the result across two fresh topology generations. The node and its clients may disconnect briefly while wireless backhaul reconnects. MeshScope sends at most one automatic request every 60 seconds by default; change this in Device configuration.</span>
                 </label>
                 <p class="topology-lock-validation" id="topologyLockValidation" role="alert"></p>
                 <div class="topology-lock-editor-actions">
@@ -203,9 +226,10 @@
               <p class="parent-steering-validation" id="parentSteeringValidation" role="alert"></p>
               <div class="parent-steering-operation" id="parentSteeringOperation" role="status" aria-live="polite" hidden></div>
             </section>
+            </div>
           </article>
 
-          <aside class="panel health-panel">
+          <aside class="panel health-panel" id="healthPanel" hidden>
             <div class="panel-heading">
               <div>
                 <p class="section-kicker">NETWORK PULSE</p>
@@ -230,7 +254,7 @@
           </aside>
         </section>
 
-        <section class="panel clients-panel">
+        <section class="panel clients-panel" id="clientsWorkspace" hidden>
           <div class="panel-heading clients-heading">
             <div>
               <p class="section-kicker">CONNECTED DEVICES</p>
@@ -243,8 +267,9 @@
               </div>
               <label class="search-field">
                 <span aria-hidden="true">⌕</span>
-                <input id="clientSearch" type="search" placeholder="Search name, IP, or MAC" />
+                <input id="clientSearch" type="search" placeholder="Search name, IP, or MAC" aria-label="Search clients" />
               </label>
+              <label class="client-node-filter"><span>Node</span><select id="clientNodeFilter" aria-label="Filter clients by node"><option value="">All nodes</option></select></label>
             </div>
           </div>
           <div class="table-wrap">
@@ -290,7 +315,15 @@
         <div class="managed-connection-panel" id="managedConnectionPanel" hidden>
           <span>Router address in firmware</span>
           <strong id="managedRouterHost">—</strong>
-          <p>The page can refresh the current configuration but cannot receive or change credentials.</p>
+          <p>The router address and credentials remain firmware-managed.</p>
+          <label class="device-config-field" for="topologyLockRateLimitSeconds">
+            <span>Topology Lock action rate limit</span>
+            <div class="number-unit-field">
+              <input id="topologyLockRateLimitSeconds" name="topologyLockRateLimitSeconds" type="number" inputmode="numeric" min="10" max="86400" step="1" value="60" required />
+              <b>seconds</b>
+            </div>
+            <small>Minimum delay between automatic MQTT Parent moves. Default: 60 seconds.</small>
+          </label>
         </div>
         <div id="editableConnectionFields">
           <label>
@@ -317,7 +350,7 @@
     </div>
 
     <div class="drawer-backdrop" id="detailBackdrop"></div>
-    <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-label="Details" aria-hidden="true">
+    <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-label="Details" aria-hidden="true" inert>
       <button class="modal-close" id="detailClose" type="button" aria-label="Close details">×</button>
       <div id="detailContent"></div>
     </aside>
@@ -331,6 +364,7 @@
     <script src="/topology-lock-state.js" defer></script>
     <script src="/mqtt-parent-steering-state.js" defer></script>
     <script src="/linksys-normalize.js" defer></script>
+    <script src="/workspace.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>

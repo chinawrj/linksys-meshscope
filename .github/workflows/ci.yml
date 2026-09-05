@@ -63,6 +63,7 @@ jobs:
           node --check mesh_web/refresh-state.js
           node --check mesh_web/topology-layout.js
           node --check mesh_web/topology-lock-state.js
+          node --check mesh_web/workspace.js
 
       - name: Run JavaScript tests
         run: |
@@ -74,7 +75,8 @@ jobs:
             tests/test_detail_data.js \
             tests/test_node_restart_state.js \
             tests/test_mqtt_parent_steering_state.js \
-            tests/test_linksys_normalize.js
+            tests/test_linksys_normalize.js \
+            tests/test_workspace.js
 
   firmware-build:
     name: Build ${{ matrix.target }}

@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.8.0 — 2026-09-05
+
+- Reorganized the dashboard into **Topology**, **Clients**, and **Recovery**
+  workspaces. Summary cards open the relevant view; network details and the
+  link legend remain available on demand.
+- Added a searchable, parent-grouped Node list with a Needs attention filter.
+  Phones default to the list; desktop browsers default to the graph. Both
+  views use the same Node card renderer and retain parent state, countdowns,
+  5GH/5GL, channel, hop throughput, PHY, RSSI, and online mesh-child counts.
+- Added Fit graph, 100%, and Expand view controls. Tree layout now measures
+  each card's actual height so alerts do not detach link anchors or cause
+  overlapping cards, and healthy nodes do not inherit large empty cards.
+- Organized Node details into Overview, Clients, Actions, and Details tabs,
+  including parent/child navigation and a client preview on the first tap.
+  All original identity fields, capabilities, samples, and steering counters
+  remain available.
+- Made the Client table readable as vertical cards on iPhone-sized screens,
+  retaining every field and adding a node filter. Improved touch targets,
+  input sizes, dialog focus, keyboard navigation, and reduced-motion behavior.
+- Preserved open configuration forms, edited values, detail tabs, and scroll
+  positions across automatic refresh. Missing PHY values remain unknown
+  instead of being converted to a zero rate.
+- Added an offline ESP32-style preview with synthetic recovery, degraded,
+  offline, and nodes-only scenarios. It exercises the actual gzip bundle
+  under the ESP32 Content Security Policy without contacting a router.
+
+- Publish a clearly labeled, read-only degraded topology when Linksys returns
+  an invalid `GetBackhaulInfo` response during node reboot or mesh
+  reconvergence. Device-list connections keep Node and Client liveness useful,
+  while live Parent relationships remain explicitly unverified and all
+  automatic steering is paused. MeshScope does not automatically invoke
+  Linksys' active `RefreshSlaveBackhaulData` performance test.
+- Show every offline Node in the topology's horizontally scrollable offline
+  strip instead of hiding entries behind a non-interactive “more” count.
+- Prefer ESPHome's persisted fast-connect path after the first successful Wi-Fi
+  association. This reduces full beacon scans during mesh reconvergence and
+  avoids the ESP32-C5 driver path observed crashing in `scan_parse_beacon`.
+
+- Fixed Topology Lock round-robin starvation during long MQTT verification.
+  The scheduler now advances and persists its per-depth cursor only after a
+  request is actually queued; scans blocked by another active operation no
+  longer cause the same node to be selected repeatedly.
+- Fixed a false cycle rejection when steering a wireless child toward a wired
+  Parent. MQTT preflight now uses the Topology Lock's explicit wired layout for
+  cycle detection instead of Linksys's ambiguous LLDP-derived wired Parent.
+- Added evidence-based radio fallback for wired Parents. Topology Lock reuses a
+  previously verified band, alternates `5GL`/`5GH` after an exact request fails,
+  and exposes the selection reason with each MQTT operation.
+- Made the Topology Lock automatic MQTT action limit configurable from 10 to
+  86,400 seconds under **Device configuration** and as a Home Assistant number
+  entity. The ESP32 persists the value in NVS and defaults new installations to
+  60 seconds.
+- Changed multi-node recovery scheduling to follow the saved hierarchy from
+  the gateway toward the leaves. Eligible nodes at the same depth retain fair
+  round-robin ordering, and children whose desired Parent is offline remain
+  skipped without consuming the global action slot.
+- Fixed wired-backhaul topology semantics. MeshScope now renders Ethernet
+  separately from `5GH`/`5GL`, labels Linksys's LLDP-derived wired Parent as
+  unverified, and lets a saved Topology Lock mapping provide an explicit
+  display assignment (for example, LivingRoom → Main). Wired assignments never
+  trigger wireless MQTT steering or Thrulay refreshes, while the raw
+  Linksys-reported Parent IP remains visible for diagnosis.
+- Added a per-Node **Measure Child → Parent now** action to refresh Linksys's
+  existing Thrulay hop-throughput sample over MQTT without changing the
+  topology. The UI identifies the upstream direction, current Parent, source,
+  sample timestamp, waiting state, and bounded follow-up refreshes.
+- Added ESP32 and desktop `/api/refresh-hop-throughput` implementations with
+  online child/Parent validation, current-Parent targeting, MQTT Force-off
+  enforcement, QoS-1 broker acknowledgement, and a one-minute per-Node
+  cooldown.
+
 ## v0.7.1 — 2026-08-10
 
 - Removed the ESP32 dashboard password, unlock modal, RAM session store,
@@ -22,9 +93,10 @@
   gaps, and narrow views confine horizontal scrolling to the map while keeping
   full-size Node cards and all diagnostics.
 - Added live backhaul PHY rate collection from each child Node's MQTT
-  `BH/status` (`phyRate_2`/`phyRate`) every 30 seconds. Topology links, Node
-  cards, and Node details now show PHY rate alongside the existing JNAP
-  `speedMbps` estimate, including source, raw value, age, and stale state.
+  `BH/status` (`phyRate_2`/`phyRate`) after boot and at most every 30 minutes.
+  Topology links, Node cards, and Node details now show PHY rate alongside the
+  existing JNAP `speedMbps` measured hop throughput, including source, raw
+  value, age, and stale state.
 - Changed ESP32 Topology Lock recovery from guarded `core/Reboot` retries to
   exact MQTT `BH/config` Parent steering. Auto capability detection remains
   the default and Force off blocks automatic recovery.

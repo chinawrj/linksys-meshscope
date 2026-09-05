@@ -10,9 +10,9 @@
           managed,
           settingsLabel: "Device configuration",
           title: "ESP32 device configuration",
-          description: "The router address and credentials are managed by the ESPHome firmware. This page cannot receive or change them.",
-          note: "To make changes, edit your local ESPHome YAML and reinstall over USB or OTA.",
-          submitLabel: "Reload network",
+          description: "Router credentials stay in ESPHome firmware. Runtime behavior can be configured here.",
+          note: "The action rate limit is saved on the ESP32 and survives restarts. Credentials are never returned to this page.",
+          submitLabel: "Save & reload network",
         }
       : {
           managed,

@@ -26,7 +26,10 @@
   }
 
   function nodeDetailRows(node, formatNumber = (value) => String(value ?? "—")) {
-    const phyRate = Number(node.phyRateMbps);
+    const connection = String(node.connectionType || "").trim().toLowerCase();
+    const isWired = node.isWired === true || connection === "wired" || connection === "ethernet";
+    const phyRate = node.phyRateMbps === null || node.phyRateMbps === undefined || node.phyRateMbps === ""
+      ? NaN : Number(node.phyRateMbps);
     const formattedPhyRate = Number.isFinite(phyRate)
       ? phyRate >= 1000
         ? `${formatNumber(phyRate / 1000, 2)} Gbps`
@@ -39,20 +42,22 @@
         ["Current status", node.online ? "Online" : "Offline"],
         ["Connected clients", `${node.clientCount}`],
         [
-          "Backhaul rate",
-          node.speedMbps
+          isWired ? "Ethernet link" : "Hop throughput",
+          node.speedMbps !== null && node.speedMbps !== undefined
             ? `${formatNumber(node.speedMbps)} Mbps`
             : node.isAuthority
               ? "Gateway"
               : "—",
         ],
         [
-          "Link PHY rate",
+          isWired ? "Port PHY rate" : "Link PHY rate",
           `${formattedPhyRate}${node.phyRateStale ? " · Stale sample" : ""}`,
         ],
         [
-          "Backhaul signal",
-          node.rssi !== null && node.rssi !== undefined
+          isWired ? "Backhaul medium" : "Backhaul signal",
+          isWired
+            ? "Ethernet · No RF signal"
+            : node.rssi !== null && node.rssi !== undefined
             ? `${node.rssi} dBm · ${node.quality?.label || "Unknown"}`
             : "—",
         ],
@@ -61,10 +66,28 @@
         ["Model", node.model],
         ["IP address", node.ipAddress],
         ["MAC address", node.macAddress],
+        ["Connection type", isWired ? "Ethernet" : node.connectionType || "Wireless"],
         ["Parent node", node.parentName || (node.isAuthority ? "Internet / WAN" : "—")],
-        ["Backhaul band", node.band],
-        ["Channel", node.channel],
-        ["PHY source", node.isAuthority ? "—" : "MQTT BH/status · Child backhaul interface"],
+        ...(isWired
+          ? [[
+              "Wired parent basis",
+              node.parentSource === "topology-lock-wired-assignment"
+                ? "Manual Topology Lock assignment · Not automatically verified"
+                : "Linksys LLDP report · Treat as unverified on switched LANs",
+            ]]
+          : []),
+        ["Backhaul band", isWired ? "Not applicable · Ethernet" : node.band],
+        ["Channel", isWired ? "Not applicable" : node.channel],
+        [
+          "Hop source",
+          node.isAuthority
+            ? "—"
+            : isWired
+              ? "JNAP GetBackhaulInfo · Ethernet link status"
+              : "JNAP GetBackhaulInfo · Child → Parent Thrulay",
+        ],
+        ["Hop sample time", node.isAuthority ? "—" : node.timestamp || "—"],
+        ["PHY source", node.isAuthority ? "—" : isWired ? "MQTT BH/status · Ethernet interface" : "MQTT BH/status · Child backhaul interface"],
         ["PHY raw value", node.phyRateRaw || "—"],
         [
           "PHY sample age",
@@ -72,6 +95,9 @@
             ? `${formatNumber(node.phyRateAgeSeconds)} seconds`
             : "—",
         ],
+        ...(isWired && node.reportedParentIpAddress
+          ? [["Linksys-reported wired parent IP", `${node.reportedParentIpAddress}${node.reportedParentIpAddress !== node.parentIpAddress ? " · Differs from manual layout" : ""}`]]
+          : []),
         ["Firmware version", node.firmwareVersion],
         ["Hardware version", node.hardwareVersion],
         ["Serial number", node.serialNumber],

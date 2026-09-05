@@ -22,6 +22,7 @@ SCRIPT_NAMES = (
     "topology-lock-state.js",
     "mqtt-parent-steering-state.js",
     "linksys-normalize.js",
+    "workspace.js",
     "app.js",
 )
 SOURCE_NAMES = ("index.html", "styles.css", *SCRIPT_NAMES)

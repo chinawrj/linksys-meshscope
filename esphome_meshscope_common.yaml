@@ -35,6 +35,12 @@ wifi:
   ssid: "${meshscope_wifi_ssid}"
   password: "${meshscope_wifi_password}"
   power_save_mode: NONE
+  # Remember the last successful mesh AP and channel. This lets ESPHome try a
+  # direct reconnect before scanning every beacon again when the Linksys mesh
+  # is reconverging (and avoids a known-fragile ESP32-C5 scan path).
+  fast_connect:
+    enabled: true
+    storage: flash
   post_connect_roaming: false
   reboot_timeout: 5min
 
@@ -68,6 +74,22 @@ binary_sensor:
     id: meshscope_mqtt_parent_available
     icon: mdi:lan-connect
     lambda: return meshscope_edge_mqtt_parent_available();
+
+number:
+  - platform: template
+    name: Topology Lock Action Rate Limit
+    id: meshscope_topology_lock_rate_limit
+    icon: mdi:timer-cog-outline
+    entity_category: config
+    unit_of_measurement: s
+    min_value: 10
+    max_value: 86400
+    step: 1
+    mode: box
+    lambda: return meshscope_edge_topology_lock_rate_limit_seconds();
+    set_action:
+      - lambda: meshscope_edge_set_topology_lock_rate_limit_seconds(x);
+    update_interval: 10s
 
 sensor:
   - platform: template

@@ -40,6 +40,10 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         for fragment in (
             "api:",
             "reboot_timeout: 5min",
+            "fast_connect:",
+            "enabled: true",
+            "storage: flash",
+            "post_connect_roaming: false",
             "encryption:",
             "ota:",
             "platform: sntp",
@@ -128,6 +132,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"/api/node-sysinfo"',
             '"/api/node-radio-info"',
             '"/api/restart-node"',
+            '"/api/refresh-hop-throughput"',
             '"/api/node-steering-mode"',
             '"/api/topology-lock"',
             '"/api/mqtt-parent-steering"',
@@ -189,7 +194,8 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
         self.assertIn("#settingsButton::after", css)
         self.assertNotIn("\n  .button-quiet::after", css)
         self.assertNotIn(".legend {\n    display: none;", css)
-        self.assertIn("Swipe horizontally to explore the complete topology.", html)
+        self.assertIn('data-topology-view="list"', html)
+        self.assertIn('id="graphFit"', html)
         self.assertIn(".map-scroll-hint", css)
 
     def test_topology_positions_remain_compatible_with_strict_csp(self):
@@ -207,13 +213,24 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
 
     def test_topology_lock_is_persistent_observable_and_rate_limited(self):
         for fragment in (
-            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MS = 5 * 60 * 1000",
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_DEFAULT_SECONDS = 60",
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MIN_SECONDS = 10",
+            "TOPOLOGY_LOCK_ACTION_COOLDOWN_MAX_SECONDS = 24 * 60 * 60",
             "TOPOLOGY_LOCK_CONFIRMATIONS = 3",
             'TOPOLOGY_LOCK_NVS_NAMESPACE = "meshscope_lock"',
+            'TOPOLOGY_LOCK_COOLDOWN_NVS_KEY = "cooldown_s"',
+            '"lastSelectedNodeId"',
             "persist_topology_lock_locked()",
+            "persist_topology_lock_cooldown_seconds(",
+            "load_topology_lock_cooldown_seconds()",
+            "set_topology_lock_cooldown_seconds(",
             "load_topology_lock()",
             "validate_topology_lock_mappings(",
             "evaluate_topology_lock(",
+            "topology_lock_expected_depth_locked(",
+            "topology_lock_expected_parent_settled_locked(",
+            '"topologyLockRateLimitSeconds"',
+            '"/api/device-configuration"',
             '"nextActionInSeconds"',
             '"expectedParentOnline"',
             '"confirmations"',
@@ -223,6 +240,8 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             "queue_topology_lock_mqtt_operation(",
             'mqtt_operation.origin = "topology-lock"',
             "restart_cooldowns.find(mapping.node_id)",
+            'status = "wired-manual"',
+            "wired_connection_type(node->connection_type)",
         ):
             self.assertIn(fragment, self.edge)
         self.assertRegex(
@@ -233,16 +252,124 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
                 re.MULTILINE,
             ),
         )
+        evaluate = self.edge.split("static void evaluate_topology_lock(", 1)[1].split(
+            "static bool collect_snapshot(", 1
+        )[0]
+        self.assertIn("size_t selected_depth", evaluate)
+        self.assertIn("depth >= selected_depth", evaluate)
+        self.assertIn("topology_lock_last_selected_node_id", evaluate)
+        self.assertIn(
+            "!topology_lock_expected_parent_settled_locked(nodes, mapping)",
+            evaluate,
+        )
+        selected_update = evaluate.index(
+            "topology_lock_last_selected_node_id = selected.node_id"
+        )
+        queued_check = evaluate.index("if (!queued)")
+        self.assertGreater(selected_update, queued_check)
+
+        html = WEB_HTML.read_text(encoding="utf-8")
+        app = WEB_APP.read_text(encoding="utf-8")
+        for fragment in (
+            'id="topologyLockRateLimitSeconds"',
+            'min="10" max="86400"',
+            'api("/api/device-configuration"',
+            "from root to leaves",
+        ):
+            self.assertIn(fragment, html + app)
+        self.assertIn("Topology Lock Action Rate Limit", self.common)
+        self.assertIn("meshscope_edge_set_topology_lock_rate_limit_seconds(x)", self.common)
 
     def test_topology_lock_uses_opposite_parent_backhaul_radio(self):
-        self.assertIn('parent_uplink == "5GH") return "5GL"', self.edge)
-        self.assertIn('parent_uplink == "5GL") return "5GH"', self.edge)
+        self.assertIn('parent_uplink == "5GH"', self.edge)
+        self.assertIn('return "5GL"', self.edge)
+        self.assertIn('parent_uplink == "5GL"', self.edge)
+        self.assertIn('return "5GH"', self.edge)
         self.assertIn("parent.authority", self.edge)
         evaluate = self.edge.split("static void evaluate_topology_lock(", 1)[1].split(
             "static bool collect_snapshot(", 1
         )[0]
         self.assertIn("queue_topology_lock_mqtt_operation", evaluate)
         self.assertNotIn('"core/Reboot"', evaluate)
+        self.assertIn("wired_connection_type(node->connection_type)", evaluate)
+
+    def test_wired_parent_radio_alternates_after_failure(self):
+        band = self.edge.split(
+            "static std::string topology_lock_recovery_band_locked(", 1
+        )[1].split("static bool queue_topology_lock_mqtt_operation", 1)[0]
+        for fragment in (
+            "wired_connection_type(parent.connection_type)",
+            "parent_steering_health.find",
+            "prior->second.consecutive_failures > 0",
+            'prior->second.band == "5GL" ? "5GH" : "5GL"',
+            'reason = "wired-parent-alternate-after-failure"',
+            'reason = "wired-parent-last-verified-band"',
+        ):
+            self.assertIn(fragment, band)
+        self.assertIn('"bandReason"', self.edge)
+
+    def test_invalid_backhaul_generation_serves_read_only_degraded_snapshot(self):
+        collect = self.edge.split("static bool collect_snapshot(", 1)[1].split(
+            "static void mqtt_set_capability", 1
+        )[0]
+        self.assertIn('strcmp(action, "nodes/diagnostics/GetBackhaulInfo")', collect)
+        self.assertIn("!response_is_ok(response)", collect)
+        self.assertIn("!accumulate_backhaul(response, stats_accumulator)", collect)
+        self.assertIn("caching a read-only degraded topology", collect)
+        self.assertNotIn("accumulate_neighbor_presence", collect)
+        self.assertIn("cJSON_GetArraySize(connections) > 0", self.edge)
+        self.assertIn("candidate.degraded = !backhaul_report_ok", collect)
+        collector = self.edge.split("static void collector_task(void *)", 1)[1].split(
+            "static esp_err_t send_json", 1
+        )[0]
+        self.assertIn("snapshot_actionable = !snapshot.degraded", collector)
+        self.assertIn("snapshot_updated && snapshot_actionable", collector)
+
+    def test_invalid_backhaul_report_does_not_trigger_active_perf_refresh(self):
+        self.assertNotIn("request_backhaul_report_recovery", self.edge)
+        self.assertNotIn("BACKHAUL_REPORT_RECOVERY_INTERVAL_MS", self.edge)
+
+    def test_ha_lock_issues_are_unknown_without_actionable_topology(self):
+        issue_count = self.edge.split(
+            "static int topology_lock_issue_count_copy()", 1
+        )[1].split("static std::string topology_lock_summary_copy()", 1)[0]
+        self.assertIn("!router_connected.load", issue_count)
+        self.assertIn("return -1", issue_count)
+        wrapper = self.edge.split(
+            "inline float meshscope_edge_topology_lock_issues()", 1
+        )[1].split("inline std::string meshscope_edge_topology_lock_summary()", 1)[0]
+        self.assertIn("issues < 0 ? NAN", wrapper)
+
+    def test_wifi_reconnect_prefers_the_last_working_mesh_ap(self):
+        wifi = self.common.split("\nwifi:\n", 1)[1].split("\napi:\n", 1)[0]
+        self.assertIn("fast_connect:", wifi)
+        self.assertIn("enabled: true", wifi)
+        self.assertIn("storage: flash", wifi)
+        self.assertIn("post_connect_roaming: false", wifi)
+
+    def test_mqtt_cycle_guard_uses_locked_parent_for_wired_nodes(self):
+        preflight = self.edge.split("static bool mqtt_preflight(\n", 2)[2].split(
+            "static esp_err_t mqtt_parent_get_handler", 1
+        )[0]
+        for fragment in (
+            "locked_wired_parents",
+            "wired_connection_type(mapped_node->connection_type)",
+            "locked_parent->second",
+            "effective_parent_id",
+            'error = "The requested Parent is a descendant of the child Node"',
+        ):
+            self.assertIn(fragment, preflight)
+        self.assertLess(
+            preflight.index("effective_parent_id"),
+            preflight.index("The requested Parent is a descendant"),
+        )
+
+    def test_wired_nodes_cannot_run_wireless_hop_refresh(self):
+        handler = self.edge.split("static esp_err_t mqtt_hop_test_handler(", 1)[1].split(
+            "static esp_err_t mqtt_steer_handler(", 1
+        )[0]
+        self.assertIn("wired_connection_type(child.connection_type)", handler)
+        self.assertIn("wireless Thrulay refresh is not applicable", handler)
 
     def test_client_details_are_adaptive_and_explicit(self):
         for fragment in (
@@ -288,7 +415,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '"network/status_resend_all"',
             '"network/DEVINFO/status_resend_all"',
             '"network/BH/status_resend_all"',
-            "BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 1000",
+            "BACKHAUL_PHY_REFRESH_INTERVAL_MS = 30 * 60 * 1000",
             "BACKHAUL_PHY_COLLECT_MS = 6 * 1000",
             'mqtt_json_scalar(packet.body, payload_offset, "phyRate"',
             'mqtt_json_scalar(packet.body, payload_offset, "phyRate_2"',
