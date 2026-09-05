@@ -487,12 +487,23 @@ button {
   background-size: 32px 32px;
 }
 
-.topology-canvas {
+.topology-links {
   position: absolute;
   inset: 0;
   z-index: 1;
   pointer-events: none;
 }
+
+.topology-link { --link-line: #7a9b90; --link-glow: rgba(122, 155, 144, .14); }
+.topology-link.link-high { --link-line: #3f7f9a; --link-glow: rgba(63, 127, 154, .17); }
+.topology-link.link-low { --link-line: #3d856d; --link-glow: rgba(61, 133, 109, .17); }
+.topology-link.link-wired { --link-line: #b9772b; --link-glow: rgba(185, 119, 43, .15); }
+.topology-link.link-desired { --link-line: #6f55b5; --link-glow: rgba(111, 85, 181, .2); }
+.topology-link path { fill: none; stroke-linecap: round; }
+.topology-link .link-glow { stroke: var(--link-glow); stroke-width: 7; }
+.topology-link .link-line { stroke: var(--link-line); stroke-width: 2; }
+.topology-link .topology-port { fill: var(--link-line); }
+.topology-link.link-current path { stroke-dasharray: 7 6; }
 
 .map-empty {
   position: absolute;

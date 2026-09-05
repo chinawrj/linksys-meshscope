@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { orderedNodes, visibleNodes, needsAttention, clientMatchesNode } = require('../mesh_web/workspace.js');
+const { orderedNodes, visibleNodes, needsAttention, clientMatchesNode, graphScale } = require('../mesh_web/workspace.js');
 
 const nodes = [
   { id: 'child', parentId: 'parent', name: 'Attic', online: true },
@@ -9,6 +9,20 @@ const nodes = [
   { id: 'parent', parentId: 'root', name: 'Office', model: 'MX5300', online: true },
   { id: 'sibling', parentId: 'root', name: 'Study', online: true },
 ];
+
+test('Fit scales the full graph to phone bounds without an arbitrary 10% floor', () => {
+  assert.equal(graphScale(1850,1800,352,525,true), 352/1850);
+  assert.equal(graphScale(20000,1800,352,525,true), 352/20000);
+  assert.equal(graphScale(1000,5000,352,525,true), 525/5000);
+  assert.equal(graphScale(100,100,352,525,true), 1);
+  assert.equal(graphScale(1850,1800,352,525,false), 1);
+});
+test('hidden/empty/invalid graph sizes never produce an invalid CSS scale', () => {
+  for (const bad of [0,-1,NaN,Infinity,undefined]) {
+    assert.equal(graphScale(bad,100,352,525,true),1);
+    assert.equal(graphScale(100,100,bad,525,true),1);
+  }
+});
 
 test('node list keeps each parent subtree together and retains offline records', () => {
   assert.deepEqual(orderedNodes(nodes).map(n => n.id), ['root', 'parent', 'child', 'sibling', 'offline']);

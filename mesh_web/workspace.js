@@ -49,6 +49,11 @@
     return !nodeId || sameId(client.nodeId || client.parentId, nodeId);
   }
 
+  function graphScale(width, height, availableWidth, availableHeight, fit) {
+    if (!fit || ![width, height, availableWidth, availableHeight].every((n) => Number.isFinite(n) && n > 0)) return 1;
+    return Math.min(1, availableWidth / width, availableHeight / height);
+  }
+
   function create(context) {
     const { state, escapeHtml: esc, nodeCardHtml, openDetail, renderClients, renderTopology } = context;
     const $ = (selector) => document.querySelector(selector);
@@ -80,8 +85,11 @@
     function applyScale() {
       const scroller = $(".map-scroll");
       const heightLimit = parseFloat(getComputedStyle(scroller).maxHeight) || window.innerHeight;
-      const scale = fitGraph && graphWidth ? Math.max(.1, Math.min(1,
-        (scroller.clientWidth - 12) / graphWidth, (heightLimit - 24) / graphHeight)) : 1;
+      // Browser pinch zoom changes the visual viewport, not the layout
+      // viewport. Do not multiply by visualViewport.scale/devicePixelRatio or
+      // redraw on visual-viewport events: let the browser zoom the vector tree.
+      if (!scroller.clientWidth) return;
+      const scale = graphScale(graphWidth, graphHeight, scroller.clientWidth - 12, heightLimit - 24, fitGraph);
       const map = $("#meshMap");
       map.style.transformOrigin = "top left";
       map.style.transform = `scale(${scale})`;
@@ -150,7 +158,6 @@
         ? "Parent data is incomplete. The map may show saved relationships, not verified live links. Automatic recovery is paused while Linksys rebuilds its report."
         : offline || state.refreshError
           ? `Showing the last available snapshot. ${state.refreshError || "The router is unreachable."} MeshScope will retry on the next refresh.` : "";
-      if (listVisible || section === "clients") cancelAnimationFrame(state.topologyAnimationFrame);
       applyScale();
     }
 
@@ -344,5 +351,5 @@
     return { update, updateNotice, topologyRendered, enhanceDetail, syncDialogs, focusRecovery,
       graphVisible: () => section !== "clients" && view === "graph" && !query.trim() && !attention };
   }
-  return { needsAttention, orderedNodes, visibleNodes, clientMatchesNode, create };
+  return { needsAttention, orderedNodes, visibleNodes, clientMatchesNode, graphScale, create };
 });
