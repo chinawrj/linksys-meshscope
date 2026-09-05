@@ -3278,6 +3278,7 @@ button.stat-card:hover { border-color: #9bbcad; background: #fbfdfc; }
 .list-empty strong { font-size: 18px; }
 .list-empty p { font-size: 14px; color: var(--muted); }
 .edge-label { width: 146px; padding: 8px; }
+.edge-label.band-wan { width: 44px; padding: 4px; }
 .edge-label strong { font-size: 11px; }
 .edge-label small { font-size: 9px; white-space: normal; }
 .offline-strip { flex-wrap: wrap; }

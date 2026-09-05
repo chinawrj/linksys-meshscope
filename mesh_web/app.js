@@ -929,6 +929,7 @@ function layoutNodes(nodes, availableWidth = 0, nodeHeights = {}) {
     nodeHeight: 218,
     nodeHeights,
     rowGap: 30,
+    minimumColumnGap: 176,
     availableWidth,
   });
 }
@@ -1196,6 +1197,7 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
   const midX = (from.x + to.x) / 2;
   const midY = (from.y + to.y) / 2;
   const displayBand = edge.kind === "desired" ? "LOCK" : edge.band;
+  const labelWidth = displayBand === "WAN" ? 44 : 146;
   const details = edge.kind === "desired"
     ? `Desired → ${edge.source.name}`
     : edge.kind === "current"
@@ -1204,7 +1206,7 @@ function edgeLabelHtml(edge, nodeWidth = 0, nodeHeight = 0) {
     ? "UPLINK"
     : `${edge.speedMbps ? `${compactNumber(edge.speedMbps)}M` : "—"}${edge.phyRateMbps !== null && edge.phyRateMbps !== undefined ? ` · PHY ${formatLinkRate(edge.phyRateMbps)}${edge.phyRateStale ? " (stale)" : ""}` : ""}${edge.rssi !== null && edge.rssi !== undefined ? ` · ${edge.rssi}dBm` : ""}`;
   return `
-    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" data-layout-left="${midX - 70}" data-layout-top="${midY - 20}">
+    <span class="edge-label band-${escapeHtml(String(displayBand).toLowerCase())} ${edge.kind ? `edge-${escapeHtml(edge.kind)}` : ""}" data-layout-left="${midX - labelWidth / 2}" data-layout-top="${midY - 20}">
       <strong>${escapeHtml(displayBand)}</strong><small>${escapeHtml(details)}</small>
     </span>`;
 }
