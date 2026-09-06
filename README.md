@@ -480,7 +480,9 @@ of Home Assistant and WireGuard. Recovery watchdogs remain enabled:
 | WireGuard peer (optional package) | 10 minutes after the component detects it offline |
 | ESPHome Native API: no connected client | 15 minutes |
 
-The API fallback is longer so it cannot preempt the tunnel's 10-minute window.
+The API fallback is longer so an HA disconnect caused by the same tunnel
+outage does not normally preempt the 10-minute WireGuard window. The timers
+are independent: whichever outage timeout expires first restarts the ESP32.
 These are ordinary ESP32 restarts, not factory resets or Linksys Node restarts.
 If the outage persists, restarts repeat; local work runs between restarts as
 soon as Wi-Fi and valid Linksys data return. No HA login, browser session,

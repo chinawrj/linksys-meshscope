@@ -8,7 +8,8 @@ already recovered.
 
 - **Connection recovery stays enabled.** Wi-Fi loss uses a 5-minute ESP32
   reboot timeout, the optional WireGuard peer uses 10 minutes, and the Native
-  API uses a 15-minute fallback so it does not preempt tunnel recovery.
+  API uses a 15-minute fallback to avoid the usual HA-over-VPN outage
+  preempting tunnel recovery. The independent timers use the first expiry.
   These are normal restarts, never factory resets or Linksys resets.
 - **Local maintenance resumes without remote access.** Saved Parent mappings,
   rate limits, MQTT mode, and history reload before the workers start. A

@@ -18,7 +18,9 @@ when the component detects the peer offline, not at the instant an arbitrary
 Internet packet is lost. Persistent keepalive remains 25 seconds. A local
 API client cannot prevent the independent WireGuard watchdog from running.
 The API fallback is longer to avoid a lost HA tunnel causing an earlier
-five-minute API restart.
+five-minute API restart. These timers are independent; the first expired
+condition wins. An API outage that began earlier can still cause an earlier
+restart, and losing Wi-Fi normally reaches its five-minute limit first.
 
 These timers are not disabled (`0s`), and there is no long-outage lockout. If
 the fault persists after a normal reboot, its timer starts again. Wi-Fi's
