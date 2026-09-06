@@ -2913,6 +2913,23 @@ static const NodeObservation *find_observed_node(
   return nullptr;
 }
 
+static uint32_t restored_cooldown_remaining_ms(
+    uint32_t cooldown_ms,
+    uint64_t last_action_epoch,
+    uint64_t now_epoch,
+    uint64_t boot_elapsed_ms) {
+  if (last_action_epoch == 0 || boot_elapsed_ms >= cooldown_ms) return 0;
+  // A persisted action cannot be newer than this boot. Without NTP (or if
+  // the wall clock moves backwards), one full monotonic boot cooldown is
+  // conservative and finite. Never freeze local recovery waiting for WAN.
+  const uint32_t boot_remaining = cooldown_ms - static_cast<uint32_t>(boot_elapsed_ms);
+  if (now_epoch == 0 || now_epoch < last_action_epoch) return boot_remaining;
+  const uint64_t age_seconds = now_epoch - last_action_epoch;
+  if (age_seconds >= (cooldown_ms + 999ULL) / 1000ULL) return 0;
+  return std::min(boot_remaining,
+      cooldown_ms - static_cast<uint32_t>(age_seconds * 1000ULL));
+}
+
 static uint32_t parent_health_restart_remaining_ms_locked() {
   if (parent_health_restart_seen_this_boot) {
     const uint32_t elapsed =
@@ -2921,19 +2938,9 @@ static uint32_t parent_health_restart_remaining_ms_locked() {
                ? 0
                : PARENT_HEALTH_RESTART_COOLDOWN_MS - elapsed;
   }
-  if (parent_health_last_restart_epoch == 0) return 0;
-  const uint64_t now = wall_clock_epoch();
-  if (now == 0) return PARENT_HEALTH_RESTART_COOLDOWN_MS;
-  const uint64_t elapsed_seconds =
-      now >= parent_health_last_restart_epoch
-          ? now - parent_health_last_restart_epoch
-          : 0;
-  const uint64_t cooldown_seconds =
-      PARENT_HEALTH_RESTART_COOLDOWN_MS / 1000;
-  return elapsed_seconds >= cooldown_seconds
-             ? 0
-             : static_cast<uint32_t>(
-                   (cooldown_seconds - elapsed_seconds) * 1000ULL);
+  return restored_cooldown_remaining_ms(
+      PARENT_HEALTH_RESTART_COOLDOWN_MS, parent_health_last_restart_epoch,
+      wall_clock_epoch(), esp_timer_get_time() / 1000ULL);
 }
 
 static uint32_t parent_node_restart_remaining_ms_locked(
@@ -3539,18 +3546,9 @@ static uint32_t topology_lock_remaining_ms_locked() {
                ? 0
                : cooldown_ms - elapsed;
   }
-  if (topology_lock_last_action_epoch == 0) return 0;
-  const uint64_t now = wall_clock_epoch();
-  if (now == 0) return cooldown_ms;
-  const uint64_t elapsed_seconds =
-      now >= topology_lock_last_action_epoch
-          ? now - topology_lock_last_action_epoch
-          : 0;
-  const uint64_t cooldown_seconds = topology_lock_action_cooldown_seconds;
-  return elapsed_seconds >= cooldown_seconds
-             ? 0
-             : static_cast<uint32_t>(
-                   (cooldown_seconds - elapsed_seconds) * 1000ULL);
+  return restored_cooldown_remaining_ms(
+      cooldown_ms, topology_lock_last_action_epoch,
+      wall_clock_epoch(), esp_timer_get_time() / 1000ULL);
 }
 
 static bool persist_topology_lock_cooldown_seconds(uint32_t seconds) {

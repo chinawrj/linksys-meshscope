@@ -45,7 +45,9 @@ wifi:
   reboot_timeout: 5min
 
 api:
-  reboot_timeout: 5min
+  # Keep the recovery reboot enabled, but do not preempt the optional
+  # WireGuard 10-minute watchdog merely because HA is reached over that tunnel.
+  reboot_timeout: 15min
   encryption:
     key: "${meshscope_api_key}"
 

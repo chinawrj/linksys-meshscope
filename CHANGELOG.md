@@ -2,6 +2,13 @@
 
 ## v0.8.2 — 2026-09-06
 
+- Keep ESP32 recovery reboots enabled: Wi-Fi 5 minutes, optional WireGuard
+  10 minutes, and Native API 15 minutes so HA disconnection does not preempt
+  the tunnel timeout. Remote access never gates local topology maintenance.
+- Fix indefinitely frozen persisted steering/Parent-restart cooldowns when
+  the ESP32 reboots without NTP or its wall clock moves backwards. A bounded
+  monotonic boot cooldown preserves rate limits while allowing local work to
+  resume. Saved configuration and history are not reset.
 - Reconcile persisted ESP32 Parent Steering Health against fresh topology,
   even after the original MQTT operation has timed out or another Node has
   been steered. Two consecutive new, valid snapshots must show the online
