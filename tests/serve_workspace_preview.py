@@ -137,6 +137,7 @@ if __name__ == '__main__':
                       reason='Requested Parent recovered in two consecutive fresh topology generations')
         steering['operation'] = {'id':4,'childId':child['id'],'parentId':child['parentId'],
                                  'parentName':child['parentName'],'state':'failed',
+                                 'requestedAt':'2026-09-06T01:42:00Z',
                                  'error':'Historical verification timeout; Parent later recovered'}
         lock['summary'].update(correct=5, mismatch=0)
     elif args.scenario == 'degraded':

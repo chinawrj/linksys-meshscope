@@ -472,7 +472,12 @@
 
   function isOperationRecovered(value, health) {
     const operation = normalizeOperation(value);
+    // ESP32 operation IDs restart at boot, unlike persisted health history.
+    // An ID match alone could hide a new failure after the counter is reused.
+    const recoveredAt = Date.parse(health?.lastRecoveredAt || "");
+    const requestedAt = Date.parse(operation?.requestedAt || "");
     return Boolean(operation && health &&
+      Number.isFinite(recoveredAt) && Number.isFinite(requestedAt) && recoveredAt >= requestedAt &&
       ["failed", "timeout", "timed-out"].includes(operation.state) &&
       health.state === "recovered" && Number(health.consecutiveFailures) === 0 &&
       operation.id && String(operation.id) === String(health.lastOperationId) &&

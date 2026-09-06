@@ -59,9 +59,9 @@ test('wired nodes do not resurrect stale wireless recovery warnings', () => {
 test('attention filter retires only the exact historical operation confirmed recovered', () => {
   const node = {id:'child', online:true, quality:{tone:'good'}};
   const steering = {
-    operation:{id:4,childId:'child',parentId:'parent',state:'failed'},
+    operation:{id:4,childId:'child',parentId:'parent',state:'failed',requestedAt:'2026-09-06T01:42:00Z'},
     nodeHealth:[{childId:'child',targetParentId:'parent',lastOperationId:4,
-      state:'recovered',consecutiveFailures:0,totalFailures:13}],
+      state:'recovered',consecutiveFailures:0,totalFailures:13,lastRecoveredAt:'2026-09-06T13:00:00Z'}],
   };
   assert.equal(needsAttention(node, {}, steering), false);
   assert.equal(needsAttention({...node,quality:{tone:'warn'}}, {}, steering), true);

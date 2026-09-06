@@ -300,7 +300,8 @@ test("passive recovery removes current alerts but retains all historical evidenc
     lastRecoveredAt: "2026-09-06T13:00:00Z",
   };
   const health = Steering.normalizeHealth(history);
-  const operation = {id: 4, childId: "yard", parentId: "parent", state: "failed"};
+  const operation = {id: 4, childId: "yard", parentId: "parent", state: "failed",
+    requestedAt: "2026-09-06T01:42:00Z"};
   assert.equal(Steering.healthCardPresentation(health), null);
   assert.equal(Steering.operationCardPresentation(operation, health), null);
   assert.equal(Steering.operationPresentation(operation).tone, "failed", "operation history is unchanged");
@@ -309,7 +310,8 @@ test("passive recovery removes current alerts but retains all historical evidenc
     assert.equal(details.health[key], history[key]);
   }
   assert.match(details.label, /Parent recovered/);
-  for (const change of [{id: 5}, {childId: "other"}, {parentId: "other"}, {state: "verification-pending"}, {id: 0}]) {
+  for (const change of [{id: 5}, {childId: "other"}, {parentId: "other"}, {state: "verification-pending"}, {id: 0},
+    {requestedAt: "2026-09-07T00:00:00Z"}, {requestedAt: ""}]) {
     assert.notEqual(Steering.operationCardPresentation({...operation, ...change}, health), null);
   }
   assert.notEqual(Steering.operationCardPresentation(operation, {...health, consecutiveFailures: 1}), null);
