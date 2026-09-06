@@ -985,12 +985,12 @@ function nodeCardHtml(node, list = false) {
       state.parentSteering.operation,
       node.id,
     );
-    const steeringPresentation = steeringOperation?.state === "verified" ? null : MeshMqttParentSteering.operationPresentation(steeringOperation);
-    const steeringTone = steeringPresentation?.tone || "";
     const steeringHealth = MeshMqttParentSteering.healthForNode(
       state.parentSteering,
       node.id,
     );
+    const steeringPresentation = MeshMqttParentSteering.operationCardPresentation(steeringOperation, steeringHealth);
+    const steeringTone = steeringPresentation?.tone || "";
     // Retain historical steering evidence in the detail drawer, but do not
     // present a stale wireless-steering alert on a currently wired node.
     const healthPresentation = isWired
@@ -1385,6 +1385,7 @@ function openDetail(item, kind) {
         <span>Target source</span><strong>${escapeHtml(steeringHealth.lastTargetSource || "—")}</strong>
         <span>Last failure</span><strong>${escapeHtml(steeringHealth.lastFailureAt || "—")}</strong>
         <span>Last success</span><strong>${escapeHtml(steeringHealth.lastSuccessAt || "—")}</strong>
+        <span>Last observed recovery</span><strong>${escapeHtml(steeringHealth.lastRecoveredAt || "—")}</strong>
         <span>Last Parent restart</span><strong>${escapeHtml(steeringHealth.lastParentRestartAt || "—")}</strong>
       </div>
     </section>` : ""}

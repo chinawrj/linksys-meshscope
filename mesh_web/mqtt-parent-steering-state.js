@@ -116,6 +116,8 @@
       consecutiveFailures: Math.max(0, Number(value.consecutiveFailures || 0)),
       totalFailures: Math.max(0, Number(value.totalFailures || 0)),
       successfulMoves: Math.max(0, Number(value.successfulMoves || 0)),
+      recoveryMatches: Math.max(0, Number(value.recoveryMatches || 0)),
+      recoveryRequired: Math.max(1, Number(value.recoveryRequired || 2)),
       parentRestartCount: Math.max(0, Number(value.parentRestartCount || 0)),
       lastTriggerFailures: Math.max(0, Number(value.lastTriggerFailures || 0)),
       targetParentOnlineChildren: Math.max(0, Number(value.targetParentOnlineChildren || 0)),
@@ -130,6 +132,7 @@
       lastTargetSource: value.lastTargetSource || "",
       lastFailureAt: value.lastFailureAt || "",
       lastSuccessAt: value.lastSuccessAt || "",
+      lastRecoveredAt: value.lastRecoveredAt || "",
       lastParentRestartAt: value.lastParentRestartAt || "",
       receivedAt: Number(value.receivedAt) || Date.now(),
     };
@@ -372,7 +375,10 @@
     const remaining = healthRestartRemaining(health, now);
     let tone = health.consecutiveFailures > 0 ? "watching" : "healthy";
     let label = `Steering health · ${failures} failures`;
-    if (["restart-queued", "parent-restarting"].includes(health.state)) {
+    if (health.state === "confirming") {
+      tone = "watching";
+      label = `Confirming Parent recovery · ${health.recoveryMatches}/${health.recoveryRequired}`;
+    } else if (["restart-queued", "parent-restarting"].includes(health.state)) {
       tone = "restarting";
       label = health.state === "restart-queued"
         ? `Restart queued · ${target}`
@@ -385,7 +391,7 @@
       label = `Parent restart blocked · ${failures}`;
     } else if (health.state === "recovered") {
       tone = "healthy";
-      label = `Steering recovered · ${target}`;
+      label = `Parent recovered · ${target}`;
     } else if (health.consecutiveFailures >= health.failureThreshold) {
       tone = "attention";
       label = `Restart threshold reached · ${failures}`;
@@ -464,6 +470,21 @@
     }
   }
 
+  function isOperationRecovered(value, health) {
+    const operation = normalizeOperation(value);
+    return Boolean(operation && health &&
+      ["failed", "timeout", "timed-out"].includes(operation.state) &&
+      health.state === "recovered" && Number(health.consecutiveFailures) === 0 &&
+      operation.id && String(operation.id) === String(health.lastOperationId) &&
+      sameId(operation.childId, health.childId) &&
+      sameId(operation.requestedParentId, health.targetParentId));
+  }
+
+  function operationCardPresentation(value, health) {
+    if (value?.state === "verified" || isOperationRecovered(value, health)) return null;
+    return operationPresentation(value);
+  }
+
   return {
     BANDS,
     MODES,
@@ -478,6 +499,7 @@
     healthPresentation,
     healthRestartRemaining,
     isOperationActive,
+    isOperationRecovered,
     lockConflict,
     normalize,
     normalizeHealth,
@@ -485,6 +507,7 @@
     operationForNode,
     operationFromResponse,
     operationPresentation,
+    operationCardPresentation,
     reconcileOperation,
     sameId,
     validateRequest,

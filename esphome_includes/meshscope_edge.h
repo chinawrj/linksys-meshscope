@@ -275,10 +275,15 @@ struct ParentSteeringHealth {
   std::string reason;
   std::string last_failure_at;
   std::string last_success_at;
+  std::string last_recovered_at;
   std::string last_parent_restart_at;
   std::string last_target_bssid;
   std::string last_target_source;
   uint32_t last_operation_id = 0;
+  // Runtime-only evidence: repeated API reads and pre-reboot samples cannot
+  // satisfy recovery. Lifetime diagnostics remain persisted separately.
+  uint32_t last_observed_generation = 0;
+  uint8_t recovery_matches = 0;
   uint32_t consecutive_failures = 0;
   uint32_t total_failures = 0;
   uint32_t successful_moves = 0;
@@ -511,7 +516,9 @@ static void record_parent_steering_outcome(
     bool verified,
     const std::vector<NodeObservation> &nodes);
 static void evaluate_parent_steering_health(
-    const std::vector<NodeObservation> &nodes);
+    const std::vector<NodeObservation> &nodes,
+    uint32_t generation = 0,
+    bool topology_valid = true);
 static bool persist_parent_steering_health_locked();
 static void load_parent_steering_health();
 
@@ -2965,6 +2972,8 @@ static bool persist_parent_steering_health_locked() {
     cJSON_AddStringToObject(
         item, "lastSuccessAt", health.last_success_at.c_str());
     cJSON_AddStringToObject(
+        item, "lastRecoveredAt", health.last_recovered_at.c_str());
+    cJSON_AddStringToObject(
         item, "lastParentRestartAt", health.last_parent_restart_at.c_str());
     cJSON_AddStringToObject(
         item, "lastTargetBssid", health.last_target_bssid.c_str());
@@ -3063,6 +3072,8 @@ static void load_parent_steering_health() {
           json_string(item, "lastFailureAt") ?: "";
       health.last_success_at =
           json_string(item, "lastSuccessAt") ?: "";
+      health.last_recovered_at =
+          json_string(item, "lastRecoveredAt") ?: "";
       health.last_parent_restart_at =
           json_string(item, "lastParentRestartAt") ?: "";
       health.last_target_bssid =
@@ -3084,9 +3095,12 @@ static void load_parent_steering_health() {
           json_bool(item, "lastRequestPublished");
       health.last_command_echoed =
           json_bool(item, "lastCommandEchoed");
-      health.state = health.consecutive_failures > 0 ? "watching" : "idle";
+      health.state = health.consecutive_failures > 0 ? "watching"
+                     : !health.last_recovered_at.empty() ? "recovered" : "idle";
       health.reason = health.consecutive_failures > 0
                           ? "Restored consecutive steering failures"
+                      : !health.last_recovered_at.empty()
+                          ? "Parent recovery was confirmed in fresh topology"
                           : "No unresolved steering failures";
       parent_steering_health[ascii_lower(health.child_id)] =
           std::move(health);
@@ -3113,7 +3127,9 @@ static uint16_t count_online_mesh_children(
 }
 
 static void evaluate_parent_steering_health(
-    const std::vector<NodeObservation> &nodes) {
+    const std::vector<NodeObservation> &nodes,
+    uint32_t generation,
+    bool topology_valid) {
   const bool automation_enabled = mqtt_mode_allows_probe();
   if (topology_lock_mutex == nullptr ||
       xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
@@ -3122,14 +3138,57 @@ static void evaluate_parent_steering_health(
   const uint32_t restart_remaining =
       parent_health_restart_remaining_ms_locked();
   bool changed = false;
-  bool restart_pending = parent_restart_request.pending;
   for (auto &entry : parent_steering_health) {
     ParentSteeringHealth &health = entry.second;
+    if (!topology_valid) {
+      health.recovery_matches = 0;
+      if (health.state == "confirming") {
+        health.state = "watching";
+        health.reason = "Recovery confirmation paused until fresh topology returns";
+      }
+      continue;
+    }
     const NodeObservation *parent =
         find_observed_node(nodes, health.target_parent_id);
     health.target_parent_online = parent != nullptr && parent->online;
     health.target_parent_online_children = count_online_mesh_children(
         nodes, health.target_parent_id);
+    if (generation > health.last_observed_generation) {
+      health.last_observed_generation = generation;
+      const NodeObservation *child = find_observed_node(nodes, health.child_id);
+      const bool matches = child != nullptr && child->online &&
+          !child->authority && !wired_connection_type(child->connection_type) &&
+          health.target_parent_online &&
+          same_node_id(child->parent_id, health.target_parent_id);
+      if (health.consecutive_failures > 0 && matches) {
+        // A currently attached child already makes a Parent restart invalid.
+        // Cancel queued work immediately, but require two observations before
+        // resolving the alert. Do not invent a successful MQTT operation.
+        if (parent_restart_request.pending &&
+            same_node_id(parent_restart_request.child_id, health.child_id) &&
+            same_node_id(parent_restart_request.parent_id, health.target_parent_id)) {
+          parent_restart_request = {};
+        }
+        health.recovery_matches++;
+        if (health.recovery_matches >= MQTT_VERIFY_GENERATIONS) {
+          health.consecutive_failures = 0;
+          health.last_recovered_at = iso_timestamp();
+          health.state = "recovered";
+          health.reason = "Requested Parent recovered in two consecutive fresh topology generations";
+          changed = true;
+        } else {
+          health.state = "confirming";
+          health.reason = "Requested Parent is now observed; waiting for another fresh topology generation";
+        }
+        continue;
+      }
+      health.recovery_matches = 0;
+      if (health.state == "confirming") {
+        health.state = "watching";
+        health.reason = "Requested Parent recovery was not sustained";
+      }
+    }
+    if (health.state == "confirming") continue;
     if (health.state == "parent-restarting" &&
         health.consecutive_failures == 0) {
       if (restart_remaining > 0) {
@@ -3178,7 +3237,6 @@ static void evaluate_parent_steering_health(
       parent_restart_request.parent_id = health.target_parent_id;
       parent_restart_request.source_operation_id = health.last_operation_id;
       parent_restart_request.pending = true;
-      restart_pending = true;
       health.state = "restart-queued";
       health.reason = "Failure threshold reached and Parent has no online mesh child";
       changed = true;
@@ -3191,6 +3249,7 @@ static void evaluate_parent_steering_health(
     }
   }
   if (changed) persist_parent_steering_health_locked();
+  const bool restart_pending = topology_valid && parent_restart_request.pending;
   xSemaphoreGive(topology_lock_mutex);
   if (restart_pending && mqtt_steering_task_handle != nullptr) {
     xTaskNotifyGive(mqtt_steering_task_handle);
@@ -3224,6 +3283,7 @@ static void record_parent_steering_outcome(
   health.target_parent_name = operation.parent_name;
   health.band = operation.band;
   health.last_operation_id = operation.id;
+  health.recovery_matches = 0;
   health.last_target_bssid = operation.target_bssid;
   health.last_target_channel = operation.target_channel;
   health.last_target_source = operation.target_source;
@@ -4367,7 +4427,9 @@ static bool process_parent_restart_request() {
   xSemaphoreGive(topology_lock_mutex);
 
   const std::vector<NodeObservation> nodes = current_node_observations();
-  if (!mqtt_mode_allows_probe()) {
+  if (!router_connected.load(std::memory_order_acquire)) {
+    blocked_reason = "Fresh actionable topology is unavailable";
+  } else if (!mqtt_mode_allows_probe()) {
     blocked_reason = "MQTT Parent steering is forced off";
   }
   const NodeObservation *observed_parent =
@@ -4392,20 +4454,27 @@ static bool process_parent_restart_request() {
   if (!parent_restart_request.pending ||
       !same_node_id(parent_restart_request.child_id, restart.child_id) ||
       !same_node_id(parent_restart_request.parent_id, restart.parent_id) ||
+      parent_restart_request.source_operation_id != restart.source_operation_id ||
       health_iterator == parent_steering_health.end()) {
     xSemaphoreGive(topology_lock_mutex);
     return true;
   }
   ParentSteeringHealth &health = health_iterator->second;
+  if (health.consecutive_failures < PARENT_STEERING_FAILURE_THRESHOLD ||
+      health.state == "confirming" ||
+      health.last_operation_id != restart.source_operation_id ||
+      !same_node_id(health.target_parent_id, restart.parent_id)) {
+    // A late worker must not overwrite recovered/confirming state with a
+    // stale blocked alert, or restart a Parent for an obsolete operation.
+    parent_restart_request = {};
+    xSemaphoreGive(topology_lock_mutex);
+    return true;
+  }
   const uint32_t cooldown_remaining = std::max(
       parent_health_restart_remaining_ms_locked(),
       parent_node_restart_remaining_ms_locked(restart.parent_id));
   if (blocked_reason.empty() && cooldown_remaining > 0) {
     blocked_reason = "Waiting for the five-minute Parent restart limit";
-  }
-  if (blocked_reason.empty() &&
-      health.consecutive_failures < PARENT_STEERING_FAILURE_THRESHOLD) {
-    blocked_reason = "The consecutive failure threshold is no longer met";
   }
   if (!blocked_reason.empty()) {
     health.state = cooldown_remaining > 0 ? "cooldown" : "blocked";
@@ -4430,6 +4499,27 @@ static bool process_parent_restart_request() {
       xSemaphoreTake(memory_mutex, pdMS_TO_TICKS(15000)) != pdTRUE) {
     failure = "The Node workspace was busy; restart was not sent";
   } else {
+    // Acquiring the network workspace can wait behind a collector refresh.
+    // Recovery during that wait must cancel the old work before core/Reboot.
+    bool still_needed = false;
+    if (xSemaphoreTake(topology_lock_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+      const auto current = parent_steering_health.find(health_key);
+      const bool same_request = parent_restart_request.pending &&
+          same_node_id(parent_restart_request.child_id, restart.child_id) &&
+          same_node_id(parent_restart_request.parent_id, restart.parent_id) &&
+          parent_restart_request.source_operation_id == restart.source_operation_id;
+      still_needed = same_request && current != parent_steering_health.end() &&
+          current->second.consecutive_failures >= PARENT_STEERING_FAILURE_THRESHOLD &&
+          current->second.state == "parent-restarting" &&
+          current->second.last_operation_id == restart.source_operation_id &&
+          same_node_id(current->second.target_parent_id, restart.parent_id);
+      if (!still_needed && same_request) parent_restart_request = {};
+      xSemaphoreGive(topology_lock_mutex);
+    }
+    if (!still_needed) {
+      xSemaphoreGive(memory_mutex);
+      return true;
+    }
     const JnapResult reboot = jnap_request(
         parent.ip,
         "core/Reboot",
@@ -4666,6 +4756,7 @@ static void collector_task(void *) {
     uint32_t snapshot_generation = 0;
     if (!wifi_connected()) {
       router_connected.store(false, std::memory_order_release);
+      evaluate_parent_steering_health({}, 0, false);
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
       continue;
     }
@@ -4703,11 +4794,13 @@ static void collector_task(void *) {
     if (memory_locked) xSemaphoreGive(memory_mutex);
     if (snapshot_updated && snapshot_actionable) {
       mqtt_verify_operation(lock_observations, snapshot_generation);
-      evaluate_parent_steering_health(lock_observations);
+      evaluate_parent_steering_health(lock_observations, snapshot_generation);
       evaluate_topology_lock(lock_observations);
       if (mqtt_steering_task_handle != nullptr) {
         xTaskNotifyGive(mqtt_steering_task_handle);
       }
+    } else {
+      evaluate_parent_steering_health({}, 0, false);
     }
     force_refresh.store(false, std::memory_order_release);
     ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(REFRESH_INTERVAL_MS));
@@ -5562,6 +5655,8 @@ static void add_parent_steering_health_json(cJSON *root) {
     cJSON_AddStringToObject(item, "reason", health.reason.c_str());
     cJSON_AddNumberToObject(
         item, "failureThreshold", PARENT_STEERING_FAILURE_THRESHOLD);
+    cJSON_AddNumberToObject(item, "recoveryMatches", health.recovery_matches);
+    cJSON_AddNumberToObject(item, "recoveryRequired", MQTT_VERIFY_GENERATIONS);
     cJSON_AddNumberToObject(
         item, "consecutiveFailures", health.consecutive_failures);
     cJSON_AddNumberToObject(item, "totalFailures", health.total_failures);
@@ -5607,6 +5702,8 @@ static void add_parent_steering_health_json(cJSON *root) {
         item, "lastFailureAt", health.last_failure_at.c_str());
     cJSON_AddStringToObject(
         item, "lastSuccessAt", health.last_success_at.c_str());
+    cJSON_AddStringToObject(
+        item, "lastRecoveredAt", health.last_recovered_at.c_str());
     cJSON_AddStringToObject(
         item, "lastParentRestartAt", health.last_parent_restart_at.c_str());
     cJSON_AddItemToArray(items, item);

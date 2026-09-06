@@ -33,7 +33,12 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.8.1 highlight:** Zoom-safe SVG graph links replace the large animated
+> **v0.8.2 highlight:** Recovered Parents no longer carry old steering alarms.
+> Two fresh matching topology snapshots resolve the current alert and cancel
+> obsolete queued Parent restarts. Lifetime diagnostics stay in **Node details**,
+> with a separate **Last observed recovery** timestamp. [Release notes](docs/release-v0.8.2.md).
+>
+> **v0.8.1:** Zoom-safe SVG graph links replace the large animated
 > Canvas after an iPhone crash investigation. All metrics and controls remain;
 > only decorative moving dots were removed. [Evidence and test limits](docs/iphone-graph-zoom.md).
 >
