@@ -29,7 +29,7 @@ wireguard:
   # The tunnel is an optional access path and must never block MeshScope boot.
   # Keep ESPHome's automatic reboot timeout enabled for connection recovery.
   require_connection_to_proceed: false
-  reboot_timeout: 5min
+  reboot_timeout: 10min
   update_interval: 10s
 
 binary_sensor:

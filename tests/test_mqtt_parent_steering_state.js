@@ -291,6 +291,42 @@ test("keeps unresolved and active Parent health states visible on topology cards
   assert.equal(Steering.healthCardPresentation(restarting).tone, "restarting");
 });
 
+test("passive recovery removes current alerts but retains all historical evidence", () => {
+  const history = {
+    childId: "YARD", targetParentId: "PARENT", targetParentName: "Patio",
+    lastOperationId: 4, state: "recovered", consecutiveFailures: 0,
+    totalFailures: 13, successfulMoves: 4, lastCommandEchoed: true,
+    lastFailureAt: "2026-09-06T01:45:07Z", lastSuccessAt: "2026-09-05T03:46:19Z",
+    lastRecoveredAt: "2026-09-06T13:00:00Z",
+  };
+  const health = Steering.normalizeHealth(history);
+  const operation = {id: 4, childId: "yard", parentId: "parent", state: "failed",
+    requestedAt: "2026-09-06T01:42:00Z"};
+  assert.equal(Steering.healthCardPresentation(health), null);
+  assert.equal(Steering.operationCardPresentation(operation, health), null);
+  assert.equal(Steering.operationPresentation(operation).tone, "failed", "operation history is unchanged");
+  const details = Steering.healthPresentation(health);
+  for (const key of ["totalFailures", "successfulMoves", "lastFailureAt", "lastSuccessAt", "lastRecoveredAt", "lastCommandEchoed"]) {
+    assert.equal(details.health[key], history[key]);
+  }
+  assert.match(details.label, /Parent recovered/);
+  for (const change of [{id: 5}, {childId: "other"}, {parentId: "other"}, {state: "verification-pending"}, {id: 0},
+    {requestedAt: "2026-09-07T00:00:00Z"}, {requestedAt: ""}]) {
+    assert.notEqual(Steering.operationCardPresentation({...operation, ...change}, health), null);
+  }
+  assert.notEqual(Steering.operationCardPresentation(operation, {...health, consecutiveFailures: 1}), null);
+});
+
+test("first recovery observation remains visible as confirmation, not a restart alarm", () => {
+  const view = Steering.healthCardPresentation({
+    childId: "YARD", targetParentId: "PARENT", state: "confirming",
+    consecutiveFailures: 2, recoveryMatches: 1, recoveryRequired: 2,
+  });
+  assert.equal(view.tone, "watching");
+  assert.equal(view.label, "Confirming Parent recovery · 1/2");
+  assert.equal(view.health.consecutiveFailures, 2);
+});
+
 test("renders an accessible steering form without removing existing topology and client information", () => {
   const html = fs.readFileSync(path.join(WEB_ROOT, "index.html"), "utf8");
   const app = fs.readFileSync(path.join(WEB_ROOT, "app.js"), "utf8");

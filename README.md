@@ -33,7 +33,12 @@ _A real ESP32-C5 dashboard reached through WireGuard. Node-level topology is
 shown with the network owner's approval. The Client/Device table and every
 client identifier are deliberately excluded from this repository image._
 
-> **v0.8.1 highlight:** Zoom-safe SVG graph links replace the large animated
+> **v0.8.2 highlight:** Recovered Parents no longer carry old steering alarms.
+> Two fresh matching topology snapshots resolve the current alert and cancel
+> obsolete queued Parent restarts. Lifetime diagnostics stay in **Node details**,
+> with a separate **Last observed recovery** timestamp. [Release notes](docs/release-v0.8.2.md).
+>
+> **v0.8.1:** Zoom-safe SVG graph links replace the large animated
 > Canvas after an iPhone crash investigation. All metrics and controls remain;
 > only decorative moving dots were removed. [Evidence and test limits](docs/iphone-graph-zoom.md).
 >
@@ -466,10 +471,31 @@ Home Assistant receives these entities:
 - Topology Lock Issues
 - Topology Lock Summary
 
-The ESP32 continues collecting data and serving the web page when Home
-Assistant is offline or has never been connected. Wi-Fi and the ESPHome Native
-API use a five-minute recovery reboot timeout when their connection remains
-unavailable.
+The ESP32 collects topology and runs local Parent maintenance independently
+of Home Assistant and WireGuard. Recovery watchdogs remain enabled:
+
+| Unavailable connection | ESP32 restart timeout |
+| --- | --- |
+| Wi-Fi station | 5 minutes |
+| WireGuard peer (optional package) | 10 minutes after the component detects it offline |
+| ESPHome Native API: no connected client | 15 minutes |
+
+The API fallback is longer so an HA disconnect caused by the same tunnel
+outage does not normally preempt the 10-minute WireGuard window. The timers
+are independent: whichever outage timeout expires first restarts the ESP32.
+These are ordinary ESP32 restarts, not factory resets or Linksys Node restarts.
+If the outage persists, restarts repeat; local work runs between restarts as
+soon as Wi-Fi and valid Linksys data return. No HA login, browser session,
+WireGuard handshake, or Internet time synchronization is required to resume
+the collector and saved Topology Lock. MQTT must still pass its local
+capability check before steering. Force off, disabled locks, and offline
+desired Parents continue to be respected.
+
+Saved Parent mappings, MQTT mode, the action rate limit, and health history
+survive reboot. Without Internet time, restored action cooldowns use a bounded
+monotonic boot delay instead of waiting indefinitely for NTP. Fresh mismatch
+confirmation is still required; cached pre-reboot topology never triggers an
+action. See the [recovery audit and verification limits](docs/esp32-reboot-recovery.md).
 
 #### Optional WireGuard remote access
 

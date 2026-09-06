@@ -215,6 +215,22 @@ publish reached `verification-pending` and then exhausted the 180-second JNAP
 verification window. Discovery, preflight, ACL, broker, offline, and target
 radio errors are excluded. A verified Parent clears the consecutive counter.
 
+Since v0.8.2, the ESP32 also reconciles unresolved history after the operation
+ends. The first fresh snapshot showing the wireless child on its requested
+online Parent displays **Confirming Parent recovery · 1/2**. A second new,
+valid matching snapshot resolves the alert. Repeated reads of one generation
+do not count; mismatches, offline/missing nodes, Ethernet's ambiguous Parent,
+and failed/degraded collection interrupt confirmation.
+
+Observed recovery cancels obsolete queued Parent-restart work and clears only
+the current consecutive-failure counter. **Node details → Details** keeps total
+failures, successful MQTT moves, timestamps, and radio/publish/echo evidence,
+plus a separate **Last observed recovery** timestamp. An observed recovery is
+not counted as another successful MQTT move. Resolved history no longer adds
+an orange/red alert to graph/list cards or the **Needs attention** filter.
+Newer or unrelated failed operations and weak/offline links remain visible.
+No extra scan, MQTT command, or router restart is needed to confirm recovery.
+
 The default threshold is two consecutive qualifying failures. At the threshold
 the worker can restart the requested Parent, not the child, only when a fresh
 topology confirms that the Parent is online, is not the primary gateway, and

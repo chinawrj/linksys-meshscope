@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.8.2 — 2026-09-06
+
+- Keep ESP32 recovery reboots enabled: Wi-Fi 5 minutes, optional WireGuard
+  10 minutes, and Native API 15 minutes so HA disconnection does not preempt
+  the tunnel timeout. Remote access never gates local topology maintenance.
+- Fix indefinitely frozen persisted steering/Parent-restart cooldowns when
+  the ESP32 reboots without NTP or its wall clock moves backwards. A bounded
+  monotonic boot cooldown preserves rate limits while allowing local work to
+  resume. Saved configuration and history are not reset.
+- Reconcile persisted ESP32 Parent Steering Health against fresh topology,
+  even after the original MQTT operation has timed out or another Node has
+  been steered. Two consecutive new, valid snapshots must show the online
+  wireless child attached to its online requested Parent before the current
+  failure counter and warning are cleared.
+- Show `Confirming Parent recovery · 1/2` during confirmation. Duplicate or
+  older generations cannot advance it; a mismatch, offline/missing node,
+  wired relationship, degraded report, or failed refresh breaks the sequence.
+- Cancel obsolete queued Parent restarts and recheck recovery after waiting
+  for the network workspace. A late worker cannot revive a resolved warning
+  or restart a Parent for a superseded operation.
+- Preserve lifetime failures, verified MQTT successes, radio/publish/echo
+  evidence, and historical timestamps. Add a separate persisted **Last
+  observed recovery** timestamp; passive recovery does not invent a successful
+  MQTT command. Resolved operation warnings leave both graph/list cards and
+  the Needs attention filter, while unrelated/newer failures stay visible.
+- Add executable host tests of the production C++ state machine, frontend
+  regressions, and an offline recovered-node preview. Existing topology
+  metrics, clients, saved Parent mappings, and action limits remain unchanged.
+
 ## v0.8.1 — 2026-09-06
 
 - Replaced the continuously redrawn topology Canvas with SVG links. Fit graph

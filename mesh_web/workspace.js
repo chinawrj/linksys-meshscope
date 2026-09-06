@@ -1,8 +1,9 @@
 (function (root, factory) {
-  const api = factory();
+  const api = factory(typeof module === "object" && module.exports
+    ? require("./mqtt-parent-steering-state.js") : root.MeshMqttParentSteering);
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.MeshWorkspace = api;
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (Steering) {
   const sameId = (a, b) => Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
 
   function needsAttention(node, lock = {}, steering = {}) {
@@ -11,9 +12,11 @@
     const recovery = lock.enabled && lock.nodes?.find((item) => sameId(item.nodeId, node.id));
     if (recovery && !["correct", "wired-manual"].includes(recovery.status)) return true;
     const operation = steering.operation;
-    if (sameId(operation?.childId, node.id) && ["failed", "timeout"].includes(operation.state)) return true;
     const wired = node.isWired || /^(wired|ethernet)$/i.test(node.connectionType || "");
     const health = steering.nodeHealth?.find((item) => sameId(item.childId, node.id));
+    if (sameId(operation?.childId, node.id) &&
+      ["failed", "timeout", "timed-out"].includes(operation.state) &&
+      !Steering.isOperationRecovered(operation, health)) return true;
     return !wired && Boolean(health && (health.consecutiveFailures > 0 ||
       ["restart-queued", "parent-restarting", "restart-eligible", "cooldown", "blocked", "restart-failed"].includes(health.state)));
   }

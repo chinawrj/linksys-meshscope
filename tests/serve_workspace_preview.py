@@ -1,7 +1,7 @@
 """Offline UI exercise server. Every write affects synthetic in-memory data only.
 
 Run: python3 tests/serve_workspace_preview.py --port 8766 --scenario recovery
-Scenarios: recovery, degraded, offline, nodes-only. Serves the actual compressed
+Scenarios: recovery, recovered, degraded, offline, nodes-only. Serves the actual compressed
 ESP32 bundle under its Content Security Policy to catch embedded-only regressions.
 Use --extra-nodes 16 for a larger, deeper graph during mobile zoom checks.
 """
@@ -83,7 +83,7 @@ class Preview(app.MeshRequestHandler):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port', type=int, default=8766)
-    parser.add_argument('--scenario', choices=['recovery','degraded','offline','nodes-only'], default='recovery')
+    parser.add_argument('--scenario', choices=['recovery','recovered','degraded','offline','nodes-only'], default='recovery')
     parser.add_argument('--extra-nodes', type=int, choices=range(101), default=0, metavar='0..100')
     args = parser.parse_args()
     data = app.build_demo_topology('192.168.1.1')
@@ -125,7 +125,22 @@ if __name__ == '__main__':
                                'targetParentOnline':True,'targetParentOnlineChildren':3,'lastTargetBssid':'02:00:00:00:11:22',
                                'lastTargetChannel':149,'lastRequestPublished':True,'lastCommandEchoed':True,
                                'reason':'The requested parent was not observed in two fresh snapshots.'}]}
-    if args.scenario == 'degraded':
+    if args.scenario == 'recovered':
+        child = next(node for node in data['nodes'] if node['id'] == 'demo-road-south')
+        row = next(item for item in lock['nodes'] if item['nodeId'] == child['id'])
+        row.update(status='correct', expectedParentId=child['parentId'], expectedParentName=child['parentName'])
+        health = steering['nodeHealth'][0]
+        health.update(state='recovered', consecutiveFailures=0, totalFailures=13, successfulMoves=4,
+                      targetParentId=child['parentId'], targetParentName=child['parentName'],
+                      lastOperationId=4, lastFailureAt='2026-09-06T01:45:07Z',
+                      lastSuccessAt='2026-09-05T03:46:19Z', lastRecoveredAt='2026-09-06T13:00:00Z',
+                      reason='Requested Parent recovered in two consecutive fresh topology generations')
+        steering['operation'] = {'id':4,'childId':child['id'],'parentId':child['parentId'],
+                                 'parentName':child['parentName'],'state':'failed',
+                                 'requestedAt':'2026-09-06T01:42:00Z',
+                                 'error':'Historical verification timeout; Parent later recovered'}
+        lock['summary'].update(correct=5, mismatch=0)
+    elif args.scenario == 'degraded':
         data['meta'].update(topologyDegraded=True, routerConnected=False)
         lock['summary'].update(unknown=5, correct=0, mismatch=0)
         for node in data['nodes']:

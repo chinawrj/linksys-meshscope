@@ -617,7 +617,7 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             '- "${meshscope_wireguard_ha_network}"',
             'peer_persistent_keepalive: "${meshscope_wireguard_keepalive}"',
             "require_connection_to_proceed: false",
-            "reboot_timeout: 5min",
+            "reboot_timeout: 10min",
             "WireGuard Peer Connected",
             "WireGuard Latest Handshake",
             "WireGuard Address",
@@ -633,6 +633,28 @@ class ESPHomeMeshScopeTargetsTest(unittest.TestCase):
             self.assertIn("esphome_meshscope_wireguard.yaml", ci_target)
             self.assertIn('meshscope_wireguard_netmask: "255.255.255.255"', ci_target)
             self.assertIn('meshscope_wireguard_ha_network: "192.168.50.0/24"', ci_target)
+
+    def test_recovery_reboots_are_enabled_without_remote_dependencies(self):
+        wifi = self.common.split("\nwifi:\n", 1)[1].split("\napi:\n", 1)[0]
+        api = self.common.split("\napi:\n", 1)[1].split("\nota:\n", 1)[0]
+        self.assertIn("reboot_timeout: 5min", wifi)
+        self.assertIn("reboot_timeout: 15min", api)
+        self.assertIn("reboot_timeout: 10min", self.wireguard_config)
+        self.assertIn("require_connection_to_proceed: false", self.wireguard_config)
+        for text in (wifi, api, self.wireguard_config):
+            self.assertNotIn("reboot_timeout: 0s", text)
+        setup = self.edge.split("static void setup(\n", 1)[1].split("static MeshStats stats_copy", 1)[0]
+        for restored in ("load_topology_lock_cooldown_seconds();", "load_topology_lock();",
+                         "load_mqtt_mode();", "load_parent_steering_health();"):
+            self.assertLess(setup.index(restored), setup.index("xTaskCreate("))
+        collector = self.edge.split("static void collector_task(void *)", 1)[1].split("static esp_err_t send_json", 1)[0]
+        worker = self.edge.split("static void mqtt_steering_worker(void *)", 1)[1].split("static void collector_task", 1)[0]
+        for code in (setup, collector, worker):
+            for dependency in ("api::", "is_peer_up", "wireguard", "time.has_time"):
+                self.assertNotIn(dependency, code)
+        self.assertIn("snapshot_updated && snapshot_actionable", collector)
+        self.assertIn("evaluate_topology_lock(lock_observations)", collector)
+        self.assertIn("!wifi_connected() || !router_connected.load", worker)
 
     def test_c5_example_documents_optional_wireguard_without_real_keys(self):
         example = C5_EXAMPLE.read_text(encoding="utf-8")
